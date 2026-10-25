@@ -1,7 +1,7 @@
 //! Requests and replies on a session, and messages it does not expect.
 
 use futures_util::{SinkExt, StreamExt};
-use link2linux_core::{SessionConfig, SessionError, SessionEvent};
+use link2linux_core::{Feature, SessionConfig, SessionError, SessionEvent};
 use link2linux_protocol::v1::{
     Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason, NotificationDismissRequest,
     NotificationPosted,
@@ -54,7 +54,7 @@ async fn answers_unknown_requests_with_unsupported() {
 }
 
 #[tokio::test]
-async fn hands_requests_over() {
+async fn hands_requests_over_and_sends_the_answers() {
     let (mut session, mut peer) =
         connected_to(notifying_phone_hello(), SessionConfig::default()).await;
     peer.send(&request(2, dismiss())).await.unwrap();
@@ -66,6 +66,10 @@ async fn hands_requests_over() {
             payload: dismiss()
         })
     );
+
+    assert_eq!(session.ack(2).await.unwrap(), 2);
+    let frame = peer.next().await.unwrap().unwrap();
+    assert_eq!(frame, answer(2, 2, Payload::Ack(Ack {})));
 }
 
 #[tokio::test]
@@ -158,4 +162,34 @@ async fn an_error_before_goodbye_explains_it() {
     };
     assert_eq!(goodbye.reason, GoodbyeReason::ProtocolError);
     assert_eq!(goodbye.error, Some(error));
+}
+
+#[tokio::test]
+async fn checks_what_it_is_asked_to_send() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    let posted = Payload::NotificationPosted(NotificationPosted::default());
+    let err = session.send(posted).await.unwrap_err();
+    assert!(
+        matches!(err, SessionError::FeatureNotActive(Feature::Notifications)),
+        "{err:?}"
+    );
+    let err = session.send(Payload::Ack(Ack {})).await.unwrap_err();
+    assert!(matches!(err, SessionError::NotAllowed("Ack")), "{err:?}");
+
+    // Only the peer's Hello (seq 1) has arrived so far.
+    let err = session.ack(2).await.unwrap_err();
+    assert!(matches!(err, SessionError::NoSuchRequest(2)), "{err:?}");
+    let ping = Payload::Ping(Ping { nonce: 1 });
+    let err = session.reply(1, ping).await.unwrap_err();
+    assert!(matches!(err, SessionError::NotAllowed("Ping")), "{err:?}");
+
+    // Long details are cut to 1 KiB, on a character boundary.
+    let long = "é".repeat(600);
+    let error = error_reply(ErrorCode::Internal, &long);
+    session.reply_error(1, error).await.unwrap();
+    let frame = peer.next().await.unwrap().unwrap();
+    let Some(Payload::ErrorReply(error)) = frame.payload else {
+        panic!("expected an ErrorReply, got {frame:?}");
+    };
+    assert_eq!(error.detail, "é".repeat(512));
 }

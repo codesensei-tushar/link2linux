@@ -17,8 +17,9 @@
 //! [`SessionConfig::idle_timeout`]. One-way messages come out as
 //! [`SessionEvent::Message`] and go in through [`Session::send`].
 //!
-//! The peer's requests come out as [`SessionEvent::Request`]. The session
-//! applies the rules for messages it does not expect
+//! The peer's requests come out as [`SessionEvent::Request`], and
+//! [`Session::reply`], [`Session::ack`] and [`Session::reply_error`] answer
+//! them. The session applies the rules for messages it does not expect
 //! itself: it answers an unknown request, or a request of a feature that is
 //! not active, with `ERROR_CODE_UNSUPPORTED`, drops one-way messages of
 //! inactive features and answers nobody waits for, and treats a message in
@@ -37,7 +38,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use link2linux_protocol::v1::{ErrorCode, ErrorReply, Goodbye, GoodbyeReason};
+use link2linux_protocol::v1::{Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason};
 use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
 };
@@ -98,8 +99,9 @@ pub enum SessionEvent {
         /// The message.
         payload: Payload,
     },
-    /// A request from the peer, which waits for an answer that refers to
-    /// `seq`. Requests of features that are not active never come out here: the session
+    /// A request from the peer. Answer it with [`Session::reply`],
+    /// [`Session::ack`] or [`Session::reply_error`], passing `seq`. Requests
+    /// of features that are not active never come out here: the session
     /// answers them with `ERROR_CODE_UNSUPPORTED` itself.
     Request {
         /// The peer's sequence number for it, which the answer refers to.
@@ -171,6 +173,13 @@ pub enum SessionError {
     /// [`Session::send`] instead of [`Session::goodbye`].
     #[error("{0} cannot be sent this way")]
     NotAllowed(&'static str),
+    /// This side tried to send a message of a feature that is not active in
+    /// this session.
+    #[error("{0} is not active in this session")]
+    FeatureNotActive(Feature),
+    /// [`Session::reply`] named a request the peer has not sent.
+    #[error("the peer sent no message {0} to answer")]
+    NoSuchRequest(u64),
     /// The session has already ended.
     #[error("the session has ended")]
     Ended,
@@ -381,7 +390,7 @@ where
         self.ended
     }
 
-    /// Sends a feature message and returns its sequence number.
+    /// Sends a one-way message and returns its sequence number.
     ///
     /// The message is numbered and queued before the first `await`, so if
     /// the returned future is dropped early, the message still goes out
@@ -391,20 +400,98 @@ where
     ///
     /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, with
     /// [`SessionError::NotAllowed`] for a `Goodbye` (see
-    /// [`Session::goodbye`]), with [`SessionError::Ended`] once the session
-    /// is over, and on framing or I/O errors.
+    /// [`Session::goodbye`]) or an answer (see [`Session::reply`]), with
+    /// [`SessionError::FeatureNotActive`] for a message of a feature that is
+    /// not active, with [`SessionError::Ended`] once the session is over,
+    /// and on framing or I/O errors.
     pub async fn send(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        let rules = rules::of(&payload);
         match payload {
             Payload::Hello(_) => return Err(SessionError::UnexpectedHello),
-            Payload::Goodbye(_) => return Err(SessionError::NotAllowed("Goodbye")),
+            Payload::Goodbye(_) => return Err(SessionError::NotAllowed(rules.name)),
+            _ if rules.kind == Kind::Reply => return Err(SessionError::NotAllowed(rules.name)),
             _ => {}
+        }
+        self.check_can_send(rules)?;
+        let seq = self.enqueue(payload)?;
+        self.flush().await?;
+        Ok(seq)
+    }
+
+    /// Answers the peer's request with sequence number `request` and
+    /// returns the answer's own sequence number.
+    ///
+    /// `payload` is `Ack`, `ErrorReply`, or the reply message the request
+    /// names. A request answered by several messages gets one call per
+    /// message, the last one saying so (for example
+    /// `NotificationSyncBatch.more` unset). An `ErrorReply.detail` longer
+    /// than 1 KiB is shortened. Like [`Session::send`], the answer goes out
+    /// even if the returned future is dropped early.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::NotAllowed`] when `payload` is not an
+    /// answer, with [`SessionError::NoSuchRequest`] when the peer has not
+    /// sent `request` yet, with [`SessionError::Ended`] once the session is
+    /// over, and on framing or I/O errors.
+    pub async fn reply(&mut self, request: u64, mut payload: Payload) -> Result<u64, SessionError> {
+        let rules = rules::of(&payload);
+        if rules.kind != Kind::Reply {
+            return Err(SessionError::NotAllowed(rules.name));
+        }
+        if request == 0 || request > self.last_peer_seq {
+            return Err(SessionError::NoSuchRequest(request));
         }
         if self.ended {
             return Err(SessionError::Ended);
         }
-        let seq = self.enqueue(payload)?;
+        if let Payload::ErrorReply(error) = &mut payload {
+            truncate_detail(&mut error.detail);
+        }
+        let seq = self.enqueue_envelope(Envelope {
+            reply_to: request,
+            payload: Some(payload),
+            ..Envelope::default()
+        })?;
         self.flush().await?;
         Ok(seq)
+    }
+
+    /// Answers the peer's request `request` with `Ack`. See
+    /// [`Session::reply`].
+    ///
+    /// # Errors
+    ///
+    /// As for [`Session::reply`].
+    pub async fn ack(&mut self, request: u64) -> Result<u64, SessionError> {
+        self.reply(request, Payload::Ack(Ack {})).await
+    }
+
+    /// Answers the peer's request `request` with an `ErrorReply`. See
+    /// [`Session::reply`].
+    ///
+    /// # Errors
+    ///
+    /// As for [`Session::reply`].
+    pub async fn reply_error(
+        &mut self,
+        request: u64,
+        error: ErrorReply,
+    ) -> Result<u64, SessionError> {
+        self.reply(request, Payload::ErrorReply(error)).await
+    }
+
+    /// Checks that a message with `rules` may go out now.
+    fn check_can_send(&self, rules: Rules) -> Result<(), SessionError> {
+        if self.ended {
+            return Err(SessionError::Ended);
+        }
+        match rules.feature {
+            Some(feature) if !self.is_active(feature) => {
+                Err(SessionError::FeatureNotActive(feature))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Sends a `Ping` now. Its `Pong` comes out of [`Session::next_event`]
@@ -823,6 +910,20 @@ fn peer_from(hello: Hello) -> Result<DeviceInfo, SessionError> {
         kind,
         features,
     })
+}
+
+/// The longest `ErrorReply.detail` the protocol allows, in bytes.
+const MAX_DETAIL_LEN: usize = 1024;
+
+/// Shortens `detail` to [`MAX_DETAIL_LEN`] bytes, at a character boundary.
+fn truncate_detail(detail: &mut String) {
+    if detail.len() > MAX_DETAIL_LEN {
+        let mut end = MAX_DETAIL_LEN;
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+    }
 }
 
 /// Checks that a sequence number from the peer is exactly one above the
