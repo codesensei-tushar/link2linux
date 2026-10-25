@@ -4,9 +4,11 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use link2linux_core::session::VersionRange;
 use link2linux_core::{
     DeviceInfo, DeviceKind, Feature, Session, SessionConfig, SessionError, SessionEvent,
 };
+use link2linux_protocol::v1::GoodbyeReason;
 use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload, Ping, Pong};
 use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
 use tokio::time::Instant;
@@ -103,7 +105,11 @@ async fn sends_its_hello_as_frame_one() {
         let Some(Payload::Hello(hello)) = first.payload else {
             panic!("expected a Hello, got {first:?}");
         };
-        assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(
+            VersionRange::of_hello(&hello),
+            Some(VersionRange::SUPPORTED)
+        );
+        assert_eq!(hello.min_protocol_version, PROTOCOL_VERSION);
         assert_eq!(hello.device_id, "desktop-1");
         assert_eq!(hello.device_name, "Desk");
         assert_eq!(hello.kind(), DeviceKind::Desktop);
@@ -138,19 +144,86 @@ async fn ignores_unknown_features_and_device_kinds() {
 }
 
 #[tokio::test]
-async fn refuses_another_protocol_version() {
+async fn uses_the_highest_shared_version() {
+    // A newer peer that still speaks this build's version.
     let hello = Hello {
-        protocol_version: PROTOCOL_VERSION + 1,
+        protocol_version: PROTOCOL_VERSION + 2,
+        min_protocol_version: PROTOCOL_VERSION,
         ..phone_hello()
     };
-    let err = handshake_against(envelope(1, Payload::Hello(hello)))
+    let session = handshake_against(envelope(1, Payload::Hello(hello)))
         .await
-        .unwrap_err();
-    assert!(
-        matches!(err, SessionError::VersionMismatch { local, remote }
-            if local == PROTOCOL_VERSION && remote == PROTOCOL_VERSION + 1),
-        "{err:?}"
+        .unwrap();
+    assert_eq!(session.protocol_version(), PROTOCOL_VERSION);
+}
+
+/// Runs the desktop's handshake against a peer that answers with `hello`,
+/// and returns the outcome with every frame the peer received after the
+/// desktop's `Hello`, up to the end of the stream.
+async fn handshake_and_collect(
+    hello: Hello,
+) -> (Result<Session<DuplexStream>, SessionError>, Vec<Envelope>) {
+    let (io, mut peer) = pipe();
+    let script = async move {
+        peer.next().await.unwrap().unwrap();
+        peer.send(&envelope(1, Payload::Hello(hello)))
+            .await
+            .unwrap();
+        let mut received = Vec::new();
+        while let Some(Ok(frame)) = peer.next().await {
+            received.push(frame);
+        }
+        received
+    };
+    tokio::join!(
+        Session::handshake(io, desktop(), SessionConfig::default()),
+        script
+    )
+}
+
+#[tokio::test]
+async fn says_goodbye_when_no_version_is_shared() {
+    let newer = Hello {
+        protocol_version: PROTOCOL_VERSION + 2,
+        min_protocol_version: PROTOCOL_VERSION + 1,
+        ..phone_hello()
+    };
+    let (result, received) = handshake_and_collect(newer).await;
+    let err = result.unwrap_err();
+    let SessionError::VersionMismatch { local, remote } = err else {
+        panic!("expected a version mismatch, got {err:?}");
+    };
+    assert_eq!(local, VersionRange::SUPPORTED);
+    assert_eq!(
+        Some(remote),
+        VersionRange::new(PROTOCOL_VERSION + 1, PROTOCOL_VERSION + 2)
     );
+    assert!(local.is_older_than(remote));
+
+    // The peer got a Goodbye that says why, then the stream ended.
+    let [goodbye] = received.as_slice() else {
+        panic!("expected one Goodbye, got {received:?}");
+    };
+    assert_eq!(goodbye.seq, 2);
+    let Some(Payload::Goodbye(goodbye)) = &goodbye.payload else {
+        panic!("expected a Goodbye, got {goodbye:?}");
+    };
+    assert_eq!(goodbye.reason(), GoodbyeReason::VersionMismatch);
+}
+
+#[tokio::test]
+async fn refuses_a_hello_without_a_version_range() {
+    for (min, max) in [(0, 0), (PROTOCOL_VERSION + 1, PROTOCOL_VERSION)] {
+        let hello = Hello {
+            protocol_version: max,
+            min_protocol_version: min,
+            ..phone_hello()
+        };
+        let err = handshake_against(envelope(1, Payload::Hello(hello)))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SessionError::InvalidHello(_)), "{err:?}");
+    }
 }
 
 #[tokio::test]

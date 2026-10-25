@@ -5,8 +5,10 @@
 //! sessions over in-memory pipes.
 //!
 //! A session starts with the `Hello` exchange: both sides send `Hello` as
-//! their first frame, then read the peer's. Each side refuses a peer that
-//! speaks another protocol major version or sends anything else first.
+//! their first frame, then read the peer's. The session uses the highest
+//! protocol version both sides speak (see [`VersionRange`]). When they share
+//! none, each side sends `Goodbye` with `GOODBYE_REASON_VERSION_MISMATCH`
+//! and gives up. A peer that sends anything else first is refused.
 //!
 //! After that, [`Session::next_event`] drives the session. It answers the
 //! peer's `Ping`s, sends a `Ping` of its own every
@@ -19,9 +21,9 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use link2linux_protocol::{
-    DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, PROTOCOL_VERSION, Payload,
-    Ping, Pong,
+    DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{self, Instant, Interval, MissedTickBehavior};
@@ -29,6 +31,10 @@ use tokio_util::codec::Framed;
 use tracing::debug;
 
 use crate::device::{DeviceInfo, Feature};
+
+mod version;
+
+pub use version::VersionRange;
 
 /// Tunables for a [`Session`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,13 +100,15 @@ pub enum SessionError {
     /// The peer's first frame was not a `Hello`.
     #[error("the peer's first message was not a Hello")]
     ExpectedHello,
-    /// The peer speaks another protocol major version.
+    /// The two devices share no protocol version. If
+    /// [`remote.is_older_than(local)`](VersionRange::is_older_than), the
+    /// peer's app needs an update, otherwise this one.
     #[error("the peer speaks protocol version {remote}, this device speaks {local}")]
     VersionMismatch {
-        /// This device's [`PROTOCOL_VERSION`].
-        local: u32,
-        /// The version in the peer's `Hello`.
-        remote: u32,
+        /// The versions this device speaks.
+        local: VersionRange,
+        /// The versions the peer's `Hello` announced.
+        remote: VersionRange,
     },
     /// The peer's `Hello` is missing required information.
     #[error("invalid Hello from the peer: {0}")]
@@ -131,6 +139,8 @@ pub struct Session<S> {
     framed: Framed<S, EnvelopeCodec>,
     local: DeviceInfo,
     peer: DeviceInfo,
+    /// The protocol major version both sides use.
+    version: u32,
     idle_timeout: Duration,
     /// Sequence number of the next envelope this side sends.
     next_seq: u64,
@@ -160,8 +170,10 @@ where
     ///
     /// Fails if the peer's `Hello` does not arrive within
     /// [`SessionConfig::handshake_timeout`], if the peer sends anything else
-    /// first, speaks another protocol version, or sends an invalid `Hello`,
-    /// and on any framing or I/O error.
+    /// first or sends an invalid `Hello`, and on any framing or I/O error.
+    /// When the two sides share no protocol version, it sends `Goodbye` with
+    /// `GOODBYE_REASON_VERSION_MISMATCH`, shuts the stream down and fails
+    /// with [`SessionError::VersionMismatch`].
     ///
     /// # Panics
     ///
@@ -194,8 +206,34 @@ where
         let Some(Payload::Hello(hello)) = first.payload else {
             return Err(SessionError::ExpectedHello);
         };
+        let remote = VersionRange::of_hello(&hello).ok_or(SessionError::InvalidHello(
+            "no valid protocol version range",
+        ))?;
+        let Some(version) = VersionRange::SUPPORTED.negotiate(remote) else {
+            let goodbye = Envelope {
+                seq: 2,
+                payload: Some(Payload::Goodbye(Goodbye {
+                    reason: GoodbyeReason::VersionMismatch.into(),
+                    detail: format!(
+                        "this device speaks protocol version {}, the peer {remote}",
+                        VersionRange::SUPPORTED
+                    ),
+                })),
+                ..Envelope::default()
+            };
+            let farewell = async {
+                framed.send(&goodbye).await?;
+                framed.close().await
+            };
+            // Best effort: the peer may already have hung up.
+            let _ = time::timeout(config.handshake_timeout, farewell).await;
+            return Err(SessionError::VersionMismatch {
+                local: VersionRange::SUPPORTED,
+                remote,
+            });
+        };
         let peer = peer_from(hello)?;
-        debug!(peer.id, peer.name, ?peer.kind, "session established");
+        debug!(peer.id, peer.name, ?peer.kind, version, "session established");
 
         let now = Instant::now();
         let mut ping_timer = time::interval_at(now + config.ping_interval, config.ping_interval);
@@ -204,6 +242,7 @@ where
             framed,
             local,
             peer,
+            version,
             idle_timeout: config.idle_timeout,
             next_seq: 2,
             last_peer_seq: first.seq,
@@ -225,6 +264,13 @@ where
     #[must_use]
     pub fn peer(&self) -> &DeviceInfo {
         &self.peer
+    }
+
+    /// The protocol major version this session uses: the highest one both
+    /// devices speak.
+    #[must_use]
+    pub fn protocol_version(&self) -> u32 {
+        self.version
     }
 
     /// Features both devices announced, and so can use in this session.
@@ -367,8 +413,7 @@ where
 
 /// Builds this device's `Hello`.
 fn hello_from(local: &DeviceInfo) -> Hello {
-    Hello {
-        protocol_version: PROTOCOL_VERSION,
+    let mut hello = Hello {
         device_id: local.id.clone(),
         device_name: local.name.clone(),
         kind: local.kind.into(),
@@ -378,17 +423,14 @@ fn hello_from(local: &DeviceInfo) -> Hello {
             .map(|feature| feature.name().to_owned())
             .collect(),
         ..Hello::default()
-    }
+    };
+    VersionRange::SUPPORTED.write_to(&mut hello);
+    hello
 }
 
-/// Validates the peer's `Hello` and turns it into a [`DeviceInfo`].
+/// Validates the peer's `Hello`, apart from its versions, and turns it into
+/// a [`DeviceInfo`].
 fn peer_from(hello: Hello) -> Result<DeviceInfo, SessionError> {
-    if hello.protocol_version != PROTOCOL_VERSION {
-        return Err(SessionError::VersionMismatch {
-            local: PROTOCOL_VERSION,
-            remote: hello.protocol_version,
-        });
-    }
     if hello.device_id.is_empty() {
         return Err(SessionError::InvalidHello("empty device_id"));
     }
