@@ -10,9 +10,10 @@ has to stay simple: one action from the user in the common case.
 
 Two stacks have to implement it. The desktop uses rustls, which supports
 custom certificate checks and the TLS keying material exporter. The Android
-app uses the platform TLS stack (or a bundled Conscrypt) and keeps keys in
-the Android Keystore, so it cannot use TLS extensions or handshakes that the
-platform does not expose. Almost every phone has a camera; a few users
+app supports API 26 and later, where the platform has TLS 1.3 only from API
+29 and the exporter only from API 31, and it keeps its key in the Android
+Keystore, so it cannot use TLS extensions or handshakes that its TLS stack
+does not expose. Almost every phone has a camera; a few users
 still cannot scan a code.
 
 ## Decision
@@ -27,19 +28,24 @@ still cannot scan a code.
 - **QR code pairing (default).** The desktop shows a QR code with its `fp`,
   a 128-bit one-time secret and its addresses. The phone pins the desktop's
   key from the code. Inside the TLS connection, each side sends an
-  HMAC-SHA256 of the secret over its role, a TLS exporter value and both
-  fingerprints. The exporter binds the proof to this connection, and the
-  fingerprints bind it to both keys.
+  HMAC-SHA256 of the secret over its role and a TLS exporter value whose
+  context holds both fingerprints. The exporter binds the proof to this
+  connection, and the context binds it to both keys, including the
+  client's, which the TLS 1.3 exporter alone does not cover.
 - **SAS pairing (fallback).** Both screens show a six-digit code computed
-  from the exporter value, both fingerprints and two nonces. The phone
-  commits to its nonce before it sees the desktop's, and reveals it after,
-  so a man in the middle has one blind guess per attempt.
+  from an exporter value (with its own label, and the same context) and
+  two nonces. The phone commits to its nonce before it sees the desktop's,
+  and reveals it after, so a man in the middle has one blind guess per
+  attempt.
 - **Order of storing.** The desktop stores the pairing first, after the
   phone has accepted; the phone stores it when the desktop's acceptance
   arrives. An interrupted pairing is detected on the next dial.
-- **Exporter required.** A phone that cannot export keying material does
-  not pair. Below Android API 31, where the platform has no exporter API,
-  the app uses a bundled Conscrypt for TLS.
+- **One TLS stack on every phone.** The Android app bundles Conscrypt and
+  uses it for its own connections on every API level, so every phone has
+  TLS 1.3 and the exporter. A phone that cannot export keying material does
+  not pair.
+- **One key type.** ECDSA P-256 with SHA-256 on both sides, the type both
+  TLS stacks sign and verify everywhere.
 - **Lifecycle.** Re-pairing replaces a record. Unpairing sends a Goodbye
   when a session is up, and otherwise shows up as a rejected certificate.
   Key rotation announces the next key's `fp` over an authenticated session
@@ -70,7 +76,7 @@ Rejected alternatives:
 Pairing needs both devices on the same network, and no third party is
 involved at any point. Users scan one code; users without a camera compare
 six digits on two screens. A device that loses its private key pairs again.
-The Android app carries Conscrypt for API levels below 31, which also gives
-those devices TLS 1.3. Both implementations must agree on the exact bytes
+The Android app carries Conscrypt, about 1.7 MB per ABI, and has to follow
+its security releases. Both implementations must agree on the exact bytes
 that are hashed, so the spec defines them precisely and both test suites
 check the same test vectors.

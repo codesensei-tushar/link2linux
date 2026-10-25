@@ -299,7 +299,7 @@ The QR code holds a URI, encoded in byte mode with error correction level
 M:
 
 ```
-link2linux://pair?v=1&f=<fp_D>&s=<secret>&n=<name>&a=<addresses>
+link2linux://pair?v=1&f=<fp_D>&s=<secret>&n=<name>&a=<addresses>&b=<address>
 ```
 
 | Parameter | Content |
@@ -309,9 +309,10 @@ link2linux://pair?v=1&f=<fp_D>&s=<secret>&n=<name>&a=<addresses>
 | `s` | The one-time secret: 16 random bytes, base64url (22 characters). |
 | `n` | The desktop's device name, percent-encoded, at most 64 bytes before encoding. Shown on the phone before it connects. |
 | `a` | Up to 4 of the desktop's addresses, comma-separated, where the phone sends its beacons: an IPv4 address or an IPv6 address, each optionally with `:port` (IPv6 in brackets then). The default port is 27381. |
+| `b` | The desktop's Bluetooth address, as 12 hexadecimal digits, most significant first. Present only when the desktop advertises over Bluetooth LE. |
 
 Unknown parameters MUST be ignored, so later versions can add some. A
-typical payload is about 160 characters long.
+typical payload is about 180 characters long.
 
 The desktop creates a new secret each time it shows a code. An offer is
 valid for 5 minutes and for one successful pairing; after 5 failed proofs
@@ -351,22 +352,26 @@ After the Hello exchange, both sides derive the same 32-byte value from the
 TLS connection with the keying material exporter (RFC 8446 section 7.5):
 
 ```
-ekm = TLS-Exporter("EXPORTER-link2linux-pairing-v1", empty context, 32)
+ekm = TLS-Exporter("EXPERIMENTAL-link2linux-pair-v1", fp_D || fp_P, 32)
 ```
 
-In TLS 1.3, an absent context and an empty one give the same value.
+`fp_D` and `fp_P` are the fingerprints of the certificates presented in this
+TLS connection, so the 64-byte context is the same on both sides. The
+context matters: in TLS 1.3 the exporter secret is fixed when the server
+finishes its part of the handshake, before the client's certificate, so
+without the context the value would not depend on the desktop's key. The
+label starts with `EXPERIMENTAL`, which RFC 5705 reserves for labels used
+without registration.
 
 Each side then sends a `PairingProof`:
 
 ```
-mac = HMAC-SHA256(secret,
-        "link2linux pairing proof v1" || role || ekm || fp_D || fp_P)
-role = 0x44 ("D") in the desktop's proof, 0x50 ("P") in the phone's
+mac  = HMAC-SHA256(secret, "l2l-pair-v1" || role || ekm)
+role = 0x01 in the desktop's proof, 0x02 in the phone's
 ```
 
-`fp_D` and `fp_P` are the fingerprints of the certificates presented in this
-TLS connection. Each side recomputes the peer's expected `mac` and compares
-in constant time. On a mismatch it sends `PairingResult` with
+Each side recomputes the peer's expected `mac` and compares in constant
+time. On a mismatch it sends `PairingResult` with
 `PAIRING_OUTCOME_VERIFICATION_FAILED` and closes the connection.
 
 ```mermaid
@@ -375,7 +380,7 @@ sequenceDiagram
     actor U as User
     participant D as Desktop
     participant P as Phone
-    D->>U: shows QR code (fp_D, secret, name, addresses)
+    D->>U: shows QR code (fp_D, secret, name, addresses, BT address)
     U->>P: scans it
     P->>P: pins fp_D, derives the pairing tag q
     P-->>D: mDNS TXT q, and beacons to the QR addresses and broadcast
@@ -406,19 +411,25 @@ desktop, advertises `pm=1`, keeps its mDNS instance name fixed, and shows
 that name and its address on screen. The desktop lists the phones that
 advertise `pm=1` by instance name, the user picks the one their phone
 shows (or types its address when mDNS does not get through), and the
-desktop dials it with `Hello.pairing_method = PAIRING_METHOD_SAS`. Then, with `ekm` as above:
+desktop dials it with `Hello.pairing_method = PAIRING_METHOD_SAS`. Both
+sides derive the exporter value with the SAS label, then run a
+commit-then-reveal exchange in which the phone commits first:
 
-1. The phone picks a 32-byte random nonce `na` and sends `SasCommit`:
-   `commitment = SHA-256("link2linux sas commit v1" || ekm || fp_D || fp_P || na)`.
+```
+ekm = TLS-Exporter("EXPERIMENTAL-link2linux-sas-v1", fp_D || fp_P, 32)
+```
+
+1. The phone picks a 32-byte random nonce `n_p` and sends `SasCommit`:
+   `commitment = SHA-256("l2l-sas-commit-v1" || ekm || n_p)`.
 2. Once the commitment has arrived, the desktop picks a 32-byte random
-   nonce `nb` and sends it in `SasNonce`.
-3. Once `nb` has arrived, the phone sends `na` in `SasNonce`.
+   nonce `n_d` and sends it in `SasNonce`.
+3. Once `n_d` has arrived, the phone sends `n_p` in `SasNonce`.
 4. The desktop checks the commitment. On a mismatch it sends
    `PAIRING_OUTCOME_VERIFICATION_FAILED` and closes the connection.
 5. Both devices show the code, formatted as two groups of three digits:
 
    ```
-   h   = SHA-256("link2linux sas v1" || ekm || fp_D || fp_P || na || nb)
+   h   = HMAC-SHA256(ekm, "l2l-sas-v1" || n_d || n_p)
    sas = (first 4 bytes of h, as an unsigned integer) mod 1000000
    ```
 
@@ -438,9 +449,9 @@ sequenceDiagram
     D->>P: TCP connect and TLS 1.3 (no pins yet)
     D->>P: Hello (pairing_method SAS)
     P->>D: Hello
-    P->>D: SasCommit (commitment to na)
-    D->>P: SasNonce (nb)
-    P->>D: SasNonce (na)
+    P->>D: SasCommit (commitment to n_p)
+    D->>P: SasNonce (n_d)
+    P->>D: SasNonce (n_p)
     D->>D: checks the commitment
     D->>U: shows code
     P->>U: shows code
@@ -488,19 +499,20 @@ later dial, the desktop deletes an unconfirmed record and asks the user to
 pair again; for a confirmed record, it tells the user that the phone
 removed the pairing.
 
-### Phones without a TLS exporter
+### The phone's TLS stack
 
-Android exposes the keying material exporter from API level 31
-(`SSLSockets.exportKeyingMaterial`). The phone app supports API 26 and
-later, and the platform TLS stack below API 29 has no TLS 1.3 at all. Below
-API 31 the app therefore uses a bundled Conscrypt provider for its TLS
-connections, which brings TLS 1.3 and an exporter.
+The phone app supports Android API 26 and later. Android's own TLS stack
+has TLS 1.3 only from API 29 and exposes the keying material exporter only
+from API 31. The phone app therefore bundles Conscrypt and uses it, as a
+provider for its own connections only, on every API level. That gives the
+same TLS 1.3 implementation and an exporter on every phone, so there is no
+weaker path for older ones.
 
-A phone that still cannot export keying material MUST NOT pair: it sends
-`PAIRING_OUTCOME_UNSUPPORTED` and tells the user to update the app. It MUST
-NOT fall back to proofs without `ekm`. Binding to the connection is what
-keeps a proof or a code from being relayed into another connection if a
-certificate check is ever implemented wrongly.
+If exporting keying material ever fails, the phone MUST NOT pair: it sends
+`PAIRING_OUTCOME_UNSUPPORTED`. It MUST NOT fall back to proofs or codes
+without `ekm`. Binding to the connection is what keeps a proof or a code
+from being relayed into another connection if a certificate check is ever
+implemented wrongly.
 
 ### Re-pairing
 
@@ -554,12 +566,13 @@ Every connection is TLS 1.3 over TCP, with certificates on both sides.
 - TLS 1.2 and earlier MUST NOT be negotiated.
 - The desktop is the TLS client. It connects to an IP address and sends no
   server name indication.
-- Both sides send the ALPN protocol ID `link2linux`; the phone rejects
+- Both sides send the ALPN protocol ID `l2l/1`; the phone rejects
   connections that do not.
 - The phone requests a client certificate and rejects a connection without
   one.
-- Certificates use ECDSA P-256 keys. Both sides MUST support the
-  `ecdsa_secp256r1_sha256` signature scheme.
+- Both sides use ECDSA P-256 keys and the `ecdsa_secp256r1_sha256`
+  signature scheme, and no other key type: the phone's TLS stack does not
+  verify Ed25519 or P-521 signatures.
 - Session resumption and 0-RTT data MUST NOT be used: every connection runs
   a full handshake, so every connection proves possession of both keys, and
   no data can be replayed.
@@ -1053,7 +1066,7 @@ of a shared Wi-Fi network:
   name, nonces and tags change at least every 15 minutes (every beacon has
   a new nonce), and only a desktop holding the presence key can link them;
 - sees TLS 1.3 handshakes. Certificates are encrypted, no server name is
-  sent, and the ALPN value only says "link2linux";
+  sent, and the ALPN value `l2l/1` only names the protocol;
 - does not see any content. Traffic sizes and timing remain visible.
 
 ### Active attacker on the local network
