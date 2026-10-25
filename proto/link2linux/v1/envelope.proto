@@ -2,30 +2,79 @@ syntax = "proto3";
 
 package link2linux.v1;
 
+import "link2linux/v1/common.proto";
+import "link2linux/v1/pairing.proto";
+
 option java_multiple_files = true;
 option java_package = "dev.link2linux.protocol.v1";
 
-// Every frame on an established session carries exactly one Envelope.
-// Frames are length-delimited (varint length prefix) on the secure stream.
+// Every frame on a connection carries exactly one Envelope. Frames are
+// length-delimited (varint length prefix) on the TLS stream.
+//
+// Fields 1 to 3 and the hello and goodbye payloads keep their numbers in
+// every protocol version, so two peers can always read each other's Hello
+// and Goodbye, even when they share no version.
 message Envelope {
-  // Per-sender sequence number, starting at 1. Used for ordering and acks.
+  // Per-sender sequence number. The sender's Hello is 1, and each later
+  // envelope from the same sender is one higher.
   uint64 seq = 1;
+  // The seq of the peer's envelope that this one answers, or 0 when it
+  // answers nothing.
+  uint64 reply_to = 2;
+  // Set when the sender waits for an answer, that is an envelope from the
+  // peer whose reply_to is this envelope's seq.
+  bool expects_reply = 3;
 
+  // Payload numbers are grouped by area:
+  //   10 to 29: session messages and shared replies;
+  //   30 to 49: pairing;
+  //   then a block of 50 per feature, starting with notifications at 100,
+  //   messages at 150, calls at 200, photos at 250, files at 300,
+  //   clipboard at 350 and screen at 400.
   oneof payload {
     Hello hello = 10;
     Ping ping = 11;
     Pong pong = 12;
+    Goodbye goodbye = 13;
+    FeatureStatus feature_status = 14;
+    Ack ack = 15;
+    ErrorReply error_reply = 16;
+    ImageRequest image_request = 17;
+    ImageData image_data = 18;
+
+    PairingProof pairing_proof = 30;
+    SasCommit sas_commit = 31;
+    SasNonce sas_nonce = 32;
+    PairingResult pairing_result = 33;
+    PresenceUpdate presence_update = 34;
+    KeyRotation key_rotation = 35;
   }
 }
 
-// First message each side sends once the secure channel is established.
+// First message each side sends once the TLS connection is up. Fields 1 to
+// 7 keep their numbers and meaning in every protocol version.
 message Hello {
+  // Highest protocol major version the sender speaks.
   uint32 protocol_version = 1;
+  // Stable identifier of the installation: a random UUID in lowercase
+  // hyphenated form. Pairing records are keyed by it.
   string device_id = 2;
+  // Human-readable name, as the user set it.
   string device_name = 3;
   DeviceKind kind = 4;
-  // Feature names this device can serve, e.g. "notifications", "clipboard".
+  // Capability tokens the sender's build supports: a feature name such as
+  // "notifications", or an optional part of a feature, written as
+  // "feature.option". Unknown tokens are ignored.
   repeated string features = 5;
+  // Lowest protocol major version the sender also speaks. 0 means the same
+  // as protocol_version.
+  uint32 min_protocol_version = 6;
+  // Version of the sending app, such as "1.4.2". For logs and update hints
+  // only: behaviour depends on versions and tokens, never on this.
+  string app_version = 7;
+  // Set by the desktop when it dialled the phone to pair. Unspecified on
+  // every other connection.
+  PairingMethod pairing_method = 8;
 }
 
 enum DeviceKind {
@@ -34,10 +83,70 @@ enum DeviceKind {
   DEVICE_KIND_PHONE = 2;
 }
 
+// Liveness check. The desktop sends them; the phone only answers.
 message Ping {
   uint64 nonce = 1;
 }
 
+// Answer to a Ping, echoing its nonce.
 message Pong {
   uint64 nonce = 1;
+}
+
+// Sent right before a side closes the connection on purpose. A connection
+// that ends without one counts as lost.
+message Goodbye {
+  GoodbyeReason reason = 1;
+  // English text for logs. Never shown to the user as it is.
+  string detail = 2;
+}
+
+// Why a side closed the connection, which decides what happens next.
+enum GoodbyeReason {
+  // Unknown reason: handled like a lost connection.
+  GOODBYE_REASON_UNSPECIFIED = 0;
+  // The app is quitting, or the device is going to sleep or shutting down.
+  // The desktop reconnects with its usual backoff.
+  GOODBYE_REASON_SHUTDOWN = 1;
+  // The user asked to disconnect. The device whose user did that decides
+  // when to connect again.
+  GOODBYE_REASON_USER_DISCONNECT = 2;
+  // The sender deleted the pairing. The receiver deletes its record too.
+  GOODBYE_REASON_UNPAIRED = 3;
+  // A newer connection between the same two devices replaced this one.
+  GOODBYE_REASON_REPLACED = 4;
+  // The receiver broke a protocol rule. An ErrorReply or the detail text
+  // says which.
+  GOODBYE_REASON_PROTOCOL_ERROR = 5;
+  // The two devices share no protocol major version.
+  GOODBYE_REASON_VERSION_MISMATCH = 6;
+}
+
+// The sender's current state of every feature it listed in Hello. Each side
+// sends one after Hello, and a new complete one whenever a state changes.
+message FeatureStatus {
+  repeated FeatureState features = 1;
+}
+
+// Whether one feature can be used right now on the sending device.
+message FeatureState {
+  // A feature name from the sender's Hello.features.
+  string feature = 1;
+  FeatureAvailability availability = 2;
+  // For FEATURE_AVAILABILITY_PERMISSION_REQUIRED: the permission token, as
+  // in ErrorReply.permission.
+  string permission = 3;
+}
+
+enum FeatureAvailability {
+  FEATURE_AVAILABILITY_UNSPECIFIED = 0;
+  // Ready to use.
+  FEATURE_AVAILABILITY_READY = 1;
+  // The user turned the feature off on the sending device.
+  FEATURE_AVAILABILITY_DISABLED = 2;
+  // The feature waits for an OS permission the user has not granted yet.
+  FEATURE_AVAILABILITY_PERMISSION_REQUIRED = 3;
+  // The device cannot offer it at all, for example a phone without
+  // telephony.
+  FEATURE_AVAILABILITY_UNAVAILABLE = 4;
 }

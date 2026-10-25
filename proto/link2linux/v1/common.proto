@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// Building blocks shared by every feature: replies, sync cursors and
+// content-addressed images. docs/protocol.md describes how they combine.
+
+// Answer to a request that succeeded and has nothing else to return.
+message Ack {}
+
+// Answer to a request that failed. It may also arrive with reply_to 0,
+// right before a Goodbye, to explain why the sender is closing.
+message ErrorReply {
+  ErrorCode code = 1;
+  // English text for logs. Never shown to the user as it is.
+  string detail = 2;
+  // For ERROR_CODE_BUSY and ERROR_CODE_UNAVAILABLE: wait at least this many
+  // milliseconds before retrying. 0 leaves the delay to the sender's backoff.
+  uint32 retry_after_ms = 3;
+  // For ERROR_CODE_PERMISSION_REQUIRED: the permission token, such as
+  // "notification-access", so the other device can show the matching hint.
+  string permission = 4;
+}
+
+// Why a request failed. A receiver that meets a code it does not know
+// treats it as ERROR_CODE_INTERNAL.
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  // The receiver does not know this request, or its feature is not active in
+  // this session. Retrying in the same session cannot succeed.
+  ERROR_CODE_UNSUPPORTED = 1;
+  // A required field is missing or out of range.
+  ERROR_CODE_INVALID_ARGUMENT = 2;
+  // What the request refers to no longer exists, such as a notification that
+  // was dismissed in the meantime.
+  ERROR_CODE_NOT_FOUND = 3;
+  // The receiving device needs an OS permission that the user has to grant
+  // there. ErrorReply.permission says which one.
+  ERROR_CODE_PERMISSION_REQUIRED = 4;
+  // The user turned the feature off on the receiving device.
+  ERROR_CODE_DISABLED = 5;
+  // Too many requests. Retry after retry_after_ms.
+  ERROR_CODE_BUSY = 6;
+  // Temporarily impossible, for example while the target app is not
+  // responding. Retry later.
+  ERROR_CODE_UNAVAILABLE = 7;
+  // The request is too old to carry out.
+  ERROR_CODE_EXPIRED = 8;
+  // The user declined on the receiving device.
+  ERROR_CODE_DECLINED = 9;
+  // An unexpected failure on the receiving device.
+  ERROR_CODE_INTERNAL = 10;
+}
+
+// A position in a collection's change log, kept by the device that follows
+// the log. The device that owns the collection assigns the numbers.
+message SyncCursor {
+  // Identifies one run of the change log. The owner picks a new random,
+  // non-zero epoch whenever it can no longer answer with changes since an
+  // older cursor, for example after its storage was cleared. 0 means "no
+  // cursor": the follower has nothing yet.
+  fixed64 epoch = 1;
+  // The highest revision the follower has applied. Within an epoch,
+  // revisions start at 1 and only grow.
+  uint64 revision = 2;
+}
+
+// An image named by its content. The receiver keeps a cache keyed by
+// sha256 and fetches missing images with ImageRequest.
+message ImageRef {
+  // SHA-256 of the exact bytes ImageData would carry: 32 bytes.
+  bytes sha256 = 1;
+  // Size in pixels, so the receiver can lay out before the image arrives.
+  uint32 width = 2;
+  uint32 height = 3;
+}
+
+// Asks the peer for an image it referenced. The answer is ImageData, or
+// ErrorReply with ERROR_CODE_NOT_FOUND once the peer no longer has it.
+message ImageRequest {
+  bytes sha256 = 1;
+}
+
+// The bytes of an image. The receiver checks that their SHA-256 equals
+// sha256 before it caches or shows them, and drops them otherwise.
+message ImageData {
+  bytes sha256 = 1;
+  ImageFormat format = 2;
+  // At most 1 MiB.
+  bytes data = 3;
+}
+
+// Encoding of ImageData.data.
+enum ImageFormat {
+  IMAGE_FORMAT_UNSPECIFIED = 0;
+  IMAGE_FORMAT_PNG = 1;
+  IMAGE_FORMAT_JPEG = 2;
+  IMAGE_FORMAT_WEBP = 3;
+}

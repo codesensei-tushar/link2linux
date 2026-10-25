@@ -45,6 +45,7 @@ fn phone_hello() -> Hello {
         device_name: "Pixel".into(),
         kind: DeviceKind::Phone.into(),
         features: vec!["clipboard".into(), "files".into(), "messages".into()],
+        ..Hello::default()
     }
 }
 
@@ -52,6 +53,7 @@ fn envelope(seq: u64, payload: Payload) -> Envelope {
     Envelope {
         seq,
         payload: Some(payload),
+        ..Envelope::default()
     }
 }
 
