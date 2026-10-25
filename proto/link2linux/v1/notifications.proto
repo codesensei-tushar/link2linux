@@ -56,8 +56,10 @@ message NotificationRemoved {
 }
 
 // From the desktop: dismiss a notification on the phone, as if the user
-// had swiped it away there. Sent from the desktop's outbox; answered by an
-// Ack, or an ErrorReply such as ERROR_CODE_NOT_FOUND.
+// had swiped it away there. The desktop sends it whenever the user
+// dismisses the notification on the desktop, unless the user turned dismiss
+// sync off. Sent from the desktop's outbox; answered by an Ack, or an
+// ErrorReply such as ERROR_CODE_NOT_FOUND.
 message NotificationDismissRequest {
   // 16 random bytes, the same on every retry of this dismissal.
   bytes idempotency_key = 1;

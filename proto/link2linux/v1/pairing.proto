@@ -79,8 +79,9 @@ message PresenceUpdate {
   // announcements.
   bytes presence_key = 1;
   // Desktop only: the 6-byte Bluetooth LE address it advertises from, most
-  // significant byte first, so the phone can set up a companion-device
-  // association with it. Empty when the desktop does not advertise.
+  // significant byte first, for the phone's companion-device association.
+  // The QR code carries it first; this keeps it current. Empty when the
+  // desktop does not advertise.
   bytes ble_address = 2;
 }
 
