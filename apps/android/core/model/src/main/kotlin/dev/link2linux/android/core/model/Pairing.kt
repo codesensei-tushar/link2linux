@@ -103,6 +103,14 @@ sealed interface PairingState {
     /** SAS: the user compares [code] with the desktop's screen and answers through `confirmCode`. */
     data class ConfirmCode(val code: SasCode, val desktopName: String) : PairingState
 
+    /**
+     * The desktop being paired gives the device id of [existing], a paired
+     * desktop with another key: it may be that desktop after it lost its
+     * key, or another one claiming its id. The user decides through
+     * `confirmReplace` whether the new pairing replaces [existing].
+     */
+    data class ConfirmReplace(val existing: PairedDevice, val desktopName: String) : PairingState
+
     /** Both devices accepted and the phone stored the pairing. */
     data class Paired(val device: PairedDevice) : PairingState
 
