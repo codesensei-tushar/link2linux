@@ -1,0 +1,35 @@
+# The app compiles against API 36. Newer AndroidX releases (Compose 1.12 /
+# BOM 2026.08+, core 1.19, Navigation 3 1.2) require compileSdk 37, so they
+# stay on the last versions that support 36 until compileSdk moves up.
+[versions]
+agp = "9.4.1"
+androidxActivity = "1.13.0"
+androidxComposeBom = "2026.06.01"
+androidxCore = "1.18.0"
+junit4 = "4.13.2"
+kotlin = "2.4.21"
+
+[libraries]
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "androidxActivity" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "androidxComposeBom" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidxCore" }
+junit = { group = "junit", name = "junit", version.ref = "junit4" }
+
+# Used by build-logic
+android-gradlePlugin = { group = "com.android.tools.build", name = "gradle", version.ref = "agp" }
+compose-gradlePlugin = { group = "org.jetbrains.kotlin", name = "compose-compiler-gradle-plugin", version.ref = "kotlin" }
+kotlin-gradlePlugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+android-lint = { id = "com.android.lint", version.ref = "agp" }
+compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+
+# Convention plugins from build-logic
+l2l-android-application = { id = "l2l.android.application" }
+l2l-android-application-compose = { id = "l2l.android.application.compose" }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window theme only. Everything drawn by Compose uses the Material 3 theme. -->
+    <style name="Theme.Link2Linux" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
