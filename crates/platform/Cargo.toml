@@ -1,0 +1,18 @@
+[package]
+name = "link2linux-platform"
+description = "Desktop OS integration for link2linux behind traits, with a Linux implementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
