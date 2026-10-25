@@ -40,5 +40,9 @@ gradlePlugin {
             id = libs.plugins.l2l.android.application.compose.get().pluginId
             implementationClass = "AndroidApplicationComposeConventionPlugin"
         }
+        register("jvmLibrary") {
+            id = libs.plugins.l2l.jvm.library.get().pluginId
+            implementationClass = "JvmLibraryConventionPlugin"
+        }
     }
 }
