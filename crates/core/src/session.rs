@@ -14,8 +14,15 @@
 //! peer's `Ping`s, sends a `Ping` of its own every
 //! [`SessionConfig::ping_interval`], and fails with
 //! [`SessionError::IdleTimeout`] when nothing arrives from the peer for
-//! [`SessionConfig::idle_timeout`]. Feature messages come out as
+//! [`SessionConfig::idle_timeout`]. One-way messages come out as
 //! [`SessionEvent::Message`] and go in through [`Session::send`].
+//!
+//! The peer's requests come out as [`SessionEvent::Request`]. The session
+//! applies the rules for messages it does not expect
+//! itself: it answers an unknown request, or a request of a feature that is
+//! not active, with `ERROR_CODE_UNSUPPORTED`, drops one-way messages of
+//! inactive features and answers nobody waits for, and treats a message in
+//! the wrong place as a protocol error.
 //!
 //! A session ends with a `Goodbye`. The peer's comes out as
 //! [`SessionEvent::Goodbye`], whose [`ReconnectPolicy`] tells the desktop
@@ -30,7 +37,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
+use link2linux_protocol::v1::{ErrorCode, ErrorReply, Goodbye, GoodbyeReason};
 use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
 };
@@ -42,10 +49,13 @@ use tracing::debug;
 use crate::device::{DeviceInfo, Feature};
 
 mod goodbye;
+mod rules;
 mod version;
 
 pub use goodbye::{PeerGoodbye, ReconnectPolicy};
 pub use version::VersionRange;
+
+use rules::{Kind, Rules};
 
 /// Tunables for a [`Session`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,11 +91,20 @@ impl Default for SessionConfig {
     reason = "messages are the common case; boxing them would only add an allocation"
 )]
 pub enum SessionEvent {
-    /// A feature message from the peer.
+    /// A one-way message from the peer, such as a feature event.
     Message {
         /// The peer's sequence number for it.
         seq: u64,
         /// The message.
+        payload: Payload,
+    },
+    /// A request from the peer, which waits for an answer that refers to
+    /// `seq`. Requests of features that are not active never come out here: the session
+    /// answers them with `ERROR_CODE_UNSUPPORTED` itself.
+    Request {
+        /// The peer's sequence number for it, which the answer refers to.
+        seq: u64,
+        /// The request.
         payload: Payload,
     },
     /// The peer answered this side's latest `Ping`.
@@ -140,6 +159,10 @@ pub enum SessionError {
     /// [`Session::send`].
     #[error("Hello is only allowed as the first message")]
     UnexpectedHello,
+    /// The peer sent a message where the protocol does not allow it, such
+    /// as an answer that does not fit its request.
+    #[error("protocol error by the peer: {0}")]
+    Protocol(String),
     /// Nothing arrived from the peer for this long.
     #[error("no message from the peer for {0:?}")]
     IdleTimeout(Duration),
@@ -164,7 +187,8 @@ impl SessionError {
             Self::ExpectedHello
             | Self::InvalidHello(_)
             | Self::OutOfOrder { .. }
-            | Self::UnexpectedHello => true,
+            | Self::UnexpectedHello
+            | Self::Protocol(_) => true,
             _ => false,
         }
     }
@@ -204,6 +228,9 @@ pub struct Session<S> {
     rtt: Option<Duration>,
     /// Events taken off the stream that `next_event` has not returned yet.
     events: VecDeque<SessionEvent>,
+    /// An `ErrorReply` the peer sent without `reply_to`, which explains the
+    /// `Goodbye` that should follow.
+    peer_error: Option<ErrorReply>,
     /// Whether frames were queued since the last completed flush.
     unflushed: bool,
     /// Whether the session is over: a `Goodbye` went either way, the peer
@@ -306,6 +333,7 @@ where
             pending_ping: None,
             rtt: None,
             events: VecDeque::new(),
+            peer_error: None,
             unflushed: false,
             ended: false,
         })
@@ -494,20 +522,78 @@ where
     /// Handles one incoming envelope, queueing what the caller should see.
     fn handle(&mut self, envelope: Envelope) -> Result<(), SessionError> {
         check_seq(self.last_peer_seq, envelope.seq)?;
-        self.last_peer_seq = envelope.seq;
-        match envelope.payload {
-            // A message type added by a newer version: skip it.
-            None => {
-                debug!(
-                    seq = envelope.seq,
-                    "ignoring a message this build does not know"
-                );
+        let Envelope {
+            seq,
+            reply_to,
+            expects_reply,
+            payload,
+        } = envelope;
+        self.last_peer_seq = seq;
+        if reply_to != 0 && expects_reply {
+            return Err(SessionError::Protocol(format!(
+                "message {seq} is an answer that expects a reply"
+            )));
+        }
+        let Some(payload) = payload else {
+            // A message type added by a newer version.
+            if expects_reply {
+                return self.queue_error_reply(seq, ErrorCode::Unsupported, "unknown request");
             }
-            Some(Payload::Hello(_)) => return Err(SessionError::UnexpectedHello),
-            Some(Payload::Ping(Ping { nonce })) => {
+            debug!(seq, "ignoring a message this build does not know");
+            return Ok(());
+        };
+        let rules = rules::of(&payload);
+        match (rules.kind, expects_reply) {
+            _ if reply_to != 0 => self.on_answer(reply_to, seq, rules),
+            (Kind::Reply, true) => Err(SessionError::Protocol(format!(
+                "{} {seq} expects a reply",
+                rules.name
+            ))),
+            (Kind::Request(_), true) => self.on_request(seq, payload, rules),
+            (_, true) => {
+                // Not a request, so the peer waits for an answer it cannot
+                // get. Say so, then take the message as it is.
+                let detail = format!("{} is not a request", rules.name);
+                self.queue_error_reply(seq, ErrorCode::Unsupported, &detail)?;
+                self.on_one_way(seq, payload, rules)
+            }
+            (_, false) => self.on_one_way(seq, payload, rules),
+        }
+    }
+
+    /// Handles an envelope with `reply_to` set.
+    fn on_answer(&mut self, request: u64, seq: u64, rules: Rules) -> Result<(), SessionError> {
+        if rules.kind != Kind::Reply {
+            return Err(SessionError::Protocol(format!(
+                "{} {seq} answers message {request}, but it is not an answer",
+                rules.name
+            )));
+        }
+        debug!(request, seq, "ignoring an answer nobody waits for");
+        Ok(())
+    }
+
+    /// Handles a request from the peer.
+    fn on_request(&mut self, seq: u64, payload: Payload, rules: Rules) -> Result<(), SessionError> {
+        if let Some(feature) = rules.feature
+            && !self.is_active(feature)
+        {
+            let detail = format!("{feature} is not active in this session");
+            return self.queue_error_reply(seq, ErrorCode::Unsupported, &detail);
+        }
+        self.events
+            .push_back(SessionEvent::Request { seq, payload });
+        Ok(())
+    }
+
+    /// Handles a message that wants no answer.
+    fn on_one_way(&mut self, seq: u64, payload: Payload, rules: Rules) -> Result<(), SessionError> {
+        match payload {
+            Payload::Hello(_) => return Err(SessionError::UnexpectedHello),
+            Payload::Ping(Ping { nonce }) => {
                 self.enqueue(Payload::Pong(Pong { nonce }))?;
             }
-            Some(Payload::Pong(Pong { nonce })) => match self.pending_ping {
+            Payload::Pong(Pong { nonce }) => match self.pending_ping {
                 Some((pending, sent_at)) if pending == nonce => {
                     self.pending_ping = None;
                     let rtt = sent_at.elapsed();
@@ -516,18 +602,58 @@ where
                 }
                 _ => debug!(nonce, "ignoring a Pong for a superseded Ping"),
             },
-            Some(Payload::Goodbye(goodbye)) => {
-                let goodbye = PeerGoodbye::from(goodbye);
+            Payload::Goodbye(goodbye) => {
+                let mut goodbye = PeerGoodbye::from(goodbye);
+                goodbye.error = self.peer_error.take();
                 debug!(reason = ?goodbye.reason, goodbye.detail, "the peer ended the session");
                 self.ended = true;
                 self.events.push_back(SessionEvent::Goodbye(goodbye));
             }
+            // An ErrorReply that answers nothing explains a coming Goodbye.
+            Payload::ErrorReply(error) => {
+                debug!(code = ?error.code(), error.detail, "the peer reported an error");
+                self.peer_error = Some(error);
+            }
+            _ if rules.kind == Kind::Reply => {
+                debug!(seq, rules.name, "ignoring an answer to nothing");
+            }
+            _ if rules
+                .feature
+                .is_some_and(|feature| !self.is_active(feature)) =>
+            {
+                debug!(seq, rules.name, "ignoring a message of an inactive feature");
+            }
             // Everything else is for the layers above the session.
-            Some(payload) => self.events.push_back(SessionEvent::Message {
-                seq: envelope.seq,
-                payload,
-            }),
+            payload => self
+                .events
+                .push_back(SessionEvent::Message { seq, payload }),
         }
+        Ok(())
+    }
+
+    /// Whether `feature` is active: both devices listed it in their Hello.
+    fn is_active(&self, feature: Feature) -> bool {
+        self.local.features.contains(&feature) && self.peer.features.contains(&feature)
+    }
+
+    /// Queues an `ErrorReply` to the peer's request `request`.
+    fn queue_error_reply(
+        &mut self,
+        request: u64,
+        code: ErrorCode,
+        detail: &str,
+    ) -> Result<(), SessionError> {
+        debug!(request, ?code, detail, "refusing a request");
+        let error = ErrorReply {
+            code: code.into(),
+            detail: detail.to_owned(),
+            ..ErrorReply::default()
+        };
+        self.enqueue_envelope(Envelope {
+            reply_to: request,
+            payload: Some(Payload::ErrorReply(error)),
+            ..Envelope::default()
+        })?;
         Ok(())
     }
 
@@ -551,12 +677,17 @@ where
     /// Numbers `payload` and queues it for writing, returning its sequence
     /// number. Nothing is numbered if the envelope cannot be encoded.
     fn enqueue(&mut self, payload: Payload) -> Result<u64, SessionError> {
-        let seq = self.next_seq;
-        let envelope = Envelope {
-            seq,
+        self.enqueue_envelope(Envelope {
             payload: Some(payload),
             ..Envelope::default()
-        };
+        })
+    }
+
+    /// Like [`Session::enqueue`], for an envelope with `reply_to` or
+    /// `expects_reply` set. Its `seq` is overwritten.
+    fn enqueue_envelope(&mut self, mut envelope: Envelope) -> Result<u64, SessionError> {
+        let seq = self.next_seq;
+        envelope.seq = seq;
         let mut codec = *self.framed.codec();
         codec.encode(&envelope, self.framed.write_buffer_mut())?;
         self.next_seq += 1;

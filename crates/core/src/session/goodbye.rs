@@ -1,6 +1,6 @@
 //! How a session ends, and what the desktop does next.
 
-use link2linux_protocol::v1::{self, GoodbyeReason};
+use link2linux_protocol::v1::{self, ErrorReply, GoodbyeReason};
 
 /// The peer's `Goodbye`: it ended the session on purpose, and says why.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,6 +11,10 @@ pub struct PeerGoodbye {
     pub reason: GoodbyeReason,
     /// English text for logs. Never shown to the user as it is.
     pub detail: String,
+    /// The `ErrorReply` without `reply_to` the peer sent before its
+    /// `Goodbye`, if any. A peer may send one to say which protocol error it
+    /// saw.
+    pub error: Option<ErrorReply>,
 }
 
 impl PeerGoodbye {
@@ -26,6 +30,7 @@ impl From<v1::Goodbye> for PeerGoodbye {
         Self {
             reason: goodbye.reason(),
             detail: goodbye.detail,
+            error: None,
         }
     }
 }
