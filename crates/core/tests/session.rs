@@ -4,11 +4,11 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use link2linux_core::session::VersionRange;
+use link2linux_core::session::{ReconnectPolicy, VersionRange};
 use link2linux_core::{
     DeviceInfo, DeviceKind, Feature, Session, SessionConfig, SessionError, SessionEvent,
 };
-use link2linux_protocol::v1::GoodbyeReason;
+use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload, Ping, Pong};
 use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
 use tokio::time::Instant;
@@ -456,6 +456,76 @@ async fn hello_is_only_allowed_in_the_handshake() {
         .unwrap();
     let err = session.next_event().await.unwrap_err();
     assert!(matches!(err, SessionError::UnexpectedHello), "{err:?}");
+}
+
+#[tokio::test]
+async fn the_peers_goodbye_ends_the_session() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    let goodbye = Goodbye {
+        reason: GoodbyeReason::UserDisconnect.into(),
+        detail: "the user disconnected".into(),
+    };
+    peer.send(&envelope(2, Payload::Goodbye(goodbye)))
+        .await
+        .unwrap();
+    // Nothing after the Goodbye is read, not even a broken frame.
+    peer.send(&envelope(2, Payload::Ping(Ping { nonce: 1 })))
+        .await
+        .unwrap();
+
+    let event = session.next_event().await.unwrap();
+    let Some(SessionEvent::Goodbye(goodbye)) = event else {
+        panic!("expected a Goodbye, got {event:?}");
+    };
+    assert_eq!(goodbye.reason, GoodbyeReason::UserDisconnect);
+    assert_eq!(goodbye.detail, "the user disconnected");
+    assert_eq!(goodbye.reconnect_policy(), ReconnectPolicy::WaitForUser);
+    assert!(session.has_ended());
+    assert!(matches!(session.next_event().await, Ok(None)));
+    let err = session.ping().await.unwrap_err();
+    assert!(matches!(err, SessionError::Ended), "{err:?}");
+}
+
+#[tokio::test]
+async fn says_goodbye_on_purpose() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    let err = session
+        .send(Payload::Goodbye(Goodbye::default()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SessionError::NotAllowed(_)), "{err:?}");
+
+    session
+        .goodbye(GoodbyeReason::Shutdown, "quitting")
+        .await
+        .unwrap();
+    let frame = peer.next().await.unwrap().unwrap();
+    let expected = Goodbye {
+        reason: GoodbyeReason::Shutdown.into(),
+        detail: "quitting".into(),
+    };
+    assert_eq!(frame, envelope(2, Payload::Goodbye(expected)));
+    assert!(peer.next().await.is_none());
+}
+
+#[tokio::test]
+async fn says_goodbye_on_protocol_errors() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    peer.send(&envelope(1, Payload::Ping(Ping { nonce: 1 })))
+        .await
+        .unwrap();
+    let err = session.next_event().await.unwrap_err();
+    assert!(err.is_protocol_error(), "{err:?}");
+    assert_eq!(err.reconnect_policy(), ReconnectPolicy::Backoff);
+    assert!(session.has_ended());
+
+    let frame = peer.next().await.unwrap().unwrap();
+    let Some(Payload::Goodbye(goodbye)) = frame.payload else {
+        panic!("expected a Goodbye, got {frame:?}");
+    };
+    assert_eq!(goodbye.reason(), GoodbyeReason::ProtocolError);
+    session.close().await.unwrap();
+    assert!(peer.next().await.is_none());
 }
 
 #[tokio::test]
