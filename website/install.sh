@@ -14,6 +14,9 @@
 #   L2L_VERSION  install this release tag instead of the newest one
 set -eu
 
+# Everything runs from main, called on the last line, so a download cut off
+# halfway through runs nothing.
+main() {
 repo="codesensei-tushar/link2linux"
 format=""
 dry_run=false
@@ -78,7 +81,8 @@ if $dry_run; then
 else
   curl -fL --progress-bar -o "$file" "$base/$asset" || die "download failed: $base/$asset"
   curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
-  (cd "$tmp" && grep -E "^[0-9a-f]{64} [ *]$asset\$" SHA256SUMS | sha256sum -c - >/dev/null) ||
+  asset_re=$(printf '%s' "$asset" | sed 's/[.]/\\./g')
+  (cd "$tmp" && grep -E "^[0-9a-f]{64} [ *]$asset_re\$" SHA256SUMS | sha256sum -c - >/dev/null) ||
     die "the checksum of $asset does not match SHA256SUMS; nothing was installed"
   say "Checksum verified."
 fi
@@ -103,3 +107,6 @@ if [ "$format" = appimage ]; then
 else
   say "Done. Start link2linux from your app menu."
 fi
+}
+
+main "$@"
