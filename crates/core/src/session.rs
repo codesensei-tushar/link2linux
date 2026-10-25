@@ -7,6 +7,13 @@
 //! A session starts with the `Hello` exchange: both sides send `Hello` as
 //! their first frame, then read the peer's. Each side refuses a peer that
 //! speaks another protocol major version or sends anything else first.
+//!
+//! After that, [`Session::next_event`] drives the session. It answers the
+//! peer's `Ping`s, sends a `Ping` of its own every
+//! [`SessionConfig::ping_interval`], and fails with
+//! [`SessionError::IdleTimeout`] when nothing arrives from the peer for
+//! [`SessionConfig::idle_timeout`]. Feature messages come out as
+//! [`SessionEvent::Message`] and go in through [`Session::send`].
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -14,8 +21,10 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, PROTOCOL_VERSION, Payload,
+    Ping, Pong,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::time::{self, Instant, Interval, MissedTickBehavior};
 use tokio_util::codec::Framed;
 use tracing::debug;
 
@@ -26,6 +35,12 @@ use crate::device::{DeviceInfo, Feature};
 pub struct SessionConfig {
     /// How long to wait for the peer's `Hello`.
     pub handshake_timeout: Duration,
+    /// How often to ping the peer. Must not be zero.
+    pub ping_interval: Duration,
+    /// How long the peer may stay silent before the session is considered
+    /// dead. Keep it a few times [`ping_interval`](Self::ping_interval), so
+    /// one late `Pong` does not end the session.
+    pub idle_timeout: Duration,
     /// Largest frame body accepted or sent, in bytes.
     pub max_frame_len: usize,
 }
@@ -34,9 +49,29 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             handshake_timeout: Duration::from_secs(10),
+            ping_interval: Duration::from_secs(15),
+            idle_timeout: Duration::from_secs(45),
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
         }
     }
+}
+
+/// Something that happened on a session.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum SessionEvent {
+    /// A feature message from the peer.
+    Message {
+        /// The peer's sequence number for it.
+        seq: u64,
+        /// The message.
+        payload: Payload,
+    },
+    /// The peer answered this side's latest `Ping`.
+    Pong {
+        /// Time from sending the `Ping` to receiving the `Pong`.
+        rtt: Duration,
+    },
 }
 
 /// Why a session failed or ended abnormally.
@@ -74,16 +109,36 @@ pub enum SessionError {
         /// The offending sequence number.
         received: u64,
     },
+    /// A `Hello` outside the handshake, from the peer or passed to
+    /// [`Session::send`].
+    #[error("Hello is only allowed as the first message")]
+    UnexpectedHello,
+    /// Nothing arrived from the peer for this long.
+    #[error("no message from the peer for {0:?}")]
+    IdleTimeout(Duration),
 }
 
 /// An established session with a peer device.
 ///
-/// Created by [`Session::handshake`].
+/// Created by [`Session::handshake`], then driven by calling
+/// [`Session::next_event`] in a loop.
 #[derive(Debug)]
 pub struct Session<S> {
     framed: Framed<S, EnvelopeCodec>,
     local: DeviceInfo,
     peer: DeviceInfo,
+    idle_timeout: Duration,
+    /// Sequence number of the next envelope this side sends.
+    next_seq: u64,
+    /// Highest sequence number received from the peer.
+    last_peer_seq: u64,
+    /// When the last frame from the peer arrived.
+    last_received: Instant,
+    ping_timer: Interval,
+    next_nonce: u64,
+    /// Nonce and send time of the `Ping` awaiting its `Pong`.
+    pending_ping: Option<(u64, Instant)>,
+    rtt: Option<Duration>,
 }
 
 impl<S> Session<S>
@@ -103,6 +158,10 @@ where
     /// [`SessionConfig::handshake_timeout`], if the peer sends anything else
     /// first, speaks another protocol version, or sends an invalid `Hello`,
     /// and on any framing or I/O error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`SessionConfig::ping_interval`] is zero.
     pub async fn handshake(
         io: S,
         local: DeviceInfo,
@@ -122,7 +181,7 @@ where
                 None => Err(SessionError::ClosedDuringHandshake),
             }
         };
-        let first = tokio::time::timeout(config.handshake_timeout, exchange)
+        let first = time::timeout(config.handshake_timeout, exchange)
             .await
             .map_err(|_| SessionError::HandshakeTimeout(config.handshake_timeout))??;
 
@@ -133,10 +192,21 @@ where
         let peer = peer_from(hello)?;
         debug!(peer.id, peer.name, ?peer.kind, "session established");
 
+        let now = Instant::now();
+        let mut ping_timer = time::interval_at(now + config.ping_interval, config.ping_interval);
+        ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
         Ok(Self {
             framed,
             local,
             peer,
+            idle_timeout: config.idle_timeout,
+            next_seq: 2,
+            last_peer_seq: first.seq,
+            last_received: now,
+            ping_timer,
+            next_nonce: 1,
+            pending_ping: None,
+            rtt: None,
         })
     }
 
@@ -162,6 +232,72 @@ where
             .collect()
     }
 
+    /// The latest measured round-trip time, once a `Ping` has been answered.
+    #[must_use]
+    pub fn rtt(&self) -> Option<Duration> {
+        self.rtt
+    }
+
+    /// Sends a feature message and returns its sequence number.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, and on
+    /// framing or I/O errors.
+    pub async fn send(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        if matches!(payload, Payload::Hello(_)) {
+            return Err(SessionError::UnexpectedHello);
+        }
+        self.send_payload(payload).await
+    }
+
+    /// Sends a `Ping` now. Its `Pong` comes out of [`Session::next_event`]
+    /// as [`SessionEvent::Pong`]. A newer `Ping` supersedes an unanswered
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Fails on framing or I/O errors.
+    pub async fn ping(&mut self) -> Result<(), SessionError> {
+        let nonce = self.next_nonce;
+        self.next_nonce = self.next_nonce.wrapping_add(1);
+        self.pending_ping = Some((nonce, Instant::now()));
+        self.send_payload(Payload::Ping(Ping { nonce })).await?;
+        Ok(())
+    }
+
+    /// Waits for the next event, handling liveness on the way.
+    ///
+    /// Returns `Ok(None)` once the peer has closed the stream. Dropping the
+    /// returned future before it completes loses no incoming message.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::IdleTimeout`] when the peer goes silent,
+    /// on protocol violations ([`SessionError::OutOfOrder`],
+    /// [`SessionError::UnexpectedHello`]), and on framing or I/O errors.
+    /// The session is unusable after an error.
+    pub async fn next_event(&mut self) -> Result<Option<SessionEvent>, SessionError> {
+        loop {
+            let idle_deadline = self.last_received + self.idle_timeout;
+            tokio::select! {
+                frame = self.framed.next() => {
+                    let Some(frame) = frame else {
+                        return Ok(None);
+                    };
+                    self.last_received = Instant::now();
+                    if let Some(event) = self.handle(frame?).await? {
+                        return Ok(Some(event));
+                    }
+                }
+                _ = self.ping_timer.tick() => self.ping().await?,
+                () = time::sleep_until(idle_deadline) => {
+                    return Err(SessionError::IdleTimeout(self.idle_timeout));
+                }
+            }
+        }
+    }
+
     /// Flushes pending frames and shuts the stream down.
     ///
     /// # Errors
@@ -170,6 +306,57 @@ where
     pub async fn close(mut self) -> Result<(), SessionError> {
         self.framed.close().await?;
         Ok(())
+    }
+
+    /// Handles one incoming envelope, returning what the caller should see.
+    async fn handle(&mut self, envelope: Envelope) -> Result<Option<SessionEvent>, SessionError> {
+        check_seq(self.last_peer_seq, envelope.seq)?;
+        self.last_peer_seq = envelope.seq;
+        match envelope.payload {
+            // A message type added by a newer version: skip it.
+            None => {
+                debug!(
+                    seq = envelope.seq,
+                    "ignoring a message this build does not know"
+                );
+                Ok(None)
+            }
+            Some(Payload::Hello(_)) => Err(SessionError::UnexpectedHello),
+            Some(Payload::Ping(Ping { nonce })) => {
+                self.send_payload(Payload::Pong(Pong { nonce })).await?;
+                Ok(None)
+            }
+            Some(Payload::Pong(Pong { nonce })) => match self.pending_ping {
+                Some((pending, sent_at)) if pending == nonce => {
+                    self.pending_ping = None;
+                    let rtt = sent_at.elapsed();
+                    self.rtt = Some(rtt);
+                    Ok(Some(SessionEvent::Pong { rtt }))
+                }
+                _ => {
+                    debug!(nonce, "ignoring a Pong for a superseded Ping");
+                    Ok(None)
+                }
+            },
+            // Feature messages, once the schema has some.
+            #[allow(unreachable_patterns)]
+            Some(payload) => Ok(Some(SessionEvent::Message {
+                seq: envelope.seq,
+                payload,
+            })),
+        }
+    }
+
+    /// Sends `payload` with the next sequence number.
+    async fn send_payload(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        let envelope = Envelope {
+            seq,
+            payload: Some(payload),
+        };
+        self.framed.send(&envelope).await?;
+        Ok(seq)
     }
 }
 

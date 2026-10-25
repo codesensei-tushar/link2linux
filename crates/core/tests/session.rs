@@ -4,9 +4,12 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use link2linux_core::{DeviceInfo, DeviceKind, Feature, Session, SessionConfig, SessionError};
-use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload, Ping};
-use tokio::io::{DuplexStream, duplex};
+use link2linux_core::{
+    DeviceInfo, DeviceKind, Feature, Session, SessionConfig, SessionError, SessionEvent,
+};
+use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload, Ping, Pong};
+use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
+use tokio::time::Instant;
 use tokio_util::codec::Framed;
 
 /// Far end of a pipe, scripted frame by frame by a test.
@@ -215,4 +218,166 @@ async fn times_out_on_a_silent_peer() {
         matches!(err, SessionError::HandshakeTimeout(t) if t == Duration::from_secs(5)),
         "{err:?}"
     );
+}
+
+/// Completes the desktop's handshake with a scripted phone.
+async fn connected(config: SessionConfig) -> (Session<DuplexStream>, RawPeer) {
+    let (io, mut peer) = pipe();
+    let script = async move {
+        peer.next().await.unwrap().unwrap();
+        peer.send(&envelope(1, Payload::Hello(phone_hello())))
+            .await
+            .unwrap();
+        peer
+    };
+    let (session, peer) = tokio::join!(Session::handshake(io, desktop(), config), script);
+    (session.unwrap(), peer)
+}
+
+/// Short timers, so paused-time tests stay readable.
+fn fast() -> SessionConfig {
+    SessionConfig {
+        ping_interval: Duration::from_secs(1),
+        idle_timeout: Duration::from_secs(3),
+        ..SessionConfig::default()
+    }
+}
+
+/// Sends `ping` from the scripted peer and returns the session's answer.
+/// The peer hangs up afterwards, so the session must report a clean close.
+async fn answer_to(
+    session: &mut Session<DuplexStream>,
+    mut peer: RawPeer,
+    ping: Envelope,
+) -> Envelope {
+    let script = async move {
+        peer.send(&ping).await.unwrap();
+        peer.next().await.unwrap().unwrap()
+    };
+    let (event, reply) = tokio::join!(session.next_event(), script);
+    assert!(matches!(event, Ok(None)), "{event:?}");
+    reply
+}
+
+#[tokio::test]
+async fn answers_pings() {
+    let (mut session, peer) = connected(SessionConfig::default()).await;
+    let ping = envelope(2, Payload::Ping(Ping { nonce: 42 }));
+    let reply = answer_to(&mut session, peer, ping).await;
+    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 42 })));
+}
+
+#[tokio::test]
+async fn skips_messages_from_newer_versions() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    // Frame with seq 2 and field 50, which this build does not know.
+    let unknown = [0x05, 0x08, 0x02, 0x92, 0x03, 0x00];
+    peer.get_mut().write_all(&unknown).await.unwrap();
+    let ping = envelope(3, Payload::Ping(Ping { nonce: 7 }));
+    let reply = answer_to(&mut session, peer, ping).await;
+    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 7 })));
+}
+
+#[tokio::test]
+async fn measures_round_trip_time() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    assert_eq!(session.rtt(), None);
+    session.ping().await.unwrap();
+    let ping = peer.next().await.unwrap().unwrap();
+    let Some(Payload::Ping(Ping { nonce })) = ping.payload else {
+        panic!("expected a Ping, got {ping:?}");
+    };
+    peer.send(&envelope(2, Payload::Pong(Pong { nonce })))
+        .await
+        .unwrap();
+
+    let event = session.next_event().await.unwrap();
+    assert!(
+        matches!(event, Some(SessionEvent::Pong { .. })),
+        "{event:?}"
+    );
+    assert!(session.rtt().is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_sessions_stay_alive_by_pinging() {
+    let (a, b) = duplex(64 * 1024);
+    let (desk, phone_side) = tokio::join!(
+        Session::handshake(a, desktop(), fast()),
+        Session::handshake(b, phone(), fast())
+    );
+    let (mut desk, mut phone_side) = (desk.unwrap(), phone_side.unwrap());
+    let start = Instant::now();
+
+    // Nothing but pings flows, for longer than the idle timeout.
+    let mut pongs = (0, 0);
+    while pongs.0 < 5 || pongs.1 < 5 {
+        tokio::select! {
+            event = desk.next_event() => {
+                assert!(matches!(event, Ok(Some(SessionEvent::Pong { .. }))), "{event:?}");
+                pongs.0 += 1;
+            }
+            event = phone_side.next_event() => {
+                assert!(matches!(event, Ok(Some(SessionEvent::Pong { .. }))), "{event:?}");
+                pongs.1 += 1;
+            }
+        }
+    }
+    assert!(start.elapsed() > fast().idle_timeout);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_silent_peer_times_out() {
+    let (mut session, mut peer) = connected(fast()).await;
+    let start = Instant::now();
+    let err = session.next_event().await.unwrap_err();
+    assert!(
+        matches!(err, SessionError::IdleTimeout(t) if t == fast().idle_timeout),
+        "{err:?}"
+    );
+    assert!(start.elapsed() >= fast().idle_timeout);
+
+    // The session kept pinging while it waited.
+    drop(session);
+    let mut pings = 0;
+    while let Some(frame) = peer.next().await {
+        assert!(matches!(frame.unwrap().payload, Some(Payload::Ping(_))));
+        pings += 1;
+    }
+    assert!(pings >= 2, "only {pings} pings");
+}
+
+#[tokio::test]
+async fn rejects_repeated_sequence_numbers() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    peer.send(&envelope(1, Payload::Ping(Ping { nonce: 1 })))
+        .await
+        .unwrap();
+    let err = session.next_event().await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SessionError::OutOfOrder {
+                previous: 1,
+                received: 1
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn hello_is_only_allowed_in_the_handshake() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    let err = session
+        .send(Payload::Hello(phone_hello()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SessionError::UnexpectedHello), "{err:?}");
+
+    peer.send(&envelope(2, Payload::Hello(phone_hello())))
+        .await
+        .unwrap();
+    let err = session.next_event().await.unwrap_err();
+    assert!(matches!(err, SessionError::UnexpectedHello), "{err:?}");
 }
