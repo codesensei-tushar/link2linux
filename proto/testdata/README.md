@@ -27,4 +27,4 @@ from them with `protoc`. Inspect it with `xxd proto/testdata/v1/frames.bin`.
 ## Who uses them
 
 - Rust: `crates/protocol/tests/codec.rs`
-- Android: the `core/protocol` unit tests read the same file.
+- Android: `FrameCodecTest` in `apps/android/core/network` reads the same file.
