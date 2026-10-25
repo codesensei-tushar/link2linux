@@ -11,6 +11,11 @@
 //!   protocol version, who the peer is and which features both sides use,
 //!   then `Ping`/`Pong` liveness and the flow of feature messages.
 //!
+//! Then one module per [`Feature`], named as in both apps:
+//! [`notifications`], [`messages`], [`calls`] and [`clipboard`]. Each one
+//! holds the feature's types, the events the phone reports, and a trait for
+//! the requests the desktop makes, which fail with a [`FeatureError`].
+//!
 //! Nothing here talks to the OS directly. Desktop integration sits behind
 //! the traits in `link2linux-platform`, and the app shell wires the two
 //! together.
@@ -23,5 +28,10 @@ pub mod pairing;
 pub mod session;
 pub mod transport;
 
-pub use device::{DeviceInfo, DeviceKind, Feature};
+pub mod calls;
+pub mod clipboard;
+pub mod messages;
+pub mod notifications;
+
+pub use device::{DeviceInfo, DeviceKind, Feature, FeatureError};
 pub use session::{Session, SessionConfig, SessionError, SessionEvent};
