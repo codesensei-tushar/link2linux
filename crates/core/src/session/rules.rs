@@ -38,6 +38,22 @@ pub(crate) enum Expects {
     NotificationSyncBatch,
 }
 
+impl Expects {
+    /// Whether `payload` may answer a request that expects `self`.
+    pub(crate) fn allows(self, payload: &Payload) -> bool {
+        matches!(
+            (self, payload),
+            (_, Payload::ErrorReply(_))
+                | (Self::Ack, Payload::Ack(_))
+                | (Self::ImageData, Payload::ImageData(_))
+                | (
+                    Self::NotificationSyncBatch,
+                    Payload::NotificationSyncBatch(_)
+                )
+        )
+    }
+}
+
 /// What the session needs to know about one message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Rules {
@@ -97,9 +113,17 @@ pub(crate) fn of(payload: &Payload) -> Rules {
     }
 }
 
+/// Whether `answer` is the last answer to its request. Only a reply message
+/// that says so, such as `NotificationSyncBatch.more`, announces more.
+pub(crate) fn is_last_answer(answer: &Payload) -> bool {
+    !matches!(answer, Payload::NotificationSyncBatch(batch) if batch.more)
+}
+
 #[cfg(test)]
 mod tests {
-    use link2linux_protocol::v1::{ImageRequest, NotificationDismissRequest};
+    use link2linux_protocol::v1::{
+        Ack, ErrorReply, ImageData, ImageRequest, NotificationDismissRequest, NotificationSyncBatch,
+    };
 
     use super::*;
 
@@ -115,5 +139,30 @@ mod tests {
         assert_eq!(dismiss.name, "NotificationDismissRequest");
         assert_eq!(dismiss.kind, Kind::Request(Expects::Ack));
         assert_eq!(dismiss.feature, Some(Feature::Notifications));
+    }
+
+    #[test]
+    fn checks_which_answers_fit() {
+        let ack = Payload::Ack(Ack {});
+        let error = Payload::ErrorReply(ErrorReply::default());
+        let data = Payload::ImageData(ImageData::default());
+        assert!(Expects::Ack.allows(&ack));
+        assert!(Expects::Ack.allows(&error));
+        assert!(!Expects::Ack.allows(&data));
+        assert!(Expects::ImageData.allows(&data));
+        assert!(!Expects::ImageData.allows(&ack));
+        assert!(Expects::NotificationSyncBatch.allows(&error));
+    }
+
+    #[test]
+    fn only_batches_with_more_are_not_last() {
+        let more = NotificationSyncBatch {
+            more: true,
+            ..NotificationSyncBatch::default()
+        };
+        assert!(!is_last_answer(&Payload::NotificationSyncBatch(more)));
+        let last = NotificationSyncBatch::default();
+        assert!(is_last_answer(&Payload::NotificationSyncBatch(last)));
+        assert!(is_last_answer(&Payload::Ack(Ack {})));
     }
 }

@@ -17,6 +17,11 @@
 //! [`SessionConfig::idle_timeout`]. One-way messages come out as
 //! [`SessionEvent::Message`] and go in through [`Session::send`].
 //!
+//! This side's requests go out through [`Session::start_request`], and
+//! their answers come out as [`SessionEvent::Reply`], so that several
+//! requests can wait at once. A request without an answer within
+//! [`SessionConfig::request_timeout`] fails.
+//!
 //! The peer's requests come out as [`SessionEvent::Request`], and
 //! [`Session::reply`], [`Session::ack`] and [`Session::reply_error`] answer
 //! them. The session applies the rules for messages it does not expect
@@ -31,7 +36,7 @@
 //! breaks a protocol rule, the session sends `Goodbye` with
 //! `GOODBYE_REASON_PROTOCOL_ERROR` before it reports the error.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -50,11 +55,15 @@ use tracing::debug;
 use crate::device::{DeviceInfo, Feature};
 
 mod goodbye;
+mod request;
 mod rules;
 mod version;
 
 pub use goodbye::{PeerGoodbye, ReconnectPolicy};
+pub use request::Reply;
 pub use version::VersionRange;
+
+use request::Pending;
 
 use rules::{Kind, Rules};
 
@@ -69,6 +78,9 @@ pub struct SessionConfig {
     /// dead. Keep it a few times [`ping_interval`](Self::ping_interval), so
     /// one late `Pong` does not end the session.
     pub idle_timeout: Duration,
+    /// How long a request waits for an answer, and for each further answer
+    /// of a request answered by several messages.
+    pub request_timeout: Duration,
     /// Largest frame body accepted or sent, in bytes.
     pub max_frame_len: usize,
 }
@@ -79,6 +91,7 @@ impl Default for SessionConfig {
             handshake_timeout: Duration::from_secs(10),
             ping_interval: Duration::from_secs(15),
             idle_timeout: Duration::from_secs(45),
+            request_timeout: Duration::from_secs(30),
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
         }
     }
@@ -108,6 +121,16 @@ pub enum SessionEvent {
         seq: u64,
         /// The request.
         payload: Payload,
+    },
+    /// An answer to a request this side sent with
+    /// [`Session::start_request`].
+    Reply(Reply),
+    /// A request this side sent with [`Session::start_request`] got no
+    /// answer within [`SessionConfig::request_timeout`]. An answer that
+    /// arrives later is ignored.
+    RequestTimedOut {
+        /// The request's sequence number.
+        request: u64,
     },
     /// The peer answered this side's latest `Ping`.
     Pong {
@@ -224,6 +247,9 @@ pub struct Session<S> {
     /// The protocol major version both sides use.
     version: u32,
     idle_timeout: Duration,
+    request_timeout: Duration,
+    /// This side's requests that wait for an answer, by sequence number.
+    pending: BTreeMap<u64, Pending>,
     /// Sequence number of the next envelope this side sends.
     next_seq: u64,
     /// Highest sequence number received from the peer.
@@ -334,6 +360,8 @@ where
             peer,
             version,
             idle_timeout: config.idle_timeout,
+            request_timeout: config.request_timeout,
+            pending: BTreeMap::new(),
             next_seq: 2,
             last_peer_seq,
             last_received: now,
@@ -400,7 +428,8 @@ where
     ///
     /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, with
     /// [`SessionError::NotAllowed`] for a `Goodbye` (see
-    /// [`Session::goodbye`]) or an answer (see [`Session::reply`]), with
+    /// [`Session::goodbye`]), a request (see [`Session::start_request`]) or
+    /// an answer (see [`Session::reply`]), with
     /// [`SessionError::FeatureNotActive`] for a message of a feature that is
     /// not active, with [`SessionError::Ended`] once the session is over,
     /// and on framing or I/O errors.
@@ -409,11 +438,45 @@ where
         match payload {
             Payload::Hello(_) => return Err(SessionError::UnexpectedHello),
             Payload::Goodbye(_) => return Err(SessionError::NotAllowed(rules.name)),
-            _ if rules.kind == Kind::Reply => return Err(SessionError::NotAllowed(rules.name)),
+            _ if matches!(rules.kind, Kind::Reply | Kind::Request(_)) => {
+                return Err(SessionError::NotAllowed(rules.name));
+            }
             _ => {}
         }
         self.check_can_send(rules)?;
         let seq = self.enqueue(payload)?;
+        self.flush().await?;
+        Ok(seq)
+    }
+
+    /// Sends a request without waiting for its answer, and returns its
+    /// sequence number.
+    ///
+    /// Its answers come out of [`Session::next_event`] as
+    /// [`SessionEvent::Reply`]. Without an answer within [`SessionConfig::request_timeout`], it fails
+    /// with [`SessionEvent::RequestTimedOut`]. Several requests may wait at
+    /// the same time. Like [`Session::send`], the request goes out even if
+    /// the returned future is dropped early.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::NotAllowed`] when `payload` is not a
+    /// request, with [`SessionError::FeatureNotActive`] for a request of a
+    /// feature that is not active, with [`SessionError::Ended`] once the
+    /// session is over, and on framing or I/O errors.
+    pub async fn start_request(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        let rules = rules::of(&payload);
+        let Kind::Request(expects) = rules.kind else {
+            return Err(SessionError::NotAllowed(rules.name));
+        };
+        self.check_can_send(rules)?;
+        let seq = self.enqueue_envelope(Envelope {
+            expects_reply: true,
+            payload: Some(payload),
+            ..Envelope::default()
+        })?;
+        let deadline = Instant::now() + self.request_timeout;
+        self.pending.insert(seq, Pending { expects, deadline });
         self.flush().await?;
         Ok(seq)
     }
@@ -583,6 +646,7 @@ where
     /// Cancel safe: everything after an `await` point is synchronous.
     async fn step(&mut self) -> Result<(), SessionError> {
         let idle_deadline = self.last_received + self.idle_timeout;
+        let request_deadline = self.pending.values().map(|pending| pending.deadline).min();
         tokio::select! {
             io = poll_fn(|cx| poll_io(&mut self.framed, &mut self.unflushed, cx)) => match io {
                 Io::Frame(envelope) => {
@@ -603,7 +667,25 @@ where
             () = time::sleep_until(idle_deadline) => {
                 Err(self.fail(SessionError::IdleTimeout(self.idle_timeout)))
             }
+            () = sleep_until(request_deadline) => {
+                self.expire_requests();
+                Ok(())
+            }
         }
+    }
+
+    /// Fails every request whose time for an answer is up.
+    fn expire_requests(&mut self) {
+        let now = Instant::now();
+        let events = &mut self.events;
+        self.pending.retain(|&request, pending| {
+            let expired = pending.deadline <= now;
+            if expired {
+                debug!(request, "a request got no answer in time");
+                events.push_back(SessionEvent::RequestTimedOut { request });
+            }
+            !expired
+        });
     }
 
     /// Handles one incoming envelope, queueing what the caller should see.
@@ -631,7 +713,7 @@ where
         };
         let rules = rules::of(&payload);
         match (rules.kind, expects_reply) {
-            _ if reply_to != 0 => self.on_answer(reply_to, seq, rules),
+            _ if reply_to != 0 => self.on_answer(reply_to, seq, payload, rules),
             (Kind::Reply, true) => Err(SessionError::Protocol(format!(
                 "{} {seq} expects a reply",
                 rules.name
@@ -649,14 +731,42 @@ where
     }
 
     /// Handles an envelope with `reply_to` set.
-    fn on_answer(&mut self, request: u64, seq: u64, rules: Rules) -> Result<(), SessionError> {
+    fn on_answer(
+        &mut self,
+        request: u64,
+        seq: u64,
+        payload: Payload,
+        rules: Rules,
+    ) -> Result<(), SessionError> {
         if rules.kind != Kind::Reply {
             return Err(SessionError::Protocol(format!(
                 "{} {seq} answers message {request}, but it is not an answer",
                 rules.name
             )));
         }
-        debug!(request, seq, "ignoring an answer nobody waits for");
+        let Some(pending) = self.pending.get_mut(&request) else {
+            // Most likely the request timed out.
+            debug!(request, seq, "ignoring an answer nobody waits for");
+            return Ok(());
+        };
+        if !pending.expects.allows(&payload) {
+            return Err(SessionError::Protocol(format!(
+                "{} {seq} cannot answer request {request}",
+                rules.name
+            )));
+        }
+        let last = rules::is_last_answer(&payload);
+        if last {
+            self.pending.remove(&request);
+        } else {
+            pending.deadline = Instant::now() + self.request_timeout;
+        }
+        self.events.push_back(SessionEvent::Reply(Reply {
+            request,
+            seq,
+            payload,
+            last,
+        }));
         Ok(())
     }
 
@@ -795,6 +905,14 @@ where
     async fn flush(&mut self) -> Result<(), SessionError> {
         poll_fn(|cx| poll_flush(&mut self.framed, &mut self.unflushed, cx)).await?;
         Ok(())
+    }
+}
+
+/// Sleeps until `deadline`, or forever without one.
+async fn sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 
