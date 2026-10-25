@@ -17,9 +17,10 @@
 //! [`SessionConfig::idle_timeout`]. One-way messages come out as
 //! [`SessionEvent::Message`] and go in through [`Session::send`].
 //!
-//! This side's requests go out through [`Session::start_request`], and
-//! their answers come out as [`SessionEvent::Reply`], so that several
-//! requests can wait at once. A request without an answer within
+//! This side's requests go out through [`Session::send_request`], which
+//! waits for the answer, or [`Session::start_request`], whose answers come
+//! out as [`SessionEvent::Reply`] so that several requests can wait at
+//! once. A request without an answer within
 //! [`SessionConfig::request_timeout`] fails.
 //!
 //! The peer's requests come out as [`SessionEvent::Request`], and
@@ -60,7 +61,7 @@ mod rules;
 mod version;
 
 pub use goodbye::{PeerGoodbye, ReconnectPolicy};
-pub use request::Reply;
+pub use request::{Reply, RequestError};
 pub use version::VersionRange;
 
 use request::Pending;
@@ -123,7 +124,8 @@ pub enum SessionEvent {
         payload: Payload,
     },
     /// An answer to a request this side sent with
-    /// [`Session::start_request`].
+    /// [`Session::start_request`], or one whose [`Session::send_request`]
+    /// was dropped before the answer arrived.
     Reply(Reply),
     /// A request this side sent with [`Session::start_request`] got no
     /// answer within [`SessionConfig::request_timeout`]. An answer that
@@ -428,7 +430,7 @@ where
     ///
     /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, with
     /// [`SessionError::NotAllowed`] for a `Goodbye` (see
-    /// [`Session::goodbye`]), a request (see [`Session::start_request`]) or
+    /// [`Session::goodbye`]), a request (see [`Session::send_request`]) or
     /// an answer (see [`Session::reply`]), with
     /// [`SessionError::FeatureNotActive`] for a message of a feature that is
     /// not active, with [`SessionError::Ended`] once the session is over,
@@ -449,11 +451,34 @@ where
         Ok(seq)
     }
 
+    /// Sends a request and waits for its first answer.
+    ///
+    /// Events that arrive meanwhile wait, in order, for
+    /// [`Session::next_event`]. For a request answered by several messages,
+    /// the first answer has [`Reply::last`] unset; get the others with
+    /// [`Session::next_reply`].
+    ///
+    /// If the returned future is dropped after the request went out, the
+    /// request still waits for its answer, which then comes out of
+    /// [`Session::next_event`] as [`SessionEvent::Reply`].
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`RequestError::Refused`] when the peer answers with an
+    /// `ErrorReply`, with [`RequestError::TimedOut`] after
+    /// [`SessionConfig::request_timeout`], with [`RequestError::Ended`] when
+    /// the session ends first, and as [`Session::start_request`] does.
+    pub async fn send_request(&mut self, payload: Payload) -> Result<Reply, RequestError> {
+        let request = self.start_request(payload).await?;
+        self.next_reply(request).await
+    }
+
     /// Sends a request without waiting for its answer, and returns its
     /// sequence number.
     ///
     /// Its answers come out of [`Session::next_event`] as
-    /// [`SessionEvent::Reply`]. Without an answer within [`SessionConfig::request_timeout`], it fails
+    /// [`SessionEvent::Reply`], or [`Session::next_reply`] waits for them.
+    /// Without an answer within [`SessionConfig::request_timeout`], it fails
     /// with [`SessionEvent::RequestTimedOut`]. Several requests may wait at
     /// the same time. Like [`Session::send`], the request goes out even if
     /// the returned future is dropped early.
@@ -479,6 +504,45 @@ where
         self.pending.insert(seq, Pending { expects, deadline });
         self.flush().await?;
         Ok(seq)
+    }
+
+    /// Waits for the next answer to this side's request `request`, sent
+    /// with [`Session::start_request`] or [`Session::send_request`].
+    ///
+    /// Events that arrive meanwhile wait, in order, for
+    /// [`Session::next_event`]. This method is cancel safe.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`RequestError::Refused`] when the answer is an
+    /// `ErrorReply`, with [`RequestError::TimedOut`] when none arrives in
+    /// time, with [`RequestError::Ended`] when the session ends first, with
+    /// [`RequestError::UnknownRequest`] when `request` does not wait for an
+    /// answer, and with [`RequestError::Session`] when the session fails.
+    pub async fn next_reply(&mut self, request: u64) -> Result<Reply, RequestError> {
+        loop {
+            let found = self.events.iter().position(|event| match event {
+                SessionEvent::Reply(reply) => reply.request == request,
+                SessionEvent::RequestTimedOut { request: timed_out } => *timed_out == request,
+                _ => false,
+            });
+            if let Some(index) = found {
+                return match self.events.remove(index) {
+                    Some(SessionEvent::Reply(reply)) => match reply.payload {
+                        Payload::ErrorReply(error) => Err(RequestError::Refused(error)),
+                        _ => Ok(reply),
+                    },
+                    _ => Err(RequestError::TimedOut(self.request_timeout)),
+                };
+            }
+            if self.ended {
+                return Err(RequestError::Ended);
+            }
+            if !self.pending.contains_key(&request) {
+                return Err(RequestError::UnknownRequest(request));
+            }
+            self.step().await?;
+        }
     }
 
     /// Answers the peer's request with sequence number `request` and

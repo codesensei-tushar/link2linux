@@ -1,9 +1,12 @@
 //! Requests this side sends, and their answers.
 
+use std::time::Duration;
+
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::ErrorReply;
 use tokio::time::Instant;
 
+use super::SessionError;
 use super::rules::Expects;
 
 /// An answer to one of this side's requests.
@@ -32,6 +35,42 @@ impl Reply {
         match self.payload {
             Payload::ErrorReply(error) => Err(error),
             payload => Ok(payload),
+        }
+    }
+}
+
+/// Why a request got no answer it could use.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum RequestError {
+    /// The peer answered with an `ErrorReply`. Its code says whether
+    /// retrying can help; its detail is for logs only.
+    #[error("the peer refused the request: {} ({})", .0.code().as_str_name(), .0.detail)]
+    Refused(ErrorReply),
+    /// No answer arrived within [`SessionConfig::request_timeout`]. An
+    /// answer that arrives later is ignored.
+    ///
+    /// [`SessionConfig::request_timeout`]: super::SessionConfig::request_timeout
+    #[error("no answer within {0:?}")]
+    TimedOut(Duration),
+    /// The session ended before the answer arrived.
+    #[error("the session ended before the answer arrived")]
+    Ended,
+    /// No request with this sequence number waits for an answer: it was
+    /// never sent, or its last answer has already arrived.
+    #[error("no request {0} waits for an answer")]
+    UnknownRequest(u64),
+    /// Sending the request failed, or the session failed while waiting. The
+    /// session is over in the second case.
+    #[error(transparent)]
+    Session(SessionError),
+}
+
+impl From<SessionError> for RequestError {
+    fn from(err: SessionError) -> Self {
+        match err {
+            SessionError::Ended => Self::Ended,
+            err => Self::Session(err),
         }
     }
 }
@@ -67,5 +106,13 @@ mod tests {
         };
         let refused = reply(Payload::ErrorReply(error.clone())).into_result();
         assert_eq!(refused, Err(error));
+    }
+
+    #[test]
+    fn an_ended_session_is_reported_as_such() {
+        let err = RequestError::from(SessionError::Ended);
+        assert!(matches!(err, RequestError::Ended), "{err:?}");
+        let err = RequestError::from(SessionError::UnexpectedHello);
+        assert!(matches!(err, RequestError::Session(_)), "{err:?}");
     }
 }
