@@ -4,6 +4,8 @@ plugins {
 
 dependencies {
     api(projects.core.protocol)
+    implementation(projects.core.common)
+    implementation(libs.kotlinx.coroutines.core)
 }
 
 // Byte-level wire-format vectors shared with the desktop tests. Framing tests
