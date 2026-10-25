@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 link2linux-protocol.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
