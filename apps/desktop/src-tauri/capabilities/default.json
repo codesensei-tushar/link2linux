@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "What the main window may call. Nothing is granted by default: add each new command or plugin permission here explicitly.",
+  "windows": ["main"],
+  "platforms": ["linux", "macOS", "windows"],
+  "permissions": ["allow-app-info", "allow-list-devices"]
+}
