@@ -4,6 +4,7 @@ import { NavLink } from "react-router";
 import { features } from "@/features";
 
 import { BrandMark } from "./BrandMark";
+import { ConnectionStatus } from "./ConnectionStatus";
 
 /** Up/Down/Home/End move focus between navigation links; Tab still works as usual. */
 function moveFocus(event: KeyboardEvent<HTMLAnchorElement>) {
@@ -44,6 +45,8 @@ export function Sidebar() {
           ))}
         </ul>
       </nav>
+
+      <ConnectionStatus />
     </aside>
   );
 }
