@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use link2linux_core::session::VersionRange;
 use link2linux_core::{
     DeviceInfo, DeviceKind, Feature, Session, SessionConfig, SessionError, SessionEvent,
@@ -12,7 +12,8 @@ use link2linux_protocol::v1::GoodbyeReason;
 use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload, Ping, Pong};
 use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
 use tokio::time::Instant;
-use tokio_util::codec::Framed;
+use tokio_util::bytes::BytesMut;
+use tokio_util::codec::{Encoder, Framed};
 
 /// Far end of a pipe, scripted frame by frame by a test.
 type RawPeer = Framed<DuplexStream, EnvelopeCodec>;
@@ -455,4 +456,65 @@ async fn hello_is_only_allowed_in_the_handshake() {
         .unwrap();
     let err = session.next_event().await.unwrap_err();
     assert!(matches!(err, SessionError::UnexpectedHello), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_closed_stream_ends_the_session_without_goodbye() {
+    let (mut session, peer) = connected(SessionConfig::default()).await;
+    drop(peer);
+    assert!(matches!(session.next_event().await, Ok(None)));
+    assert!(session.has_ended());
+}
+
+#[tokio::test]
+async fn a_dropped_send_still_goes_out() {
+    // A pipe too small for a Ping, so writing one has to wait for the peer.
+    let (io, remote) = duplex(4);
+    let mut peer = Framed::new(remote, EnvelopeCodec::new());
+    let script = async {
+        peer.next().await.unwrap().unwrap();
+        peer.send(&envelope(1, Payload::Hello(phone_hello())))
+            .await
+            .unwrap();
+    };
+    let (session, ()) = tokio::join!(
+        Session::handshake(io, desktop(), SessionConfig::default()),
+        script
+    );
+    let mut session = session.unwrap();
+
+    // The Ping is queued before the first await; then the caller gives up.
+    assert!(session.ping().now_or_never().is_none());
+
+    // Waiting for events writes it.
+    let script = async move {
+        let frame = peer.next().await.unwrap().unwrap();
+        drop(peer);
+        frame
+    };
+    let (event, frame) = tokio::join!(session.next_event(), script);
+    assert!(matches!(event, Ok(None)), "{event:?}");
+    assert_eq!(frame.seq, 2);
+    assert!(matches!(frame.payload, Some(Payload::Ping(_))));
+}
+
+#[tokio::test]
+async fn next_event_is_cancel_safe() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    let mut frame = BytesMut::new();
+    EnvelopeCodec::new()
+        .encode(&envelope(2, Payload::Ping(Ping { nonce: 9 })), &mut frame)
+        .unwrap();
+    let rest = frame.split_off(3);
+
+    // Give up waiting while only part of a frame has arrived.
+    peer.get_mut().write_all(&frame).await.unwrap();
+    assert!(session.next_event().now_or_never().is_none());
+    peer.get_mut().write_all(&rest).await.unwrap();
+
+    // The frame is still read whole and answered.
+    let script = async move { peer.next().await.unwrap().unwrap() };
+    let (event, reply) = tokio::join!(session.next_event(), script);
+    assert!(matches!(event, Ok(None)), "{event:?}");
+    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 9 })));
 }
