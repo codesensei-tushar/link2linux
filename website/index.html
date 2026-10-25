@@ -205,7 +205,7 @@
         <div class="section-head">
           <span class="kicker">Download</span>
           <h2 id="download-title">Install on your computer and your phone</h2>
-          <p>The desktop app runs on Linux with GNOME, KDE Plasma and other desktops, on Wayland or X11. The phone app needs Android 8.0 or newer.</p>
+          <p>The desktop app runs on Linux with GNOME, KDE Plasma and other desktops, on Wayland or X11. The first releases ship it as a .deb for Debian, Ubuntu and the systems built on them; more formats follow. The phone app needs Android 8.0 or newer.</p>
           <p class="release-status" id="release-status" role="status">No release yet: these downloads go live with the first release.</p>
         </div>
         <div class="downloads">
@@ -214,38 +214,33 @@
             <ul class="dl-list">
               <li class="dl-item dl-quick">
                 <div class="dl-head">
-                  <div><strong>One-line install</strong><p>Picks the right package for your distribution, checks it against SHA256SUMS and installs it.</p></div>
+                  <div><strong>One-line install</strong><p>Installs the .deb on Debian, Ubuntu and the systems built on them, after checking it against SHA256SUMS.</p></div>
                   <div class="dl-actions"><a class="btn btn-ghost btn-sm" href="install.sh">Read the script</a></div>
                 </div>
                 <pre><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></pre>
               </li>
               <li class="dl-item">
-            <div class="dl-head">
-              <div><strong>AppImage</strong><p>Any distribution. Runs without installing.</p></div>
-              <div class="dl-actions"><a class="btn btn-primary btn-sm pending" data-asset="link2linux-x86_64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases">x86_64</a><a class="btn btn-ghost btn-sm pending" data-asset="link2linux-aarch64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases">ARM64</a></div>
-            </div>
-            <pre><code>chmod +x link2linux-x86_64.AppImage
-./link2linux-x86_64.AppImage</code></pre>
-          </li>
+                <div class="dl-head">
+                  <div><strong>.deb package</strong><p>Ubuntu, Debian, Linux Mint, Pop!_OS. For 64-bit x86 (amd64); ARM64 later.</p></div>
+                  <div class="dl-actions"><a class="btn btn-primary btn-sm pending" data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases">Download .deb</a></div>
+                </div>
+                <pre><code>sudo apt install ./link2linux_amd64.deb</code></pre>
+              </li>
               <li class="dl-item">
-            <div class="dl-head">
-              <div><strong>.deb package</strong><p>Ubuntu, Debian, Linux Mint, Pop!_OS.</p></div>
-              <div class="dl-actions"><a class="btn btn-primary btn-sm pending" data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases">x86_64</a><a class="btn btn-ghost btn-sm pending" data-asset="link2linux_arm64.deb" href="https://github.com/codesensei-tushar/link2linux/releases">ARM64</a></div>
-            </div>
-            <pre><code>sudo apt install ./link2linux_amd64.deb</code></pre>
-          </li>
+                <div class="dl-head">
+                  <div><strong>AppImage <span class="tag">Later</span></strong><p>Any distribution, without installing.</p></div>
+                </div>
+              </li>
               <li class="dl-item">
-            <div class="dl-head">
-              <div><strong>.rpm package</strong><p>Fedora, openSUSE and other RPM-based systems.</p></div>
-              <div class="dl-actions"><a class="btn btn-primary btn-sm pending" data-asset="link2linux.x86_64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases">x86_64</a><a class="btn btn-ghost btn-sm pending" data-asset="link2linux.aarch64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases">ARM64</a></div>
-            </div>
-            <pre><code>sudo dnf install ./link2linux.x86_64.rpm</code></pre>
-          </li>
+                <div class="dl-head">
+                  <div><strong>.rpm package <span class="tag">Later</span></strong><p>Fedora, openSUSE and other RPM-based systems.</p></div>
+                </div>
+              </li>
               <li class="dl-item">
-            <div class="dl-head">
-              <div><strong>Flatpak <span class="tag">Later</span></strong><p>From Flathub, sandboxed, with automatic updates.</p></div>
-            </div>
-          </li>
+                <div class="dl-head">
+                  <div><strong>Flatpak <span class="tag">Later</span></strong><p>From Flathub, sandboxed, with automatic updates.</p></div>
+                </div>
+              </li>
             </ul>
           </div>
           <div class="dl-group">
