@@ -1,8 +1,15 @@
+import { createHashRouter, RouterProvider } from "react-router";
+
+import { AppProviders } from "./providers";
+import { routes } from "./routes";
+
+// Hash routing: the app is served from static files with no server-side fallback.
+const router = createHashRouter(routes);
+
 export function App() {
   return (
-    <main>
-      <h1>link2linux</h1>
-      <p>Connect your Android phone to your Linux desktop.</p>
-    </main>
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>
   );
 }
