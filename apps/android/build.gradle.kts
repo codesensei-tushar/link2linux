@@ -5,8 +5,10 @@ plugins {
     alias(libs.plugins.android.library) apply false
     alias(libs.plugins.android.lint) apply false
     alias(libs.plugins.compose) apply false
+    alias(libs.plugins.hilt) apply false
     // Also sets the Kotlin version behind AGP's built-in Kotlin support, which
     // must match the Compose compiler plugin.
     alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.ksp) apply false
     alias(libs.plugins.protobuf) apply false
 }
