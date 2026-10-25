@@ -10,6 +10,9 @@ androidxCore = "1.18.0"
 androidxHilt = "1.3.0"
 androidxLifecycle = "2.10.0"
 androidxNavigation3 = "1.1.7"
+# The phone's TLS stack, bundled so every API level has TLS 1.3 and the
+# keying material exporter. It carries BoringSSL: follow its releases.
+conscrypt = "2.8.0"
 hilt = "2.60.1"
 javaxInject = "1"
 junit4 = "4.13.2"
@@ -32,6 +35,9 @@ androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lif
 androidx-lifecycle-viewmodel-navigation3 = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-navigation3", version.ref = "androidxLifecycle" }
 androidx-navigation3-runtime = { group = "androidx.navigation3", name = "navigation3-runtime", version.ref = "androidxNavigation3" }
 androidx-navigation3-ui = { group = "androidx.navigation3", name = "navigation3-ui", version.ref = "androidxNavigation3" }
+conscrypt-android = { group = "org.conscrypt", name = "conscrypt-android", version.ref = "conscrypt" }
+# The same Conscrypt release built for desktop JVMs, for unit tests only.
+conscrypt-openjdk-uber = { group = "org.conscrypt", name = "conscrypt-openjdk-uber", version.ref = "conscrypt" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
 javax-inject = { group = "javax.inject", name = "javax.inject", version.ref = "javaxInject" }
