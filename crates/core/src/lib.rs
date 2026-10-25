@@ -4,7 +4,9 @@
 //! without a window:
 //!
 //! - [`device`]: who a device is and which [`Feature`]s it serves;
-//! - [`discovery`]: finding devices on the local network.
+//! - [`discovery`]: finding devices on the local network;
+//! - [`pairing`]: the one-time trust step and the store of paired devices;
+//! - [`transport`]: the TLS stream to a paired device.
 //!
 //! Nothing here talks to the OS directly. Desktop integration sits behind
 //! the traits in `link2linux-platform`, and the app shell wires the two
@@ -14,5 +16,7 @@
 
 pub mod device;
 pub mod discovery;
+pub mod pairing;
+pub mod transport;
 
 pub use device::{DeviceInfo, DeviceKind, Feature};
