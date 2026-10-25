@@ -48,6 +48,10 @@ gradlePlugin {
             id = libs.plugins.l2l.android.library.compose.get().pluginId
             implementationClass = "AndroidLibraryComposeConventionPlugin"
         }
+        register("hilt") {
+            id = libs.plugins.l2l.hilt.get().pluginId
+            implementationClass = "HiltConventionPlugin"
+        }
         register("jvmLibrary") {
             id = libs.plugins.l2l.jvm.library.get().pluginId
             implementationClass = "JvmLibraryConventionPlugin"
