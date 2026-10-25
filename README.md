@@ -29,6 +29,8 @@ JDK 17, Android SDK (`ANDROID_HOME`), and the Tauri Linux libraries
 
 ```sh
 make doctor        # check the toolchain
+make ci            # all checks a PR must pass (GitHub CI is manual-only)
+make ci-changed    # only the checks for paths changed vs origin/main
 make dev           # run the desktop app with hot reload
 make test          # Rust, frontend and Android tests
 make lint          # fmt/clippy, eslint/tsc, Android lint

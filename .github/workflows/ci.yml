@@ -1,13 +1,13 @@
 name: CI
 
+# Manual only: checks run locally with `make ci` before merging, which saves
+# runner time. Trigger this from the Actions tab when a remote run is wanted.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -19,10 +19,10 @@ jobs:
   changes:
     runs-on: ubuntu-24.04
     outputs:
-      proto: ${{ github.event_name == 'push' || steps.filter.outputs.proto == 'true' }}
-      rust: ${{ steps.exists.outputs.rust == 'true' && (github.event_name == 'push' || steps.filter.outputs.rust == 'true') }}
-      desktop-web: ${{ steps.exists.outputs.desktop-web == 'true' && (github.event_name == 'push' || steps.filter.outputs.desktop-web == 'true') }}
-      android: ${{ steps.exists.outputs.android == 'true' && (github.event_name == 'push' || steps.filter.outputs.android == 'true') }}
+      proto: ${{ github.event_name != 'pull_request' || steps.filter.outputs.proto == 'true' }}
+      rust: ${{ steps.exists.outputs.rust == 'true' && (github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true') }}
+      desktop-web: ${{ steps.exists.outputs.desktop-web == 'true' && (github.event_name != 'pull_request' || steps.filter.outputs.desktop-web == 'true') }}
+      android: ${{ steps.exists.outputs.android == 'true' && (github.event_name != 'pull_request' || steps.filter.outputs.android == 'true') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v4
