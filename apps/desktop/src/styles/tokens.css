@@ -1,0 +1,82 @@
+/*
+ * Design tokens. Components use these variables only, never raw colors.
+ * The theme follows the system setting through prefers-color-scheme.
+ */
+:root {
+  color-scheme: light dark;
+
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Cantarell, Ubuntu, "Noto Sans", "Helvetica Neue",
+    sans-serif;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.8125rem;
+  --font-size-md: 0.9375rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.5rem;
+  --line-height: 1.5;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  --duration-fast: 120ms;
+  --sidebar-width: 15.5rem;
+
+  /* Light theme */
+  --color-bg: #f5f6fa;
+  --color-sidebar: #eceef5;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f0f1f6;
+  --color-border: #dfe2eb;
+  --color-border-strong: #c7ccda;
+  --color-text: #161925;
+  --color-text-muted: #545b6e;
+  --color-text-subtle: #6a7085;
+  --color-accent: #4747c9;
+  --color-accent-hover: #3a3ab0;
+  --color-accent-soft: #e8e8fb;
+  --color-on-accent: #ffffff;
+  --color-success: #0b7a6d;
+  --color-success-soft: #dcf3ef;
+  --color-warning: #9a5b00;
+  --color-warning-soft: #fbefd9;
+  --color-danger: #b83232;
+  --color-danger-soft: #fbe3e3;
+  --color-focus: #4747c9;
+  --shadow-sm: 0 1px 2px rgb(22 25 37 / 6%), 0 1px 3px rgb(22 25 37 / 8%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #101219;
+    --color-sidebar: #0b0d13;
+    --color-surface: #181b25;
+    --color-surface-muted: #1f2330;
+    --color-border: #2a2f3d;
+    --color-border-strong: #3a4052;
+    --color-text: #e7e9f1;
+    --color-text-muted: #a6acbe;
+    --color-text-subtle: #868da2;
+    --color-accent: #8f90f7;
+    --color-accent-hover: #a7a8fa;
+    --color-accent-soft: #262852;
+    --color-on-accent: #11122a;
+    --color-success: #4fd1bd;
+    --color-success-soft: #123430;
+    --color-warning: #f0b45a;
+    --color-warning-soft: #3a2a12;
+    --color-danger: #f28b8b;
+    --color-danger-soft: #3d1c1f;
+    --color-focus: #a7a8fa;
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  }
+}
