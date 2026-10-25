@@ -77,6 +77,8 @@ jobs:
           breaking: ${{ github.event_name == 'pull_request' }}
           breaking_against: "${{ github.event.repository.clone_url }}#branch=main"
           push: false
+          # Results show in the job summary; posting PR comments needs write access.
+          pr_comment: false
 
   rust:
     needs: changes
