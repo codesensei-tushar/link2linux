@@ -3,6 +3,7 @@ syntax = "proto3";
 package link2linux.v1;
 
 import "link2linux/v1/common.proto";
+import "link2linux/v1/notifications.proto";
 import "link2linux/v1/pairing.proto";
 
 option java_multiple_files = true;
@@ -48,6 +49,13 @@ message Envelope {
     PairingResult pairing_result = 33;
     PresenceUpdate presence_update = 34;
     KeyRotation key_rotation = 35;
+
+    NotificationSyncRequest notification_sync_request = 100;
+    NotificationSyncBatch notification_sync_batch = 101;
+    NotificationPosted notification_posted = 102;
+    NotificationRemoved notification_removed = 103;
+    NotificationDismissRequest notification_dismiss_request = 104;
+    NotificationActionRequest notification_action_request = 105;
   }
 }
 

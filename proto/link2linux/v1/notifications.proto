@@ -1,0 +1,254 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+import "link2linux/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The notifications feature, capability token "notifications": the phone
+// mirrors its notifications to the desktop, and the desktop can dismiss
+// them or run their actions on the phone, including inline replies.
+//
+// The phone owns one collection, the notifications it currently shows and
+// shares. The desktop follows it with a SyncCursor (docs/protocol.md,
+// "Delta sync").
+
+// From the desktop: asks for the changes since a cursor, and subscribes to
+// NotificationPosted and NotificationRemoved for the rest of the session.
+// Answered by one or more NotificationSyncBatch, or by an ErrorReply.
+message NotificationSyncRequest {
+  // Where the desktop stands. Unset, or epoch 0, asks for everything.
+  SyncCursor since = 1;
+}
+
+// From the phone: one part of the answer to NotificationSyncRequest.
+message NotificationSyncBatch {
+  // Set on the first batch of a full snapshot. Once the last batch has
+  // arrived, every notification the snapshot did not list is gone.
+  bool reset = 1;
+  // Notifications added or changed since the cursor, or in the snapshot.
+  repeated PhoneNotification notifications = 2;
+  // Keys of notifications removed since the cursor. Empty in a snapshot.
+  repeated string removed_keys = 3;
+  // The desktop's position once it has applied this batch. The desktop
+  // stores it only from the last batch.
+  SyncCursor cursor = 4;
+  // More batches follow for the same request.
+  bool more = 5;
+}
+
+// From the phone, one-way: a notification was posted, or updated in place.
+message NotificationPosted {
+  PhoneNotification notification = 1;
+  // Whether the desktop should alert the user (banner, sound). False for
+  // quiet updates such as a progress change.
+  bool alert = 2;
+}
+
+// From the phone, one-way: a notification is gone from the phone.
+message NotificationRemoved {
+  string key = 1;
+  // The collection's revision after the removal.
+  uint64 revision = 2;
+  NotificationRemovalReason reason = 3;
+}
+
+// From the desktop: dismiss a notification on the phone, as if the user
+// had swiped it away there. Sent from the desktop's outbox; answered by an
+// Ack, or an ErrorReply such as ERROR_CODE_NOT_FOUND.
+message NotificationDismissRequest {
+  // 16 random bytes, the same on every retry of this dismissal.
+  bytes idempotency_key = 1;
+  // When the user dismissed it, in Unix milliseconds.
+  int64 created_unix_ms = 2;
+  string key = 3;
+}
+
+// From the desktop: run one of a notification's actions on the phone, with
+// reply text for actions that take it. Sent from the desktop's outbox;
+// answered by an Ack, or an ErrorReply such as ERROR_CODE_NOT_FOUND.
+message NotificationActionRequest {
+  // 16 random bytes, the same on every retry of this action.
+  bytes idempotency_key = 1;
+  // When the user chose the action, in Unix milliseconds.
+  int64 created_unix_ms = 2;
+  string key = 3;
+  // NotificationAction.id of the action to run.
+  string action_id = 4;
+  // The reply, for an action with accepts_reply or reply_choices. Empty
+  // otherwise.
+  string reply_text = 5;
+}
+
+// A notification as the phone shares it. Text fields are plain text
+// without markup.
+message PhoneNotification {
+  // The phone's key for the notification: opaque, at most 256 bytes, and
+  // stable for as long as the notification exists.
+  string key = 1;
+  // The collection's revision at which this version was posted.
+  uint64 revision = 2;
+  // The app that posted it: its package name and its display name.
+  string app_id = 3;
+  string app_name = 4;
+  ImageRef app_icon = 5;
+  // The time to show: the event time the app set, else the post time.
+  int64 when_unix_ms = 6;
+  string title = 7;
+  // The body, in its expanded form when the app provides one.
+  string text = 8;
+  // A secondary line, such as the account the notification belongs to.
+  string sub_text = 9;
+  NotificationCategory category = 10;
+  NotificationImportance importance = 11;
+  // The user cannot dismiss it on the phone, for example ongoing work,
+  // media playback or a call in progress.
+  bool ongoing = 12;
+  // Notifications with the same group are shown stacked. Opaque.
+  string group = 13;
+  // Buttons, in display order.
+  repeated NotificationAction actions = 14;
+  // For conversations: the latest messages, oldest first, at most 10.
+  repeated ConversationMessage messages = 15;
+  // For group conversations: the conversation's name.
+  string conversation_title = 16;
+  // For notifications that show progress.
+  NotificationProgress progress = 17;
+  // An image specific to this notification, such as the sender's photo.
+  ImageRef large_icon = 18;
+  // A larger picture attached to the notification.
+  ImageRef picture = 19;
+  // Whether the text fields hold the real content.
+  NotificationContent content = 20;
+  // How private the app marked the content.
+  NotificationVisibility visibility = 21;
+}
+
+// A button on a notification.
+message NotificationAction {
+  // Identifies the action within its notification: opaque, and unchanged
+  // across updates for as long as the app keeps the action.
+  string id = 1;
+  string label = 2;
+  NotificationActionKind kind = 3;
+  // The action takes free-form reply text.
+  bool accepts_reply = 4;
+  // Ready-made replies the app offers. Picking one sends it as reply_text.
+  repeated string reply_choices = 5;
+}
+
+// What an action does, when the phone can tell. Lets the desktop show a
+// fitting icon or wire the action to its own reply field.
+enum NotificationActionKind {
+  NOTIFICATION_ACTION_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_ACTION_KIND_REPLY = 1;
+  NOTIFICATION_ACTION_KIND_MARK_READ = 2;
+  NOTIFICATION_ACTION_KIND_DELETE = 3;
+  NOTIFICATION_ACTION_KIND_ARCHIVE = 4;
+  NOTIFICATION_ACTION_KIND_MUTE = 5;
+  NOTIFICATION_ACTION_KIND_ANSWER_CALL = 6;
+  NOTIFICATION_ACTION_KIND_DECLINE_CALL = 7;
+  NOTIFICATION_ACTION_KIND_HANG_UP = 8;
+}
+
+// One message of a conversation notification.
+message ConversationMessage {
+  // The sender's display name. Empty for messages the phone's user sent.
+  string sender = 1;
+  string text = 2;
+  int64 sent_unix_ms = 3;
+  // Sent by the phone's user rather than received.
+  bool outgoing = 4;
+}
+
+// Progress shown by a notification.
+message NotificationProgress {
+  uint32 current = 1;
+  uint32 max = 2;
+  // The app shows activity but no amount; current and max are 0.
+  bool indeterminate = 3;
+}
+
+// What kind of notification it is. Lets the desktop pick urgency, icons
+// and grouping.
+enum NotificationCategory {
+  NOTIFICATION_CATEGORY_UNSPECIFIED = 0;
+  NOTIFICATION_CATEGORY_MESSAGE = 1;
+  NOTIFICATION_CATEGORY_EMAIL = 2;
+  NOTIFICATION_CATEGORY_CALL = 3;
+  NOTIFICATION_CATEGORY_MISSED_CALL = 4;
+  // A calendar event.
+  NOTIFICATION_CATEGORY_EVENT = 5;
+  NOTIFICATION_CATEGORY_REMINDER = 6;
+  NOTIFICATION_CATEGORY_ALARM = 7;
+  NOTIFICATION_CATEGORY_PROGRESS = 8;
+  // Media playback controls.
+  NOTIFICATION_CATEGORY_MEDIA = 9;
+  NOTIFICATION_CATEGORY_SOCIAL = 10;
+  NOTIFICATION_CATEGORY_PROMOTION = 11;
+  NOTIFICATION_CATEGORY_NAVIGATION = 12;
+  // Device status, errors and background services.
+  NOTIFICATION_CATEGORY_SYSTEM = 13;
+}
+
+// How strongly the notification asks for attention on the phone.
+enum NotificationImportance {
+  // Treated as NOTIFICATION_IMPORTANCE_DEFAULT.
+  NOTIFICATION_IMPORTANCE_UNSPECIFIED = 0;
+  // Collapsed at the end of the list: no pop-up, sound or status icon.
+  NOTIFICATION_IMPORTANCE_MIN = 1;
+  // Listed and shown as a status icon, without pop-up or sound.
+  NOTIFICATION_IMPORTANCE_LOW = 2;
+  // Makes a sound, without a pop-up on the phone.
+  NOTIFICATION_IMPORTANCE_DEFAULT = 3;
+  // Makes a sound and pops up on the phone.
+  NOTIFICATION_IMPORTANCE_HIGH = 4;
+}
+
+// Whether the text fields carry the notification's real content.
+enum NotificationContent {
+  // Treated as NOTIFICATION_CONTENT_FULL.
+  NOTIFICATION_CONTENT_UNSPECIFIED = 0;
+  NOTIFICATION_CONTENT_FULL = 1;
+  // The phone's OS withheld the content from the phone app, as Android 15
+  // and later do for notifications that look like they hold a one-time
+  // code. The withheld fields are empty, never filled with the OS's
+  // placeholder text. The user can read the content on the phone.
+  NOTIFICATION_CONTENT_REDACTED_BY_SYSTEM = 2;
+  // The user chose on the phone not to share this app's content. Only the
+  // app, the time and the category are filled in.
+  NOTIFICATION_CONTENT_HIDDEN_BY_USER = 3;
+}
+
+// How private the app marked the content, for the desktop to honour while
+// its screen is locked or shared.
+enum NotificationVisibility {
+  // Treated as NOTIFICATION_VISIBILITY_PRIVATE.
+  NOTIFICATION_VISIBILITY_UNSPECIFIED = 0;
+  // Fine to show in full anywhere.
+  NOTIFICATION_VISIBILITY_PUBLIC = 1;
+  // Show that it exists, but hide the content on a locked or shared screen.
+  NOTIFICATION_VISIBILITY_PRIVATE = 2;
+  // Do not show it at all on a locked or shared screen.
+  NOTIFICATION_VISIBILITY_SECRET = 3;
+}
+
+// Why a notification disappeared from the phone.
+enum NotificationRemovalReason {
+  NOTIFICATION_REMOVAL_REASON_UNSPECIFIED = 0;
+  // The user dismissed it on the phone.
+  NOTIFICATION_REMOVAL_REASON_DISMISSED = 1;
+  // A NotificationDismissRequest from a desktop dismissed it.
+  NOTIFICATION_REMOVAL_REASON_DISMISSED_FROM_DESKTOP = 2;
+  // The user opened it on the phone.
+  NOTIFICATION_REMOVAL_REASON_OPENED = 3;
+  // The app withdrew it.
+  NOTIFICATION_REMOVAL_REASON_CANCELLED_BY_APP = 4;
+  // It reached the timeout the app set.
+  NOTIFICATION_REMOVAL_REASON_TIMED_OUT = 5;
+  // It still exists, but the phone stopped sharing it, for example because
+  // the user excluded its app.
+  NOTIFICATION_REMOVAL_REASON_NOT_SHARED = 6;
+}

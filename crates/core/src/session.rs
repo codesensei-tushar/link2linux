@@ -59,6 +59,10 @@ impl Default for SessionConfig {
 /// Something that happened on a session.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "messages are the common case; boxing them would only add an allocation"
+)]
 pub enum SessionEvent {
     /// A feature message from the peer.
     Message {
