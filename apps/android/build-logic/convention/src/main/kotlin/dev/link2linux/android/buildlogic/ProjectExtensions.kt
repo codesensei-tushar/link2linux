@@ -13,3 +13,10 @@ internal val Project.libs: VersionCatalog
 
 internal fun VersionCatalog.library(alias: String): Provider<MinimalExternalModuleDependency> =
     findLibrary(alias).orElseThrow { IllegalStateException("No library '$alias' in libs.versions.toml") }
+
+/**
+ * Namespace derived from the Gradle path, so `:core:designsystem` becomes
+ * `dev.link2linux.android.core.designsystem`.
+ */
+internal val Project.defaultNamespace: String
+    get() = "dev.link2linux.android" + path.replace(':', '.').replace('-', '_')

@@ -35,4 +35,6 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 # Convention plugins from build-logic
 l2l-android-application = { id = "l2l.android.application" }
 l2l-android-application-compose = { id = "l2l.android.application.compose" }
+l2l-android-library = { id = "l2l.android.library" }
+l2l-android-library-compose = { id = "l2l.android.library.compose" }
 l2l-jvm-library = { id = "l2l.jvm.library" }
