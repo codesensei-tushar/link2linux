@@ -1,0 +1,30 @@
+# Rust
+/target/
+
+# Node / frontend
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+# Tauri
+apps/desktop/src-tauri/gen/schemas/
+
+# Android / Gradle
+.gradle/
+.kotlin/
+build/
+local.properties
+captures/
+.cxx/
+*.keystore
+*.jks
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Agent worktrees
+.claude/worktrees/

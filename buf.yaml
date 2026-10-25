@@ -1,0 +1,12 @@
+# Lint and breaking-change checks for the wire format.
+# Code generation runs inside each build: prost-build (crates/protocol) and
+# the Gradle protobuf plugin (apps/android/core/protocol).
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

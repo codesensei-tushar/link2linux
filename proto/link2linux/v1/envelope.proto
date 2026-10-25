@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// Every frame on an established session carries exactly one Envelope.
+// Frames are length-delimited (varint length prefix) on the secure stream.
+message Envelope {
+  // Per-sender sequence number, starting at 1. Used for ordering and acks.
+  uint64 seq = 1;
+
+  oneof payload {
+    Hello hello = 10;
+    Ping ping = 11;
+    Pong pong = 12;
+  }
+}
+
+// First message each side sends once the secure channel is established.
+message Hello {
+  uint32 protocol_version = 1;
+  string device_id = 2;
+  string device_name = 3;
+  DeviceKind kind = 4;
+  // Feature names this device can serve, e.g. "notifications", "clipboard".
+  repeated string features = 5;
+}
+
+enum DeviceKind {
+  DEVICE_KIND_UNSPECIFIED = 0;
+  DEVICE_KIND_DESKTOP = 1;
+  DEVICE_KIND_PHONE = 2;
+}
+
+message Ping {
+  uint64 nonce = 1;
+}
+
+message Pong {
+  uint64 nonce = 1;
+}
