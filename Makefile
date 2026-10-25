@@ -1,10 +1,17 @@
-.PHONY: doctor dev build test lint fmt rust-test rust-lint web-install web-test web-lint android android-test proto-lint
+.PHONY: doctor ci ci-changed dev build test lint fmt rust-test rust-lint web-install web-test web-lint android android-test proto-lint
 
 ANDROID := apps/android
 GRADLE := cd $(ANDROID) && ./gradlew
 
 doctor:
 	@scripts/doctor.sh
+
+# The checks a PR must pass (GitHub CI is manual-only).
+ci:
+	@scripts/ci.sh
+
+ci-changed:
+	@scripts/ci.sh --changed
 
 web-install:
 	pnpm install
