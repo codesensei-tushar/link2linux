@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// Pairing and the trust that follows from it. The exact byte strings that
+// PairingProof and SasCommit hash are defined in docs/protocol.md, section
+// "Pairing".
+
+// How the desktop pairs on a connection. The desktop sets it in its Hello
+// when it dialled the phone to pair; on every other connection, and always
+// in the phone's Hello, it is unspecified.
+enum PairingMethod {
+  PAIRING_METHOD_UNSPECIFIED = 0;
+  // The phone scanned the desktop's QR code. Each side proves that it knows
+  // the code's one-time secret with a PairingProof.
+  PAIRING_METHOD_QR_CODE = 1;
+  // No QR code. Each screen shows a six-digit code derived with SasCommit
+  // and SasNonce, and the user confirms on both devices that they match.
+  PAIRING_METHOD_SAS = 2;
+}
+
+// QR-code pairing: proof that the sender knows the one-time secret, bound
+// to this TLS connection. Each side sends one right after Hello.
+message PairingProof {
+  // HMAC-SHA256 keyed with the secret: 32 bytes.
+  bytes mac = 1;
+}
+
+// SAS pairing, first step, from the phone: a commitment to the nonce it
+// reveals later.
+message SasCommit {
+  // SHA-256 over the phone's nonce and the connection: 32 bytes.
+  bytes commitment = 1;
+}
+
+// SAS pairing: a 32-byte random nonce. The desktop sends its nonce once the
+// phone's SasCommit has arrived. The phone sends the nonce it committed to
+// once the desktop's nonce has arrived.
+message SasNonce {
+  bytes nonce = 1;
+}
+
+// One side's verdict on the pairing. For PAIRING_OUTCOME_ACCEPTED the
+// phone answers first; the desktop stores the pairing when that arrives and
+// then sends its own, and the phone stores the pairing when the desktop's
+// arrives. Any other outcome may come from either side at any time, and the
+// sender then closes the connection.
+message PairingResult {
+  PairingOutcome outcome = 1;
+}
+
+enum PairingOutcome {
+  PAIRING_OUTCOME_UNSPECIFIED = 0;
+  // The peer's proof verified (QR code), or the user confirmed that the
+  // codes match (SAS).
+  PAIRING_OUTCOME_ACCEPTED = 1;
+  // The user declined, or said the codes differ.
+  PAIRING_OUTCOME_DECLINED = 2;
+  // The peer's PairingProof or SasCommit did not verify.
+  PAIRING_OUTCOME_VERIFICATION_FAILED = 3;
+  // The sender is not waiting to pair with this peer: no matching QR code
+  // was scanned, pairing mode is off, or the offer expired.
+  PAIRING_OUTCOME_NOT_EXPECTED = 4;
+  // The user did not decide in time.
+  PAIRING_OUTCOME_TIMED_OUT = 5;
+  // The sender cannot pair this way, for example because its TLS stack
+  // cannot export keying material.
+  PAIRING_OUTCOME_UNSUPPORTED = 6;
+}
+
+// How to recognise and reach the sender while it is not connected. Each
+// side sends one per session, right after its FeatureStatus, and a new one
+// whenever the content changes.
+message PresenceUpdate {
+  // Phone only: the 32-byte key behind the rotating tag in its discovery
+  // announcements.
+  bytes presence_key = 1;
+  // Desktop only: the 6-byte Bluetooth LE address it advertises from, most
+  // significant byte first, so the phone can set up a companion-device
+  // association with it. Empty when the desktop does not advertise.
+  bytes ble_address = 2;
+}
+
+// Announces the sender's next TLS key, ahead of using it. Expects an Ack.
+// The receiver then accepts the current and the next key, until a
+// connection with the next key succeeds; from then on it accepts only that
+// one.
+message KeyRotation {
+  // SHA-256 of the next key's SubjectPublicKeyInfo: 32 bytes.
+  bytes next_spki_sha256 = 1;
+}

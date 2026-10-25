@@ -3,6 +3,7 @@ syntax = "proto3";
 package link2linux.v1;
 
 import "link2linux/v1/common.proto";
+import "link2linux/v1/pairing.proto";
 
 option java_multiple_files = true;
 option java_package = "dev.link2linux.protocol.v1";
@@ -40,6 +41,13 @@ message Envelope {
     ErrorReply error_reply = 16;
     ImageRequest image_request = 17;
     ImageData image_data = 18;
+
+    PairingProof pairing_proof = 30;
+    SasCommit sas_commit = 31;
+    SasNonce sas_nonce = 32;
+    PairingResult pairing_result = 33;
+    PresenceUpdate presence_update = 34;
+    KeyRotation key_rotation = 35;
   }
 }
 
@@ -64,6 +72,9 @@ message Hello {
   // Version of the sending app, such as "1.4.2". For logs and update hints
   // only: behaviour depends on versions and tokens, never on this.
   string app_version = 7;
+  // Set by the desktop when it dialled the phone to pair. Unspecified on
+  // every other connection.
+  PairingMethod pairing_method = 8;
 }
 
 enum DeviceKind {
