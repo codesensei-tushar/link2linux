@@ -172,6 +172,7 @@ where
         let hello = Envelope {
             seq: 1,
             payload: Some(Payload::Hello(hello_from(&local))),
+            ..Envelope::default()
         };
 
         let exchange = async {
@@ -338,8 +339,7 @@ where
                     Ok(None)
                 }
             },
-            // Feature messages, once the schema has some.
-            #[allow(unreachable_patterns)]
+            // Everything else is for the layers above the session.
             Some(payload) => Ok(Some(SessionEvent::Message {
                 seq: envelope.seq,
                 payload,
@@ -354,6 +354,7 @@ where
         let envelope = Envelope {
             seq,
             payload: Some(payload),
+            ..Envelope::default()
         };
         self.framed.send(&envelope).await?;
         Ok(seq)
@@ -372,6 +373,7 @@ fn hello_from(local: &DeviceInfo) -> Hello {
             .iter()
             .map(|feature| feature.name().to_owned())
             .collect(),
+        ..Hello::default()
     }
 }
 

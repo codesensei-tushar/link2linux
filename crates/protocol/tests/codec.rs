@@ -33,15 +33,19 @@ fn vector_envelopes() -> Vec<Envelope> {
                 device_name: "Büro workstation".into(),
                 kind: DeviceKind::Desktop.into(),
                 features: features.map(String::from).to_vec(),
+                ..Hello::default()
             })),
+            ..Envelope::default()
         },
         Envelope {
             seq: 2,
             payload: Some(Payload::Ping(Ping { nonce })),
+            ..Envelope::default()
         },
         Envelope {
             seq: 3,
             payload: Some(Payload::Pong(Pong { nonce })),
+            ..Envelope::default()
         },
     ]
 }

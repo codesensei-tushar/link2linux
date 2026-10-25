@@ -65,7 +65,11 @@ pub enum FrameError {
 /// use tokio_util::codec::{Decoder, Encoder};
 ///
 /// let mut codec = EnvelopeCodec::new();
-/// let ping = Envelope { seq: 1, payload: Some(Payload::Ping(Ping { nonce: 9 })) };
+/// let ping = Envelope {
+///     seq: 1,
+///     payload: Some(Payload::Ping(Ping { nonce: 9 })),
+///     ..Envelope::default()
+/// };
 /// let mut buf = BytesMut::new();
 /// codec.encode(&ping, &mut buf)?;
 /// assert_eq!(codec.decode(&mut buf)?, Some(ping));

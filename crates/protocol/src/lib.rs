@@ -13,7 +13,11 @@
 //! ```
 //! use link2linux_protocol::{Envelope, Payload, Ping};
 //!
-//! let envelope = Envelope { seq: 1, payload: Some(Payload::Ping(Ping { nonce: 7 })) };
+//! let envelope = Envelope {
+//!     seq: 1,
+//!     payload: Some(Payload::Ping(Ping { nonce: 7 })),
+//!     ..Envelope::default()
+//! };
 //! assert!(matches!(envelope.payload, Some(Payload::Ping(_))));
 //! ```
 
@@ -57,7 +61,9 @@ mod tests {
                 device_name: "Desk".into(),
                 kind: DeviceKind::Desktop.into(),
                 features: vec!["clipboard".into()],
+                ..Hello::default()
             })),
+            ..Envelope::default()
         };
         let bytes = envelope.encode_to_vec();
         assert_eq!(Envelope::decode(bytes.as_slice()), Ok(envelope));
