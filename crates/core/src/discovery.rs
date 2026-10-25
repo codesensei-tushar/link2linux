@@ -1,7 +1,7 @@
 //! Finding devices on the local network.
 //!
-//! The phone announces itself on the local network (mDNS, with a UDP
-//! broadcast fallback) and the desktop browses for it, so the desktop can
+//! The phone announces itself on the local network (mDNS, with UDP beacons
+//! as a fallback) and the desktop listens for it, so the desktop can
 //! list phones to pair with and dial paired ones when their address
 //! changes. The desktop never listens for connections: it always dials the
 //! phone (`docs/adr/0006-discovery-and-dialing.md`).
