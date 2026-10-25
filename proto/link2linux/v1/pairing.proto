@@ -36,9 +36,10 @@ message SasCommit {
   bytes commitment = 1;
 }
 
-// SAS pairing: a 32-byte random nonce. The desktop sends its nonce once the
-// phone's SasCommit has arrived. The phone sends the nonce it committed to
-// once the desktop's nonce has arrived.
+// SAS pairing: a fresh 32-byte random nonce. The desktop MUST NOT send its
+// nonce before the phone's SasCommit has arrived, and the phone MUST NOT
+// send the nonce it committed to before the desktop's has arrived. Any other
+// order, or a second copy, fails the pairing.
 message SasNonce {
   bytes nonce = 1;
 }
