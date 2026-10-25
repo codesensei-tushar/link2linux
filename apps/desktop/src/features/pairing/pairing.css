@@ -1,0 +1,73 @@
+.pairing-steps {
+  max-width: 34rem;
+  margin: var(--space-5) auto 0;
+}
+
+.pairing-steps__title {
+  font-size: var(--font-size-lg);
+  font-weight: 650;
+}
+
+.pairing-steps__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+  padding-left: var(--space-5);
+  color: var(--color-text-muted);
+}
+
+.pairing-steps__code {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xl);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+}
+
+.pairing-steps__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+}
+
+.device-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.device-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.device-list__icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  color: var(--color-text-muted);
+}
+
+.device-list__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.device-list__name {
+  font-weight: 600;
+}
+
+.device-list__model {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
