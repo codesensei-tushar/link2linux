@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 # Workspace crates.
+link2linux-core = { path = "crates/core" }
 link2linux-protocol = { path = "crates/protocol" }
 
 # Wire format.

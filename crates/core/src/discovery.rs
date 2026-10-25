@@ -1,0 +1,67 @@
+//! Finding devices on the local network.
+//!
+//! Each device announces itself on the local network and browses for the
+//! others, so the desktop can list phones to pair with and reconnect to
+//! paired ones when their address changes.
+//!
+//! Stub: the [`Discovery`] trait and its types are in place; the network
+//! implementation comes next.
+
+use std::net::SocketAddr;
+
+use crate::device::{DeviceInfo, DeviceKind};
+
+/// A device seen on the local network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredDevice {
+    /// The device's stable identifier, as in its `Hello`.
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Desktop or phone.
+    pub kind: DeviceKind,
+    /// Where the device accepts connections. There can be several, for
+    /// example one per network interface and address family.
+    pub addresses: Vec<SocketAddr>,
+}
+
+/// A change in the set of devices seen on the network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryEvent {
+    /// A device appeared, or its addresses changed.
+    Found(DiscoveredDevice),
+    /// A device stopped announcing itself.
+    Lost {
+        /// The device's identifier.
+        id: String,
+    },
+}
+
+/// Why discovery failed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DiscoveryError {
+    /// The network does not allow discovery, for example no multicast.
+    #[error("network discovery is unavailable: {0}")]
+    Unavailable(String),
+    /// A socket error.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// Announces this device on the local network and watches for others.
+pub trait Discovery: Send {
+    /// Starts announcing `local` as reachable on `port`, and browsing for
+    /// other devices.
+    fn start(
+        &mut self,
+        local: &DeviceInfo,
+        port: u16,
+    ) -> impl Future<Output = Result<(), DiscoveryError>> + Send;
+
+    /// Waits for the next change. Returns `None` once discovery has stopped.
+    fn next_event(&mut self) -> impl Future<Output = Option<DiscoveryEvent>> + Send;
+
+    /// Stops announcing and browsing.
+    fn stop(&mut self) -> impl Future<Output = Result<(), DiscoveryError>> + Send;
+}
