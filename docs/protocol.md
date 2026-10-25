@@ -780,13 +780,13 @@ sequenceDiagram
     P->>D: FeatureStatus, PresenceUpdate
     D->>P: NotificationSyncRequest (since cursor, expects_reply)
     P->>D: NotificationSyncBatch (reply_to, more = false)
-    loop every 15 s
+    loop every 15 s, or 60 s while idle
         D->>P: Ping
         P->>D: Pong
     end
     P-->>D: NotificationPosted, NotificationRemoved
     Note over D,P: Wi-Fi drops
-    D->>D: no frame for 45 s: session lost
+    D->>D: no frame for 3 ping intervals: session lost
     D->>P: dials the last known address after 1 s, 2 s, 4 s ... 60 s
     P-->>D: back on a network: mDNS announcement and a beacon burst
     D->>P: dials at once
@@ -797,12 +797,19 @@ sequenceDiagram
 The desktop drives liveness, because it is awake anyway and a phone that
 only answers can let its radio sleep.
 
-- The desktop sends a `Ping` every 15 seconds. It MAY use any interval
+- The desktop sends a `Ping` every 15 seconds while the session carries
+  activity the user can see (its window is focused, or a transfer or call
+  is running), and every 60 seconds otherwise. It MAY use any interval
   from 5 to 60 seconds. If nothing at all arrives from the phone for 3
   intervals, it considers the session lost.
 - The phone answers every `Ping` with a `Pong` carrying the same nonce, and
   never sends a `Ping` of its own. If nothing arrives from the desktop for
-  180 seconds, it considers the session lost.
+  240 seconds, 4 times the longest interval, it considers the session
+  lost.
+- Every `Ping` wakes a dozing phone, which makes it the main idle battery
+  cost of a session; the 60-second idle interval keeps that to about 1,440
+  wake-ups a day. A local network has no NAT state to keep alive, so a
+  shorter interval only buys faster detection of a lost connection.
 - Any frame counts as a sign of life, not only `Pong`.
 
 ### One session per pair
@@ -878,8 +885,9 @@ feature section defines its own.
 ### Sequence numbers
 
 `Envelope.seq` starts at 1 with `Hello` and grows by exactly one with each
-envelope the side sends. A receiver checks that each `seq` is greater than
-the previous one; anything else is a protocol error. Sequence numbers start
+envelope the side sends. A receiver checks that each `seq` is exactly one
+more than the previous one; anything else is a protocol error, which
+catches lost or repeated frames in either implementation. Sequence numbers start
 again at 1 on every connection.
 
 ### Unknown and unexpected messages
@@ -1378,8 +1386,10 @@ The rules that matter most for security, gathered in one place:
   version gets a new package, and an app may speak several.
 - Within a major version, changes are backward compatible: new messages,
   new fields, new enum values and new capability tokens. Field numbers and
-  enum values are never reused or renumbered. `buf breaking` checks this
-  in CI.
+  enum values are never reused or renumbered. Whoever merges a change under
+  `proto/` runs `buf breaking` against `main` first; the local `make ci`
+  runs `buf lint` (or, without buf, a `protoc` compile), which does not
+  check compatibility.
 - The fields listed in [Version negotiation](#version-negotiation) never
   change, in any major version.
 - Envelope payload numbers are grouped: 10 to 29 for session messages and

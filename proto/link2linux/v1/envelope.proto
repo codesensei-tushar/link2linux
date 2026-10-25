@@ -105,14 +105,16 @@ message Pong {
 }
 
 // Sent right before a side closes the connection on purpose. A connection
-// that ends without one counts as lost.
+// that ends without one counts as lost. Keeps its numbers and meaning in
+// every protocol version.
 message Goodbye {
   GoodbyeReason reason = 1;
   // English text for logs. Never shown to the user as it is.
   string detail = 2;
 }
 
-// Why a side closed the connection, which decides what happens next.
+// Why a side closed the connection, which decides what happens next. Keeps
+// its numbers and meaning in every protocol version.
 enum GoodbyeReason {
   // Unknown reason: handled like a lost connection.
   GOODBYE_REASON_UNSPECIFIED = 0;
