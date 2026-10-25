@@ -76,12 +76,14 @@ enum PairingOutcome {
 // side sends one per session, right after its FeatureStatus, and a new one
 // whenever the content changes.
 message PresenceUpdate {
-  // Phone only: the 32-byte key behind the rotating tag in its discovery
-  // announcements.
+  // Phone only: the 32-byte key the phone made for this desktop, behind the
+  // rotating tags in its discovery announcements and beacons. Each paired
+  // desktop gets its own key.
   bytes presence_key = 1;
-  // Desktop only: the 6-byte Bluetooth LE address it advertises from, most
-  // significant byte first, for the phone's companion-device association.
-  // The QR code carries it first; this keeps it current. Empty when the
+  // Desktop only: the 6-byte public Bluetooth LE address it advertises
+  // from, most significant byte first, for the phone's companion-device
+  // association. The QR code carries it first; this reports changes, after
+  // which the phone asks the user to repeat the association. Empty when the
   // desktop does not advertise.
   bytes ble_address = 2;
 }

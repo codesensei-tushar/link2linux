@@ -36,7 +36,7 @@ LE devices, not with hosts on a Wi-Fi network.
 - **mDNS.** The phone announces `_link2linux._tcp` with a random instance
   name and a TXT record without stable identifiers. A paired desktop
   recognizes it by a tag that rotates with a random nonce, computed with a
-  key the phone gave it at pairing. During pairing, a tag derived from the
+  key the phone made for that desktop alone at pairing. During pairing, a tag derived from the
   QR secret marks the phone that scanned the code. The phone re-registers
   the service when it wants to be found, which sends fresh announcements.
 - **Beacons on UDP port 27381.** For networks that filter multicast, the
@@ -48,9 +48,11 @@ LE devices, not with hosts on a Wi-Fi network.
 - **Only hints.** Discovery results only trigger dials, and the desktop
   dials only on-link addresses. Trust comes from TLS alone.
 - **Bluetooth LE for presence only.** The desktop may advertise a fixed
-  service UUID, connectable and from its stable address, so the phone can
+  service UUID, connectable and from its public address, so the phone can
   make a plain companion-device association with exactly that desktop (the
-  QR code carries its Bluetooth address). No data flows over Bluetooth in
+  QR code carries its Bluetooth address). On phones that support it
+  (Android 12 and later, with offloaded scan filters), Android then starts
+  the app when the desktop comes near. No data flows over Bluetooth in
   version 1.
 
 Rejected alternatives:
@@ -77,11 +79,13 @@ Rejected alternatives:
   of other people's network scans.
 
 ## Consequences
-Pairing and reconnecting work with a default desktop firewall on any
-network that passes multicast. Where multicast is filtered, they work when
-the desktop allows UDP port 27381, so packages ship firewalld and ufw
-service definitions for it. Networks with client isolation cannot work at
+Pairing and reconnecting work without firewall changes on desktops whose
+firewall allows mDNS (ufw's defaults, Fedora Workstation) on networks that
+pass multicast. Elsewhere the user allows the link2linux firewall service
+(mDNS and UDP 27381) once, which the packages ship for firewalld and ufw,
+and the phone shows its address for typing in as a last resort. Networks with client isolation cannot work at
 all, and the apps say so. The phone has to run a foreground service while
 it is paired, which it needs anyway to stay connected, and spends a little
-battery on beacon bursts while it is not connected. The phone's
+battery on beacon bursts while it is not connected; after the first minute
+of a burst, beacons are best effort while the phone dozes. The phone's
 announcements reveal that a link2linux phone is present, but not which one.
