@@ -1,49 +1,66 @@
-//! Finding devices on the local network.
+//! Finding phones on the local network.
 //!
-//! The phone announces itself on the local network (mDNS, with UDP beacons
-//! as a fallback) and the desktop listens for it, so the desktop can
-//! list phones to pair with and dial paired ones when their address
-//! changes. The desktop never listens for connections: it always dials the
-//! phone (`docs/adr/0006-discovery-and-dialing.md`).
+//! Discovery only ever flows from the phone to the desktop: the phone
+//! announces itself over mDNS and sends UDP beacons, and the desktop
+//! listens, so it can list phones to pair with and dial paired ones when
+//! their address changes. The desktop never listens for connections and
+//! never announces itself over mDNS (`docs/adr/0006-discovery-and-dialing.md`).
 //!
-//! Stub: the [`Discovery`] trait and its types are in place; the network
-//! implementation comes next.
+//! - [`presence`]: the tags and the TXT record that carry them;
+//! - [`beacon`] and [`listener`]: the UDP beacon codec and its sockets;
+//! - [`browser`] and [`tracker`]: browsing mDNS and deciding which phones
+//!   matter;
+//! - [`reconnect`]: when to dial a paired phone again;
+//! - [`lan`]: [`LanDiscovery`], which joins all of the above behind the
+//!   [`Discovery`] trait.
+//!
+//! Everything discovery reports is a hint that only leads to a dial
+//! attempt. Before dialing an address from a record or beacon, the dialer
+//! must check that it is on-link for one of the desktop's interfaces
+//! (`docs/protocol.md`, "Choosing what to dial"); that check needs the
+//! interface list and belongs to the dialer.
 
 use std::net::SocketAddr;
 
+use tokio::sync::watch;
+
 pub mod beacon;
 pub mod browser;
+pub mod lan;
 pub mod listener;
 pub mod presence;
 pub mod reconnect;
 pub mod tracker;
 
-use crate::device::{DeviceInfo, DeviceKind};
+pub use beacon::BeaconSender;
+pub use lan::{LanConfig, LanDiscovery};
+pub use presence::{DiscoveryKeys, PairedKey, SecretBytes};
+pub use tracker::{Match, PhoneRecord, Sighting};
 
-/// A device seen on the local network.
+/// A phone's beacon that passed every check.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredDevice {
-    /// The device's stable identifier, as in its `Hello`.
-    pub id: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Desktop or phone.
-    pub kind: DeviceKind,
-    /// Where the device accepts connections. There can be several, for
-    /// example one per network interface and address family.
-    pub addresses: Vec<SocketAddr>,
+pub struct BeaconSighting {
+    /// Whose key verified it: a paired phone's id, or the QR offer.
+    pub sender: BeaconSender<String>,
+    /// Where to dial: the datagram's source address at the beacon's port.
+    pub address: SocketAddr,
 }
 
-/// A change in the set of devices seen on the network.
+/// A change in what discovery knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiscoveryEvent {
-    /// A device appeared, or its addresses changed.
-    Found(DiscoveredDevice),
-    /// A device stopped announcing itself.
+    /// A phone that matters appeared over mDNS.
+    Found(Sighting),
+    /// A phone already found announced again, or its matches changed.
+    /// An announcement is fresh evidence that the phone is reachable.
+    Updated(Sighting),
+    /// A phone that mattered was withdrawn or stopped matching.
     Lost {
-        /// The device's identifier.
-        id: String,
+        /// Its mDNS instance name.
+        instance: String,
     },
+    /// A beacon arrived from a phone that matters.
+    Beacon(BeaconSighting),
 }
 
 /// Why discovery failed.
@@ -58,20 +75,22 @@ pub enum DiscoveryError {
     Io(#[from] std::io::Error),
 }
 
-/// Announces this device on the local network and watches for others.
+/// Watches the local network for phones. It only browses and listens; it
+/// announces nothing.
 pub trait Discovery: Send {
-    /// Starts announcing `local` as reachable on `port`, and browsing for
-    /// other devices.
+    /// Starts browsing and listening. `keys` always holds the current
+    /// keys of the paired phones and the active QR offer; discovery
+    /// re-checks what it has seen whenever they change.
     fn start(
         &mut self,
-        local: &DeviceInfo,
-        port: u16,
+        keys: watch::Receiver<DiscoveryKeys>,
     ) -> impl Future<Output = Result<(), DiscoveryError>> + Send;
 
-    /// Waits for the next change. Returns `None` once discovery has stopped.
+    /// Waits for the next change. Returns `None` once discovery has
+    /// stopped. Safe to cancel.
     fn next_event(&mut self) -> impl Future<Output = Option<DiscoveryEvent>> + Send;
 
-    /// Stops announcing and browsing.
+    /// Stops browsing and listening.
     fn stop(&mut self) -> impl Future<Output = Result<(), DiscoveryError>> + Send;
 }
 
