@@ -22,6 +22,8 @@ no relay: the two devices talk to each other directly or not at all.
 - [Session](#session)
 - [Message patterns](#message-patterns)
 - [Errors](#errors)
+- [Notifications](#notifications)
+- [Security considerations](#security-considerations)
 - [Versioning](#versioning)
 - [Message index](#message-index)
 
@@ -860,6 +862,249 @@ the code, never from `detail`.
 
 Pairing failures use `PairingResult` instead, and connection-level
 problems use `Goodbye`.
+
+## Notifications
+
+Capability token `notifications`. The phone mirrors its notifications to
+the desktop. The desktop shows them, and can dismiss them on the phone and
+run their actions, including inline replies.
+
+The phone needs notification listener access, permission token
+`notification-access`. Until the user grants it, the phone reports the
+feature as `PERMISSION_REQUIRED`.
+
+### What the phone shares
+
+The phone shares the notifications it shows in its notification shade,
+except:
+
+- its own notifications;
+- notifications the app marked as local only, which Android defines as
+  not to be bridged to other devices;
+- notifications of apps the user excluded in the phone app;
+- notifications from a work profile or another user;
+- group summaries whose children it shares (the children carry `group`).
+
+When the user excludes an app, its notifications are reported as removed
+with `NOTIFICATION_REMOVAL_REASON_NOT_SHARED`.
+
+### Sync
+
+The notifications the phone shares form one collection. The phone keeps its
+change log in memory, so it picks a new epoch whenever its notification
+listener restarts; the desktop then gets a snapshot. It keeps tombstones
+for at least the last 500 removals.
+
+1. At the start of a session, once the feature is active and `READY` on
+   both sides, the desktop sends `NotificationSyncRequest` with its cursor
+   for this phone.
+2. The phone answers with `NotificationSyncBatch` messages, at most 100
+   notifications or 256 KiB each.
+3. From then on, the phone sends `NotificationPosted` for each new or
+   updated notification, and `NotificationRemoved` for each removal.
+
+If the feature becomes unavailable during the session, the phone stops
+sending events; when it is `READY` again, the desktop sends a new sync
+request. A notification's `key` is opaque to the desktop and stays the same
+for the notification's lifetime, so updates replace the earlier version in
+place.
+
+### Showing notifications
+
+- The desktop alerts the user (banner, sound) only for `NotificationPosted`
+  with `alert` set. Notifications that arrive in sync batches are added to
+  the desktop's list without alerting, since the user may have seen them
+  already.
+- The phone sets `alert` for new notifications with importance `DEFAULT`
+  or `HIGH`, and for updates of those unless the app asked to alert only
+  once.
+- `MIN` and `LOW` notifications only go to the desktop's list.
+- `ongoing` notifications cannot be dismissed on the phone, so the desktop
+  does not offer to dismiss them there.
+- `visibility` is a hint for the desktop's own privacy settings, for
+  example to hide `PRIVATE` content while the desktop's screen is shared.
+
+### Actions and replies
+
+`PhoneNotification.actions` lists the buttons the app attached, with an
+`id` the desktop sends back in `NotificationActionRequest`:
+
+- An action with `accepts_reply` takes free-form text in `reply_text`.
+- An action with `reply_choices` offers ready-made replies; the chosen one
+  is sent as `reply_text`.
+- `kind` helps the desktop present the action, for example by binding a
+  `REPLY` action to its notification server's inline-reply field.
+
+The phone looks the action up in the notification's current version. If
+the notification or the action is gone, it answers `ERROR_CODE_NOT_FOUND`.
+If Android blocks the action, for example because it would open an
+activity from the background, it answers `ERROR_CODE_UNAVAILABLE`.
+
+### Dismissing
+
+- **Phone to desktop.** When a notification disappears from the phone, the
+  phone sends `NotificationRemoved`, and the desktop removes it from its
+  list and closes its banner.
+- **Desktop to phone.** When the user dismisses a notification on the
+  desktop and the user has turned on dismiss sync, the desktop sends
+  `NotificationDismissRequest` through its outbox. The phone cancels the
+  notification and then reports its removal like any other, with
+  `NOTIFICATION_REMOVAL_REASON_DISMISSED_FROM_DESKTOP`.
+- When the desktop closes a banner because the phone removed the
+  notification, it MUST NOT send a dismiss request back.
+
+Outbox entries for notifications expire after 10 minutes, since a stale
+dismissal or reply is more surprising than a lost one.
+
+### Icons and pictures
+
+`app_icon`, `large_icon` and `picture` are `ImageRef`s, fetched with
+`ImageRequest` (see [Images](#images)). The phone sends:
+
+- app icons as PNG, 128 by 128 pixels;
+- large icons as PNG, at most 256 pixels on the longer side;
+- pictures as JPEG or WebP, at most 1024 pixels on the longer side.
+
+The phone keeps the images of the notifications it currently shares, so it
+can answer requests for them.
+
+### Redacted and hidden content
+
+Android 15 and later withhold the content of some notifications, such as
+those that seem to contain a one-time code, from notification listeners
+that are not system-trusted. A store-installed app cannot get that trust,
+so the phone app receives a placeholder instead of the content.
+
+- When the phone can tell that the OS withheld content, it sets `content`
+  to `NOTIFICATION_CONTENT_REDACTED_BY_SYSTEM` and leaves the withheld
+  fields empty. It MUST NOT send the placeholder text as content.
+- When the user chose not to share an app's content, the phone sets
+  `NOTIFICATION_CONTENT_HIDDEN_BY_USER` and fills in only the app, time and
+  category.
+- The desktop shows such notifications with an explanation, such as
+  "Content hidden by Android. Check your phone", and offers no reply.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| `key` | 256 bytes |
+| `title`, `sub_text`, `conversation_title`, an action `label` | 1 KiB each |
+| `text`, a message's `text` | 8 KiB each |
+| `messages` | 10, the latest |
+| `actions` | 8 |
+| `reply_text` | 8 KiB |
+
+The phone truncates longer values at a character boundary.
+
+## Security considerations
+
+### What is protected
+
+Notification content, messages, call data, files and clipboard content;
+the ability to act as the user on the other device (send replies, dismiss
+notifications); and the user's privacy on the network (where the phone is,
+and which devices belong together).
+
+### Passive attacker on the local network
+
+Someone who can read all traffic on the network, including other members
+of a shared Wi-Fi network:
+
+- sees the mDNS records and discovery datagrams. They reveal that a
+  link2linux phone is present and its address, but not which phone it is:
+  the instance name, nonce and tag change at least every 15 minutes, and
+  only a desktop holding the presence key can link them;
+- sees TLS 1.3 handshakes. Certificates are encrypted, no server name is
+  sent, and the ALPN value only says "link2linux";
+- does not see any content. Traffic sizes and timing remain visible.
+
+### Active attacker on the local network
+
+Someone who can also send, drop and change packets:
+
+- **can** block discovery or connections (denial of service), send forged
+  announcements, and make the desktop dial addresses on its own subnet.
+  None of this gives access: every dial still has to pass the TLS key
+  check. The desktop limits attempts (one per phone every 2 seconds) and
+  never dials off-link addresses;
+- **cannot** impersonate a paired device without its private key, since
+  both sides check `fp` and the CertificateVerify signature;
+- **cannot** connect to the phone's listener as a desktop: outside pairing,
+  the phone accepts only paired desktops' certificates;
+- **cannot** read or change messages, or replay them into another
+  connection: TLS protects each connection, and resumption and 0-RTT are
+  off.
+
+### Attacks on pairing
+
+- **QR method.** The phone learns `fp_D` from the QR code, out of band, so
+  an attacker cannot stand in for the desktop. To stand in for the phone,
+  it would need a `PairingProof` keyed with the secret, which only the
+  desktop's screen shows. Its pairing tag is public, but reveals nothing
+  about the secret. A relayed proof fails, because it is bound to the TLS
+  connection through `ekm` and to both fingerprints. The secret has 128
+  bits, so a captured proof cannot be brute-forced.
+- **Someone who photographs the QR code** before the user scans it can
+  pair in the user's place, within the offer's 5 minutes and before the
+  phone does. The desktop shows the name of each newly paired phone, and
+  withdraws the code after one pairing, so the user would notice that
+  their own phone failed. The desktop SHOULD hide the code while its screen
+  is being shared, where it can tell.
+- **SAS method.** A man in the middle succeeds with probability 10^-6 per
+  attempt, and each attempt needs the user to confirm. The phone accepts
+  only one SAS connection at a time and gives up after 3 failed attempts.
+
+### Replay
+
+TLS rules out replay across connections. Within the protocol, requests
+that change state come with an idempotency key, so a request that is sent
+again after a reconnect is carried out once. Discovery datagrams and mDNS
+records are not authenticated; replaying them only causes dial attempts
+that fail the key check.
+
+### Lost or stolen devices
+
+- **Phone.** Whoever holds an unlocked phone can use it as its owner can,
+  including its sessions with paired desktops on the same network. The
+  desktop's "remove phone" deletes the pairing, after which the phone's key
+  no longer opens a session. The private key cannot be copied off the
+  phone, because the Android Keystore does not export it.
+- **Desktop.** A desktop stores mirrored content (notifications, messages)
+  and can act as the user towards the phone while on the same network as
+  it. The phone's "remove desktop" ends that. Desktop builds keep their
+  private key in the Secret Service keyring where one exists, which is
+  unlocked with the user's session.
+- Removing a pairing on the remaining device is enough. The lost device
+  does not need to take part.
+
+### Privacy
+
+- Nothing leaves the local network. There is no server that could see
+  content or metadata.
+- The phone advertises no stable identifier over mDNS or UDP. The desktop
+  advertises nothing over mDNS.
+- The desktop's Bluetooth advertisement, when enabled, uses a stable address
+  and a fixed service UUID, so a nearby observer can recognize a
+  link2linux desktop over time. It is off unless the user turns on the
+  Bluetooth presence feature.
+- In SAS pairing mode, the phone advertises its name for up to 2 minutes,
+  because the user has to pick it from a list.
+
+### Implementation requirements
+
+The rules that matter most for security, gathered in one place:
+
+1. Verify the TLS CertificateVerify signature, then compare `fp`; never
+   accept a peer by certificate fields other than its key.
+2. Never enable TLS session resumption or 0-RTT.
+3. Compare MACs and commitments in constant time.
+4. Bind pairing proofs and codes to `ekm`; refuse to pair without it.
+5. Generate secrets, nonces and keys with the platform's cryptographic
+   random generator.
+6. Never dial off-link addresses taken from discovery.
+7. Check the hash of every received image before using it.
+8. Keep private keys and presence keys out of logs and backups.
 
 ## Versioning
 
