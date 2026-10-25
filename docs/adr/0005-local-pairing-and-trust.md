@@ -19,7 +19,8 @@ still cannot scan a code.
 ## Decision
 - **Identity.** Each installation has a device id and an ECDSA P-256 key
   with a self-signed certificate. Devices recognize each other only by the
-  SHA-256 of the key's SubjectPublicKeyInfo (`fp`). Names, dates and
+  SHA-256 of the key's SubjectPublicKeyInfo (`fp`); records are found by
+  it, and the self-asserted device id is only checked against them. Names, dates and
   extensions in the certificate are ignored, so certificates never expire
   in a way that matters.
 - **Transport trust.** Every connection is mutually authenticated TLS 1.3.
@@ -36,7 +37,9 @@ still cannot scan a code.
   from an exporter value (with its own label, and the same context) and
   two nonces. The phone commits to its nonce before it sees the desktop's,
   and reveals it after, so a man in the middle has one blind guess per
-  attempt.
+  attempt, and at most 3 attempts each time the user turns SAS mode on.
+  An attempt counts as soon as the phone reveals its nonce, so dropping the
+  connection does not buy another guess.
 - **Order of storing.** The desktop stores the pairing first, after the
   phone has accepted; the phone stores it when the desktop's acceptance
   arrives. An interrupted pairing is detected on the next dial.

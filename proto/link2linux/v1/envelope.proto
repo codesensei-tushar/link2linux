@@ -65,7 +65,10 @@ message Hello {
   // Highest protocol major version the sender speaks.
   uint32 protocol_version = 1;
   // Stable identifier of the installation: a random UUID in lowercase
-  // hyphenated form. Pairing records are keyed by it.
+  // hyphenated form. The receiver finds the pairing record by the peer's key
+  // fingerprint, then checks that this field equals the record's device id,
+  // and closes the connection on a mismatch. It never uses this field to
+  // find, update or replace a record.
   string device_id = 2;
   // Human-readable name, as the user set it.
   string device_name = 3;

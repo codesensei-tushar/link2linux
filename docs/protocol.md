@@ -38,9 +38,12 @@ BCP 14 (RFC 2119, RFC 8174) when they appear in capitals.
 - **Notation.** `||` is byte concatenation. Text labels in cryptographic
   inputs are ASCII bytes with no terminator. Integers in cryptographic
   inputs are big-endian.
-- **Fingerprints.** `fp(X)` is the SHA-256 hash of device X's public key,
-  computed over the DER encoding of the certificate's
-  SubjectPublicKeyInfo. It is 32 bytes. `fp_D` is the desktop's, `fp_P`
+- **Fingerprints.** `fp(X)` is the SHA-256 hash of device X's public key:
+  the DER SubjectPublicKeyInfo of its certificate, which MUST be exactly the
+  91-byte P-256 form
+  `3059301306072a8648ce3d020106082a8648ce3d03010703420004 || X || Y` (named
+  curve, uncompressed point). A peer certificate whose key is encoded in any
+  other way is rejected. `fp` is 32 bytes; `fp_D` is the desktop's, `fp_P`
   the phone's.
 - **base64url** is RFC 4648 section 5, without padding.
 - **Times** on the wire are Unix time in milliseconds, in `int64` fields
@@ -94,6 +97,13 @@ peer's device id, name, kind, current `fp`, an optional next `fp` (see
 [key rotation](#key-rotation)), and the time of pairing. A desktop also
 stores the phone's presence key and last known addresses; a phone stores
 the desktop's Bluetooth LE address and last known addresses.
+
+A device finds a peer's record by the `fp` the peer presented in TLS (its
+current or next `fp`), never by device id. When the peer's `Hello` arrives,
+its `device_id` MUST equal the record's; on a mismatch the connection is a
+protocol error. The device id is self-asserted: it names the installation
+in the user interface and in logs, but it never decides trust and never
+selects a record to show, update or replace.
 
 ## Discovery
 
@@ -317,11 +327,21 @@ Unknown parameters MUST be ignored, so later versions can add some. A
 typical payload is about 180 characters long.
 
 The desktop creates a new secret each time it shows a code. An offer is
-valid for 5 minutes and for one successful pairing; after 5 failed proofs
-the desktop withdraws it and shows a new code. It tolerates a few failures
-because a forged announcement can make it dial the wrong host first, and
-the secret's 128 bits make a failed attempt worthless to an attacker. The
-phone does not need the expiry: the desktop enforces it.
+valid for 5 minutes or until one pairing succeeds. A failed proof does not
+end the offer: the desktop stops dialing that address and that `fp_P` for
+the rest of the offer, and keeps trying other candidates, so a forged
+announcement cannot use up the code. As a backstop against resource
+exhaustion it withdraws the offer after 32 failed proofs. The phone forgets
+a scanned offer after a pairing, or 5 minutes after the scan.
+
+The pairing tag `q` and the beacons sent while pairing are public, so
+anyone can check a guess of the secret against them offline. That takes
+about 2^128 work for a 16-byte secret. The secret MUST therefore never be
+shorter than 16 random bytes, typed in, or derived from a code.
+
+The phone app scans the code itself and does not register a browsable
+handler for `link2linux://`, so no other app can receive the secret from
+the system camera.
 
 ### Certificate checks
 
@@ -339,8 +359,18 @@ The desktop accepts the phone's certificate when:
   `fp`; or
 - it dialed to pair. It then accepts any key and records `fp_P`.
 
-The signature in the TLS CertificateVerify message MUST be verified in
-every case, so that the peer proves it holds the private key.
+In every case the TLS CertificateVerify signature MUST be verified too, so
+that the peer proves it holds the private key. Both checks have to pass
+before the connection is used. Neither TLS stack lets the application
+choose their order, and it does not matter; what matters is that the
+signature check is never skipped. A custom certificate verifier on the
+desktop delegates it to the TLS library.
+
+When the desktop dials to pair by QR code and several candidate addresses
+complete TLS, every one of them runs the proof exchange; the first whose
+proof verifies wins and the others are closed. When it dials to pair by
+SAS, it runs the exchange on one connection only: it closes all but the
+first connection that completes TLS before it sends `Hello`.
 
 The desktop sets `Hello.pairing_method` on a pairing connection, even when
 it already has a record for the phone. The phone checks that it expects
@@ -361,6 +391,7 @@ ekm = TLS-Exporter("EXPERIMENTAL-link2linux-pair-v1", fp_D || fp_P, 32)
 
 `fp_D` and `fp_P` are the fingerprints of the certificates presented in this
 TLS connection, so the 64-byte context is the same on both sides. The
+context is always passed; it is never absent or empty. The
 context matters: in TLS 1.3 the exporter secret is fixed when the server
 finishes its part of the handshake, before the client's certificate, so
 without the context the value would not depend on the desktop's key. The
@@ -423,23 +454,33 @@ commit-then-reveal exchange in which the phone commits first:
 ekm = TLS-Exporter("EXPERIMENTAL-link2linux-sas-v1", fp_D || fp_P, 32)
 ```
 
-1. The phone picks a 32-byte random nonce `n_p` and sends `SasCommit`:
-   `commitment = SHA-256("l2l-sas-commit-v1" || ekm || n_p)`.
-2. Once the commitment has arrived, the desktop picks a 32-byte random
-   nonce `n_d` and sends it in `SasNonce`.
-3. Once `n_d` has arrived, the phone sends `n_p` in `SasNonce`.
+1. The phone picks a fresh 32-byte random nonce `n_p` and sends
+   `SasCommit`: `commitment = SHA-256("l2l-sas-commit-v1" || ekm || n_p)`.
+2. The desktop MUST NOT send its `SasNonce` before the phone's `SasCommit`
+   has arrived. It then picks a fresh 32-byte random nonce `n_d` and sends
+   it in `SasNonce`.
+3. The phone MUST NOT send its `SasNonce` before the desktop's has arrived.
+   It then sends `n_p` in `SasNonce`.
 4. The desktop checks the commitment. On a mismatch it sends
    `PAIRING_OUTCOME_VERIFICATION_FAILED` and closes the connection.
-5. Both devices show the code, formatted as two groups of three digits:
+5. Both devices show the code, as six digits with leading zeros, in two
+   groups of three:
 
    ```
    h   = HMAC-SHA256(ekm, "l2l-sas-v1" || n_d || n_p)
-   sas = (first 4 bytes of h, as an unsigned integer) mod 1000000
+   sas = (first 4 bytes of h, as an unsigned 32-bit big-endian integer)
+         mod 1000000
    ```
 
 6. The user confirms on each device that the codes match, or declines.
    Each device then sends `PairingResult` in the order described in
    [Storing the pairing](#storing-the-pairing).
+
+Each side sends exactly one `SasCommit` or `SasNonce` of its own per
+connection, in this order. Any other order, or a second copy, ends the
+pairing with `PAIRING_OUTCOME_VERIFICATION_FAILED`. Nonces are never
+reused across connections. Each of steps 1 to 3 has 10 seconds, separate
+from the user's time to confirm.
 
 ```mermaid
 sequenceDiagram
@@ -477,9 +518,17 @@ nonce, so the attacker has to commit to its own values blindly on at least
 one of the two connections. One attempt then succeeds with probability
 10^-6, and each attempt needs the user to confirm a code.
 
-The phone leaves SAS mode after a successful pairing, after 2 minutes, or
-after 3 failed or declined attempts. Each device gives the user 60 seconds
-to confirm, then sends `PAIRING_OUTCOME_TIMED_OUT`.
+An SAS attempt is used up as soon as the phone has sent its `SasNonce`,
+that is revealed `n_p`. Any end of that connection other than a stored
+pairing counts as a failed attempt: a decline, a mismatch, a timeout, a
+protocol error, or a connection that just closes. The phone leaves SAS mode
+after a successful pairing, after 2 minutes, or after 3 attempts; the user
+then has to turn it on again. The desktop runs the exchange on at most one
+connection each time the user picks a phone, and in SAS mode it never
+redials on its own. These limits are what keep an attacker to a handful of
+one-in-a-million guesses: without them it could drop and redial the phone
+until the codes happened to match. Each device gives the user 60 seconds to
+confirm, then sends `PAIRING_OUTCOME_TIMED_OUT`.
 
 ### Storing the pairing
 
@@ -512,16 +561,19 @@ provider for its own connections only, on every API level. That gives the
 same TLS 1.3 implementation and an exporter on every phone, so there is no
 weaker path for older ones.
 
-If exporting keying material ever fails, the phone MUST NOT pair: it sends
-`PAIRING_OUTCOME_UNSUPPORTED`. It MUST NOT fall back to proofs or codes
-without `ekm`. Binding to the connection is what keeps a proof or a code
+If exporting keying material fails on either side, that side MUST NOT
+pair: it sends `PAIRING_OUTCOME_UNSUPPORTED`. It MUST NOT fall back to
+proofs or codes without `ekm`. Binding to the connection is what keeps a proof or a code
 from being relayed into another connection if a certificate check is ever
 implemented wrongly.
 
 ### Re-pairing
 
-Pairing again with a device that already has a record replaces that
-record, including its keys and presence key. A phone that scans a QR code
+Pairing again with a device whose `fp` matches a record replaces that
+record, including its presence key. When the new pairing's device id
+matches a record with a different `fp`, the device shows that record (name,
+kind, date paired) and asks the user whether the new pairing replaces it;
+if the user says no, it declines the pairing. A phone that scans a QR code
 whose `f` matches a paired desktop re-pairs with it, and a phone in SAS
 mode re-pairs with a paired desktop that dials it to pair: the method in
 the desktop's Hello decides, not the old record.
@@ -570,8 +622,9 @@ Every connection is TLS 1.3 over TCP, with certificates on both sides.
 - TLS 1.2 and earlier MUST NOT be negotiated.
 - The desktop is the TLS client. It connects to an IP address and sends no
   server name indication.
-- Both sides send the ALPN protocol ID `l2l/1`; the phone rejects
-  connections that do not.
+- Both sides offer the ALPN protocol ID `l2l/1`, and each side closes the
+  connection unless `l2l/1` was negotiated. Neither TLS stack enforces this
+  by itself, so each checks the negotiated protocol after the handshake.
 - The phone requests a client certificate and rejects a connection without
   one.
 - Both sides use ECDSA P-256 keys and the `ecdsa_secp256r1_sha256`
@@ -581,8 +634,17 @@ Every connection is TLS 1.3 over TCP, with certificates on both sides.
   a full handshake, so every connection proves possession of both keys, and
   no data can be replayed.
 - Peer certificates are checked as in [Certificate
-  checks](#certificate-checks): by `fp` alone, after verifying the
-  CertificateVerify signature.
+  checks](#certificate-checks): by `fp` alone, and the CertificateVerify
+  signature is always verified.
+
+Notes for implementers: on the desktop (rustls), TLS 1.3 as the only
+version, resumption disabled, early data off, and an IP-address server
+name, which sends no SNI. On the phone (Conscrypt), TLS 1.3 as the only
+enabled protocol and session tickets off; do not narrow the enabled cipher
+suites to TLS 1.3 names, because Conscrypt picks the server key type from
+the TLS 1.2 suites and would then find no certificate. The exporter is
+`export_keying_material` in rustls and `Conscrypt.exportKeyingMaterial`
+on the phone, both called after the handshake with the 64-byte context.
 
 ### Framing
 
@@ -672,8 +734,8 @@ only answers can let its radio sleep.
 ### One session per pair
 
 A desktop and a phone have at most one session with each other. When a new
-connection from a paired desktop completes its Hello exchange while an
-older session with that desktop is still open, the phone sends `Goodbye`
+connection from a paired desktop (the same record, found by `fp`) completes
+its Hello exchange while an older session with that desktop is still open, the phone sends `Goodbye`
 with `GOODBYE_REASON_REPLACED` on the old connection and closes it. This
 resolves half-open connections left over after a network change. A phone
 MAY have sessions with several desktops at the same time.
@@ -1098,10 +1160,11 @@ Someone who can also send, drop and change packets:
 - **QR method.** The phone learns `fp_D` from the QR code, out of band, so
   an attacker cannot stand in for the desktop. To stand in for the phone,
   it would need a `PairingProof` keyed with the secret, which only the
-  desktop's screen shows. Its pairing tag is public, but reveals nothing
-  about the secret. A relayed proof fails, because it is bound to the TLS
-  connection through `ekm` and to both fingerprints. The secret has 128
-  bits, so a captured proof cannot be brute-forced.
+  desktop's screen shows. The pairing tag is public, but checking a guess
+  of the secret against it takes about 2^128 work. A relayed proof fails,
+  because it is bound to the TLS connection through `ekm` and to both
+  fingerprints. For the same reason, a captured proof cannot be
+  brute-forced.
 - **Someone who photographs the QR code** before the user scans it can
   pair in the user's place, within the offer's 5 minutes and before the
   phone does. The desktop shows the name of each newly paired phone, and
@@ -1109,8 +1172,12 @@ Someone who can also send, drop and change packets:
   their own phone failed. The desktop SHOULD hide the code while its screen
   is being shared, where it can tell.
 - **SAS method.** A man in the middle succeeds with probability 10^-6 per
-  attempt, and each attempt needs the user to confirm. The phone accepts
-  only one SAS connection at a time and gives up after 3 failed attempts.
+  attempt. An attempt counts as soon as the phone reveals its nonce, even
+  if the connection then drops, and the phone allows 3 per activation, so
+  an attacker gets at most 3 guesses each time the user turns SAS mode on.
+- **A paired device that lies about its id** gains nothing: records are
+  found by `fp`, and a `device_id` that differs from the record's ends the
+  connection.
 
 ### Replay
 
@@ -1147,6 +1214,10 @@ that fail the key check.
   and a fixed service UUID, so a nearby observer can recognize a
   link2linux desktop over time. It is off unless the user turns on the
   Bluetooth presence feature.
+- When it dials to pair by QR code, the desktop sends its `Hello` (device
+  id, name, app version) to whichever host announced the pairing tag,
+  before that host has proven anything. A host on the network can learn
+  them this way while a code is shown.
 - In SAS pairing mode, the phone keeps one random instance name for up to
   2 minutes, so the user can pick it from a list; it never advertises its
   real name.
@@ -1155,18 +1226,24 @@ that fail the key check.
 
 The rules that matter most for security, gathered in one place:
 
-1. Verify the TLS CertificateVerify signature, then compare `fp`; never
-   accept a peer by certificate fields other than its key.
-2. Never enable TLS session resumption or 0-RTT.
-3. Compare MACs and commitments in constant time.
-4. Bind pairing proofs and codes to `ekm`; refuse to pair without it.
-5. Generate secrets, nonces and keys with the platform's cryptographic
+1. Never skip the TLS CertificateVerify check, accept a peer only by `fp`
+   over the canonical 91-byte key, and never by other certificate fields.
+2. Find pairing records by `fp`; check `Hello.device_id` against the record
+   and never use it to find or replace one.
+3. Never enable TLS session resumption or 0-RTT, and close connections
+   that did not negotiate ALPN `l2l/1`.
+4. Compare MACs and commitments in constant time.
+5. Bind pairing proofs and codes to `ekm`; refuse to pair without it.
+6. Keep the SAS order: no desktop nonce before the commitment, no phone
+   nonce before the desktop's. Count every SAS run in which the phone
+   revealed its nonce as an attempt.
+7. Generate secrets, nonces and keys with the platform's cryptographic
    random generator.
-6. Never dial off-link addresses taken from discovery, and drop beacons
+8. Never dial off-link addresses taken from discovery, and drop beacons
    whose tag fails, whose timestamp is off by more than 5 minutes, or whose
    tag was seen before.
-7. Check the hash of every received image before using it.
-8. Keep private keys and presence keys out of logs and backups.
+9. Check the hash of every received image before using it.
+10. Keep private keys and presence keys out of logs and backups.
 
 ## Versioning
 
