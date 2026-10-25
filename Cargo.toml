@@ -28,7 +28,9 @@ tokio-util = { version = "0.7.20", default-features = false, features = ["codec"
 # Crypto, built on aws-lc-rs like the rest of the workspace, and encodings.
 aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
 base64 = "0.23.1"
+zeroize = "1.8.2"
 
+mdns-sd = { version = "0.21.6", default-features = false, features = ["async"] }
 socket2 = { version = "0.6.5", features = ["all"] }
 
 # Property tests.
