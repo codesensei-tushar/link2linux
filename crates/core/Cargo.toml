@@ -14,7 +14,7 @@ workspace = true
 futures-util.workspace = true
 link2linux-protocol.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["macros", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
 
