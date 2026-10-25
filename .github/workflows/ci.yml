@@ -9,8 +9,65 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  # Decides which jobs run: a job runs when its paths changed (always on
+  # push to main) and its project exists in the tree yet.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      proto: ${{ github.event_name == 'push' || steps.filter.outputs.proto == 'true' }}
+      rust: ${{ steps.exists.outputs.rust == 'true' && (github.event_name == 'push' || steps.filter.outputs.rust == 'true') }}
+      desktop-web: ${{ steps.exists.outputs.desktop-web == 'true' && (github.event_name == 'push' || steps.filter.outputs.desktop-web == 'true') }}
+      android: ${{ steps.exists.outputs.android == 'true' && (github.event_name == 'push' || steps.filter.outputs.android == 'true') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            proto:
+              - 'proto/**'
+              - 'buf.yaml'
+            rust:
+              - 'crates/**'
+              - 'apps/desktop/src-tauri/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'proto/**'
+            desktop-web:
+              - 'apps/desktop/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+            android:
+              - 'apps/android/**'
+              - 'proto/**'
+      - name: Which projects exist
+        id: exists
+        run: |
+          has() { compgen -G "$1" > /dev/null && echo true || echo false; }
+          rust=false
+          if [ "$(has 'crates/*/Cargo.toml')" = true ] || [ "$(has 'apps/*/src-tauri/Cargo.toml')" = true ]; then
+            rust=true
+          fi
+          desktop_web=false
+          if [ -f apps/desktop/package.json ] && [ -f pnpm-lock.yaml ]; then
+            desktop_web=true
+          fi
+          {
+            echo "rust=$rust"
+            echo "desktop-web=$desktop_web"
+            echo "android=$(has apps/android/gradlew)"
+          } | tee -a "$GITHUB_OUTPUT"
+
   proto:
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -22,6 +79,8 @@ jobs:
           push: false
 
   rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -33,15 +92,24 @@ jobs:
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      - name: Use --locked when Cargo.lock is committed
+        run: |
+          if [ -f Cargo.lock ]; then echo "LOCKED=--locked" >> "$GITHUB_ENV"; fi
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets $LOCKED -- -D warnings
+      - run: cargo test --workspace $LOCKED
+      - name: Generated TypeScript bindings are up to date
+        if: hashFiles('apps/desktop/src/lib/bindings.ts') != ''
+        run: git diff --exit-code -- apps/desktop/src/lib/bindings.ts
 
   desktop-web:
+    needs: changes
+    if: needs.changes.outputs.desktop-web == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      # No version input: the pnpm version comes from packageManager in package.json.
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -52,6 +120,8 @@ jobs:
       - run: pnpm --filter desktop test
 
   android:
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -64,3 +134,18 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew assembleDebug testDebugUnitTest lint
+
+  # The one check to mark as required in branch protection. Skipped jobs
+  # count as passing; failed or cancelled ones do not.
+  ci-ok:
+    needs: [changes, proto, rust, desktop-web, android]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: All relevant jobs passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          test "$FAILED" = false
