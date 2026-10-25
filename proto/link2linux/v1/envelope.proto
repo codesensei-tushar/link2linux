@@ -78,9 +78,9 @@ message Hello {
   // as protocol_version.
   uint32 min_protocol_version = 6;
   // Version of the sending app, such as "1.4.2". For logs and update hints
-  // only: behaviour depends on versions and tokens, never on this.
+  // only: behavior depends on versions and tokens, never on this.
   string app_version = 7;
-  // Set by the desktop when it dialled the phone to pair. Unspecified on
+  // Set by the desktop when it dialed the phone to pair. Unspecified on
   // every other connection.
   PairingMethod pairing_method = 8;
 }

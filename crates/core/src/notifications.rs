@@ -4,8 +4,9 @@
 //! desktop shows them through `link2linux-platform` and can dismiss them,
 //! run their actions or send an inline reply.
 //!
-//! Stub: the types and the [`Notifications`] trait are in place; the wire
-//! messages come with this feature's schema.
+//! Stub: the types and the [`Notifications`] trait are in place, and the
+//! wire messages are in `notifications.proto`; the service that maps
+//! between the two comes next.
 
 use std::time::SystemTime;
 
