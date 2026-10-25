@@ -31,6 +31,9 @@ pub mod codec;
 /// the generated items where the schema has comments.
 pub mod v1 {
     #![allow(missing_docs)]
+    // `Payload` holds every message inline, so its variants differ in size.
+    // Envelopes are short-lived, and boxing would make every match clumsier.
+    #![allow(clippy::large_enum_variant)]
 
     include!(concat!(env!("OUT_DIR"), "/link2linux.v1.rs"));
 }
