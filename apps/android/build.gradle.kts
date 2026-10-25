@@ -8,4 +8,5 @@ plugins {
     // Also sets the Kotlin version behind AGP's built-in Kotlin support, which
     // must match the Compose compiler plugin.
     alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.protobuf) apply false
 }
