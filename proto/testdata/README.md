@@ -24,7 +24,22 @@ A conforming implementation must:
 The `.txtpb` files are the readable source; `generate.sh` rebuilds the binary
 from them with `protoc`. Inspect it with `xxd proto/testdata/v1/frames.bin`.
 
+## `v1/pairing.txt`
+
+Inputs and expected outputs for every hash, tag and code that
+`docs/protocol.md` defines on top of TLS: key fingerprints, the exporter
+context, the mDNS presence and pairing tags (also in their TXT form), a
+complete beacon, a QR code URI, both QR pairing proofs, and the SAS
+commitment and code. The exporter values themselves are inputs, because
+TLS derives them; interoperability tests between the two TLS stacks cover
+that part.
+
+Each line is `name = value`, with byte strings in lowercase hex. A
+conforming implementation computes every output from the inputs.
+`pairing.sh` rebuilds the file with `openssl` and `xxd`.
+
 ## Who uses them
 
-- Rust: `crates/protocol/tests/codec.rs`
+- Rust: `crates/protocol/tests/codec.rs` reads `frames.bin`.
 - Android: `FrameCodecTest` in `apps/android/core/network` reads the same file.
+- The pairing implementations on both sides check `pairing.txt`.

@@ -48,6 +48,8 @@ BCP 14 (RFC 2119, RFC 8174) when they appear in capitals.
 - **Text** is UTF-8. Lengths and limits are in bytes.
 - **Enum values** are written without their type's prefix where the type
   is clear: `READY` stands for `FEATURE_AVAILABILITY_READY`.
+- **Test vectors** for every hash, tag and code defined here are in
+  [`proto/testdata/v1/pairing.txt`](../proto/testdata/v1/pairing.txt).
 
 ### Constants
 
