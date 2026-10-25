@@ -10,7 +10,7 @@ option java_package = "dev.link2linux.protocol.v1";
 // "Pairing".
 
 // How the desktop pairs on a connection. The desktop sets it in its Hello
-// when it dialled the phone to pair; on every other connection, and always
+// when it dialed the phone to pair; on every other connection, and always
 // in the phone's Hello, it is unspecified.
 enum PairingMethod {
   PAIRING_METHOD_UNSPECIFIED = 0;
@@ -71,7 +71,7 @@ enum PairingOutcome {
   PAIRING_OUTCOME_UNSUPPORTED = 6;
 }
 
-// How to recognise and reach the sender while it is not connected. Each
+// How to recognize and reach the sender while it is not connected. Each
 // side sends one per session, right after its FeatureStatus, and a new one
 // whenever the content changes.
 message PresenceUpdate {

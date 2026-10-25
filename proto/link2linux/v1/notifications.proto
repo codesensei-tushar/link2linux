@@ -222,7 +222,7 @@ enum NotificationContent {
   NOTIFICATION_CONTENT_HIDDEN_BY_USER = 3;
 }
 
-// How private the app marked the content, for the desktop to honour while
+// How private the app marked the content, for the desktop to honor while
 // its screen is locked or shared.
 enum NotificationVisibility {
   // Treated as NOTIFICATION_VISIBILITY_PRIVATE.

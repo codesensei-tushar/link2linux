@@ -1,14 +1,16 @@
 //! The one-time trust step between a desktop and a phone.
 //!
-//! Both screens show the same short [`PairingCode`], derived from the two
-//! devices' certificates, and the user confirms it on both. Each side then
-//! stores the other's [`CertificateFingerprint`] in its [`TrustStore`].
-//! From then on the transport only accepts peers whose certificate matches a
-//! stored fingerprint.
+//! The desktop shows a QR code with its key's fingerprint and a one-time
+//! secret. The phone scans it, and inside the TLS connection each side
+//! proves that it knows the secret. A phone without a camera pairs with a
+//! six-digit [`PairingCode`] instead, derived with commit-then-reveal and
+//! confirmed by the user on both screens. Each side then stores the other's
+//! [`CertificateFingerprint`] in its [`TrustStore`]. From then on the
+//! transport only accepts peers whose key matches a stored fingerprint.
+//! `docs/protocol.md` ("Pairing") gives the exact rules.
 //!
 //! Stub: the types, the [`TrustStore`] trait and an in-memory store are in
-//! place; code derivation and the pairing messages come with the schema for
-//! this step.
+//! place, and the messages are in `pairing.proto`; the handshake comes next.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -16,7 +18,9 @@ use std::time::SystemTime;
 
 use crate::device::DeviceKind;
 
-/// SHA-256 fingerprint of a device's TLS certificate.
+/// SHA-256 of a device's public key, taken over the DER SubjectPublicKeyInfo
+/// of its TLS certificate. Peers pin this, not the certificate, so a device
+/// can reissue its certificate for the same key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CertificateFingerprint(pub [u8; 32]);
 
@@ -33,7 +37,7 @@ impl fmt::Debug for CertificateFingerprint {
     }
 }
 
-/// The short code both screens show while pairing.
+/// The six-digit code both screens show while pairing without a QR code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingCode(String);
 
@@ -65,7 +69,7 @@ pub struct PairedDevice {
     pub name: String,
     /// Desktop or phone.
     pub kind: DeviceKind,
-    /// The certificate it must present on every connection.
+    /// The key it must present on every connection.
     pub fingerprint: CertificateFingerprint,
     /// When the user confirmed the pairing.
     pub paired_at: SystemTime,

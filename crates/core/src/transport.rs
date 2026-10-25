@@ -1,9 +1,13 @@
 //! The secure byte stream a session runs on.
 //!
-//! Devices talk over TLS on the local network. Each device presents its own
-//! self-signed certificate and accepts a peer only if the peer's certificate
+//! Devices talk over TLS 1.3 on the local network. Each device presents its
+//! own self-signed certificate and accepts a peer only if the peer's key
 //! matches a fingerprint stored at pairing (or, while pairing, the one being
 //! confirmed). A [`Connection`] is the stream a session then runs on.
+//!
+//! The desktop always dials the phone, through a [`Connector`]. A
+//! [`Listener`] is the phone's side, for tests and tools that stand in for
+//! a phone.
 //!
 //! Stub: the [`Connector`] and [`Listener`] traits are in place; the TLS
 //! implementation comes next.
