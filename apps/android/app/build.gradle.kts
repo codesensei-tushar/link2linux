@@ -17,6 +17,10 @@ android {
 dependencies {
     implementation(projects.core.data)
     implementation(projects.core.designsystem)
+    implementation(projects.core.model)
+    implementation(projects.feature.calls)
+    implementation(projects.feature.messages)
+    implementation(projects.feature.notifications)
     implementation(projects.feature.pairing)
 
     implementation(libs.androidx.activity.compose)

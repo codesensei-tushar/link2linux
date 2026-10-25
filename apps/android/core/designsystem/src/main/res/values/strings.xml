@@ -1,4 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="core_designsystem_back">Back</string>
+
+    <string name="feature_title_pairing">Pairing</string>
+    <string name="feature_title_notifications">Notifications</string>
+    <string name="feature_title_messages">Messages</string>
+    <string name="feature_title_calls">Calls</string>
+    <string name="feature_title_photos">Photos</string>
+    <string name="feature_title_files">Files</string>
+    <string name="feature_title_clipboard">Clipboard</string>
+    <string name="feature_title_screen">Screen</string>
+
+    <string name="feature_summary_pairing">Connect this phone to a computer you trust.</string>
+    <string name="feature_summary_notifications">See your phone\'s notifications on your computer.</string>
+    <string name="feature_summary_messages">Read and reply to text messages from your computer.</string>
+    <string name="feature_summary_calls">Make and answer phone calls from your computer.</string>
+    <string name="feature_summary_photos">Browse recent photos and screenshots on your computer.</string>
+    <string name="feature_summary_files">Send files between your phone and your computer.</string>
+    <string name="feature_summary_clipboard">Copy on one device and paste on the other.</string>
+    <string name="feature_summary_screen">Show your phone\'s screen on your computer and use its apps there.</string>
+
+    <string name="feature_placeholder_title">Not available yet</string>
+    <string name="feature_placeholder_body">Once it is ready, this feature stays off until you turn it on here. link2linux asks for the Android permissions it needs at that moment, not before.</string>
 </resources>
