@@ -24,8 +24,9 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 tokio = { version = "1.54", default-features = false }
 tokio-util = { version = "0.7.20", default-features = false, features = ["codec"] }
 
-# Errors.
+# Errors and logging.
 thiserror = "2.0.21"
+tracing = "0.1.44"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

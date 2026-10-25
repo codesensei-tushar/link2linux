@@ -11,6 +11,12 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+futures-util.workspace = true
 link2linux-protocol.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "test-util"] }
