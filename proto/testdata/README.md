@@ -40,8 +40,19 @@ Each line is `name = value`, with byte strings in lowercase hex. A
 conforming implementation computes every output from the inputs.
 `pairing.sh` rebuilds the file with `openssl` and `xxd`.
 
+## `v1/beacon.txt`
+
+Beacons a desktop must accept or reject, as hex datagrams: a paired and a
+pairing beacon, reserved flag bits set, both edges of the 15-minute window,
+and rejection cases (flipped tag bit, wrong key, a pairing flag with a
+presence key, magic, version, port zero, 39 and 41 bytes, empty). The
+`skew_` cases carry a valid tag but a timestamp outside the window. The
+desktop's clock is `now`; the file also holds the keys to check against.
+`beacon.sh` rebuilds it from the inputs of `pairing.txt`.
+
 ## Who uses them
 
 - Rust: `crates/protocol/tests/codec.rs` reads `frames.bin`.
 - Android: `FrameCodecTest` in `apps/android/core/network` reads the same file.
-- The pairing implementations on both sides check `pairing.txt`.
+- The pairing implementations on both sides check `pairing.txt`; the beacon
+  codecs check `beacon.txt` (Rust: `crates/core/src/discovery/beacon.rs`).

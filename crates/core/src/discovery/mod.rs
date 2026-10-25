@@ -11,6 +11,7 @@
 
 use std::net::SocketAddr;
 
+pub mod beacon;
 pub mod presence;
 
 use crate::device::{DeviceInfo, DeviceKind};
@@ -90,6 +91,10 @@ pub(crate) mod testvec {
 
         pub fn pairing() -> Self {
             Self::parse(include_str!("../../../../proto/testdata/v1/pairing.txt"))
+        }
+
+        pub fn names(&self) -> impl Iterator<Item = &str> {
+            self.0.keys().map(String::as_str)
         }
 
         pub fn text(&self, name: &str) -> &str {
