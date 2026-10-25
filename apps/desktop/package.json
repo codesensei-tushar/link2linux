@@ -10,6 +10,8 @@
     "build": "pnpm typecheck && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "bindings": "cargo test --manifest-path src-tauri/Cargo.toml export_bindings",
+    "icons": "tauri icon src-tauri/icons/app-icon.svg",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",

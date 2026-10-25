@@ -1,0 +1,29 @@
+[package]
+name = "link2linux-desktop"
+description = "link2linux desktop app: connect your Android phone to your Linux desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+default-run = "link2linux-desktop"
+
+[lib]
+# The `_lib` suffix keeps the library name distinct from the binary name.
+name = "link2linux_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.5", features = [] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+specta = { version = "=2.0.0-rc.26", features = ["derive"] }
+specta-typescript = "0.0.13"
+# Specta v2 is pre-release: tauri-specta asks for exact pins until it is stable.
+tauri-specta = { version = "=2.0.0-rc.26", features = ["typescript"] }
+
+[lints]
+workspace = true
