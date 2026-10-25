@@ -20,6 +20,10 @@ no relay: the two devices talk to each other directly or not at all.
 - [Pairing](#pairing)
 - [Transport](#transport)
 - [Session](#session)
+- [Message patterns](#message-patterns)
+- [Errors](#errors)
+- [Versioning](#versioning)
+- [Message index](#message-index)
 
 ## Conventions
 
@@ -723,3 +727,179 @@ reason decides what happens next:
 | `PROTOCOL_ERROR` | Log it; the desktop reconnects with backoff. |
 | `VERSION_MISMATCH` | No reconnect until one app is updated. |
 | `UNSPECIFIED` or none | As for a lost connection. |
+
+## Message patterns
+
+The protocol has four patterns, all built from the same Envelope.
+
+### Requests and replies
+
+A **request** is an envelope with `expects_reply` set. Its answer is one or
+more envelopes from the peer whose `reply_to` is the request's `seq`:
+
+- `Ack` when the request succeeded and returns nothing else;
+- `ErrorReply` when it failed;
+- the reply message the request's documentation names, for requests that
+  return data. Some requests are answered by several messages; the reply
+  message then says which one is the last (for example
+  `NotificationSyncBatch.more`).
+
+Requests can be pipelined: a side may send several before the first
+answer, and the peer may answer them in any order. A requester waits 30
+seconds for an answer, and for requests with several answers, 30 seconds
+between answers. After that it considers the request failed and ignores a
+late answer. An answer never sets `expects_reply`.
+
+### One-way events
+
+An envelope without `expects_reply` and without `reply_to` is a one-way
+event, such as `NotificationPosted`. Events are delivered in order within a
+connection, and not at all if the connection drops first. Events that
+describe state (a notification was posted) are made reliable by delta sync;
+events that do not (a `Ping`) need no recovery.
+
+### Delta sync
+
+State that lives on one device and is mirrored on the other, such as the
+phone's notifications, is a **collection**. The device that owns it keeps a
+change log; the other device follows it with a `SyncCursor`.
+
+- Each change to an item gets the next **revision** of the collection,
+  starting at 1. The owner remembers, for each item, the revision of its
+  last change, and for each removed item, a tombstone with the revision of
+  its removal.
+- The **epoch** names one run of the change log: a random non-zero 64-bit
+  number. The owner picks a new epoch when it loses its change log, for
+  example when its storage is cleared or, for collections it keeps in
+  memory, when its process restarts.
+- The follower's cursor is the owner's epoch and the highest revision the
+  follower has applied. It stores the cursor with the mirrored items, in
+  one transaction.
+
+At the start of each session, the follower sends the collection's sync
+request with its cursor. The owner answers with batches:
+
+- If the epoch matches and the owner still has the tombstones back to the
+  cursor's revision, it sends a **delta**: the items changed after that
+  revision and the keys of items removed after it.
+- Otherwise it sends a **snapshot**: every item, with `reset` set on the
+  first batch. Once the last batch has arrived, the follower deletes every
+  item the snapshot did not contain.
+
+Each batch carries the cursor the follower reaches by applying it; the
+follower stores only the cursor of the last batch. The sync request also
+subscribes the follower to live events for the rest of the session. The
+owner sends live events only after the last batch, and each one carries its
+new revision, which becomes the follower's cursor.
+
+The owner decides how long to keep tombstones; older cursors just get a
+snapshot. Because the owner works out what changed, the follower never
+needs to send what it has, and a reconnect after a short gap costs one
+small round trip.
+
+### Outbox
+
+Things the user does on one device that have to happen on the other, such
+as dismissing a notification or sending a reply, go through a durable
+**outbox** on the device where the user acted:
+
+1. The device stores the request with a new `idempotency_key` (16 random
+   bytes) and `created_unix_ms`, then shows it as pending.
+2. It sends the request whenever a session is up, and again after each
+   reconnect, with the same key, until an answer arrives.
+3. `Ack`, and errors that retrying cannot fix (`NOT_FOUND`,
+   `UNSUPPORTED`, `INVALID_ARGUMENT`, `DECLINED`, `EXPIRED`), end the
+   entry, and the user sees the outcome. `BUSY`, `UNAVAILABLE` and
+   `INTERNAL` keep it for a retry with backoff; `DISABLED` and
+   `PERMISSION_REQUIRED` keep it until the feature is `READY` again.
+4. Entries expire 1 hour after creation unless a feature says otherwise.
+   The user is told that the action was not delivered.
+
+The receiver remembers the idempotency keys it has carried out for at least
+24 hours. A request with a remembered key gets the same answer again and is
+not carried out twice. A receiver MAY answer `ERROR_CODE_EXPIRED` to a
+request whose `created_unix_ms` is more than 24 hours old by its own clock.
+
+### Images
+
+Images, such as app icons and contact photos, travel separately from the
+messages that show them. A message carries an `ImageRef`: the image's
+SHA-256 and its size. The receiver keeps a cache keyed by the hash and asks
+for an image it lacks with `ImageRequest`; the answer is `ImageData`, or
+`ERROR_CODE_NOT_FOUND`.
+
+- The receiver MUST check that the SHA-256 of `ImageData.data` equals the
+  requested hash, and drops the data otherwise.
+- An image is at most 1 MiB. Senders scale and compress to stay well below
+  that; each feature gives its sizes.
+- Because the cache is keyed by content, an icon shared by many
+  notifications is sent once, and survives reconnects.
+- A receiver shows the message without the image, or with a placeholder,
+  until the image arrives.
+
+## Errors
+
+Every failed request gets an `ErrorReply` with one of these codes. A code
+the receiver does not know counts as `INTERNAL`.
+
+| Code | Meaning | Retry? |
+|---|---|---|
+| `UNSUPPORTED` | Unknown request, or its feature is not active | No, not in this session |
+| `INVALID_ARGUMENT` | A field is missing, malformed or out of range | No |
+| `NOT_FOUND` | The target no longer exists | No |
+| `PERMISSION_REQUIRED` | The receiving device needs a permission the user must grant there; `permission` names it | After a `FeatureStatus` shows `READY` |
+| `DISABLED` | The user turned the feature off on the receiving device | After a `FeatureStatus` shows `READY` |
+| `BUSY` | Too many requests | After `retry_after_ms`, or with backoff |
+| `UNAVAILABLE` | Temporarily impossible | After `retry_after_ms`, or with backoff |
+| `EXPIRED` | The request is too old | No |
+| `DECLINED` | The user declined on the receiving device | No |
+| `INTERNAL` | Unexpected failure | With backoff, a few times |
+
+`ErrorReply.detail` is English text for logs. User-facing text comes from
+the code, never from `detail`.
+
+Pairing failures use `PairingResult` instead, and connection-level
+problems use `Goodbye`.
+
+## Versioning
+
+- The package name carries the major version: `link2linux.v1`. A new major
+  version gets a new package, and an app may speak several.
+- Within a major version, changes are backward compatible: new messages,
+  new fields, new enum values and new capability tokens. Field numbers and
+  enum values are never reused or renumbered. `buf breaking` checks this
+  in CI.
+- The fields listed in [Version negotiation](#version-negotiation) never
+  change, in any major version.
+- Envelope payload numbers are grouped: 10 to 29 for session messages and
+  shared replies, 30 to 49 for pairing, and a block of 50 per feature from
+  100: notifications 100, messages 150, calls 200, photos 250, files 300,
+  clipboard 350, screen 400.
+- Behavior depends on the negotiated major version and the active tokens,
+  never on `Hello.app_version`.
+
+## Message index
+
+| No. | Payload | Direction | Kind |
+|---|---|---|---|
+| 10 | `Hello` | both | first message |
+| 11 | `Ping` | desktop to phone | event |
+| 12 | `Pong` | phone to desktop | event |
+| 13 | `Goodbye` | both | event, last message |
+| 14 | `FeatureStatus` | both | event |
+| 15 | `Ack` | both | reply |
+| 16 | `ErrorReply` | both | reply |
+| 17 | `ImageRequest` | both | request: `ImageData` |
+| 18 | `ImageData` | both | reply |
+| 30 | `PairingProof` | both | pairing |
+| 31 | `SasCommit` | phone to desktop | pairing |
+| 32 | `SasNonce` | both | pairing |
+| 33 | `PairingResult` | both | pairing |
+| 34 | `PresenceUpdate` | both | event |
+| 35 | `KeyRotation` | both | request: `Ack` |
+| 100 | `NotificationSyncRequest` | desktop to phone | request: `NotificationSyncBatch` |
+| 101 | `NotificationSyncBatch` | phone to desktop | reply |
+| 102 | `NotificationPosted` | phone to desktop | event |
+| 103 | `NotificationRemoved` | phone to desktop | event |
+| 104 | `NotificationDismissRequest` | desktop to phone | outbox request: `Ack` |
+| 105 | `NotificationActionRequest` | desktop to phone | outbox request: `Ack` |
