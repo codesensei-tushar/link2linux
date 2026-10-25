@@ -15,6 +15,7 @@ pub mod beacon;
 pub mod browser;
 pub mod listener;
 pub mod presence;
+pub mod reconnect;
 pub mod tracker;
 
 use crate::device::{DeviceInfo, DeviceKind};
