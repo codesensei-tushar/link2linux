@@ -18,6 +18,8 @@ no relay: the two devices talk to each other directly or not at all.
 - [Identity](#identity)
 - [Discovery](#discovery)
 - [Pairing](#pairing)
+- [Transport](#transport)
+- [Session](#session)
 
 ## Conventions
 
@@ -499,3 +501,225 @@ A device can replace its identity key without pairing again:
 
 A device that loses its private key, for example because the Android
 Keystore was reset, has to pair again.
+
+## Transport
+
+### TLS
+
+Every connection is TLS 1.3 over TCP, with certificates on both sides.
+
+- TLS 1.2 and earlier MUST NOT be negotiated.
+- The desktop is the TLS client. It connects to an IP address and sends no
+  server name indication.
+- Both sides send the ALPN protocol ID `link2linux`; the phone rejects
+  connections that do not.
+- The phone requests a client certificate and rejects a connection without
+  one.
+- Certificates use ECDSA P-256 keys. Both sides MUST support the
+  `ecdsa_secp256r1_sha256` signature scheme.
+- Session resumption and 0-RTT data MUST NOT be used: every connection runs
+  a full handshake, so every connection proves possession of both keys, and
+  no data can be replayed.
+- Peer certificates are checked as in [Certificate
+  checks](#certificate-checks): by `fp` alone, after verifying the
+  CertificateVerify signature.
+
+### Framing
+
+Each frame is a varint holding the length of one serialized `Envelope`,
+followed by that many bytes, the same format as protobuf's length-delimited
+streams. A frame body MUST NOT exceed 4 MiB. A receiver that sees a larger
+length or an undecodable body closes the connection, because the stream is
+out of sync.
+
+Senders SHOULD keep frames below 256 KiB, splitting large answers into
+batches, so that a `Ping` never waits long behind a bulk frame.
+
+### Connecting and reconnecting
+
+The desktop keeps trying to have one session with each paired phone that
+is not marked as disconnected by the user. It dials when:
+
+- it starts, resumes from sleep, or its network changes;
+- an mDNS record, announce or knock matches a paired phone with no live
+  session;
+- a session ends, following the backoff below;
+- the user asks to reconnect.
+
+A dial attempt races all candidate addresses for the phone (from mDNS, the
+datagram's source, and the last known addresses), starting a new TCP
+connection every 250 ms until one succeeds. The first connection that
+completes TLS with the expected key wins; the others are closed. TCP
+connect times out after 5 seconds, the TLS handshake after 10 seconds and
+the Hello exchange after 10 seconds.
+
+When an attempt fails, or a session ends without a `Goodbye` that says
+otherwise, the desktop waits before the next attempt:
+
+| Attempt | 1 | 2 | 3 | 4 | 5 | 6 | 7 and later |
+|---|---|---|---|---|---|---|---|
+| Delay | 1 s | 2 s | 4 s | 8 s | 16 s | 32 s | 60 s |
+
+Each delay varies randomly by up to 20 % either way. The schedule restarts
+at attempt 1 when the desktop's network changes, when it resumes from
+sleep, and after a session that lasted more than a minute. New discovery
+evidence for the phone (a matching record, announce or knock) triggers an
+attempt at once, but never more than one attempt per phone every 2
+seconds.
+
+The desktop shows the phone as "reconnecting" for the first 2 minutes
+after a session ends, then as "disconnected", while it keeps trying.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as Desktop
+    participant P as Phone
+    P-->>D: mDNS record (n, t), or announce, or knock
+    D->>D: t matches paired phone, no session
+    D->>P: TCP connect and TLS 1.3, both sides check fp
+    D->>P: Hello
+    P->>D: Hello
+    D->>P: FeatureStatus, PresenceUpdate
+    P->>D: FeatureStatus, PresenceUpdate
+    D->>P: NotificationSyncRequest (since cursor, expects_reply)
+    P->>D: NotificationSyncBatch (reply_to, more = false)
+    loop every 15 s
+        D->>P: Ping
+        P->>D: Pong
+    end
+    P-->>D: NotificationPosted, NotificationRemoved
+    Note over D,P: Wi-Fi drops
+    D->>D: no frame for 45 s: session lost
+    D->>P: dials after 1 s, 2 s, 4 s ... 60 s
+    P-->>D: rejoins the network: new record, announce, knock
+    D->>P: dials at once
+```
+
+### Liveness
+
+The desktop drives liveness, because it is awake anyway and a phone that
+only answers can let its radio sleep.
+
+- The desktop sends a `Ping` every 15 seconds. It MAY use any interval
+  from 5 to 60 seconds. If nothing at all arrives from the phone for 3
+  intervals, it considers the session lost.
+- The phone answers every `Ping` with a `Pong` carrying the same nonce, and
+  never sends a `Ping` of its own. If nothing arrives from the desktop for
+  180 seconds, it considers the session lost.
+- Any frame counts as a sign of life, not only `Pong`.
+
+### One session per pair
+
+A desktop and a phone have at most one session with each other. When a new
+connection from a paired desktop completes its Hello exchange while an
+older session with that desktop is still open, the phone sends `Goodbye`
+with `GOODBYE_REASON_REPLACED` on the old connection and closes it. This
+resolves half-open connections left over after a network change. A phone
+MAY have sessions with several desktops at the same time.
+
+## Session
+
+### Start
+
+Each side sends `Hello` as its first envelope, with `seq` 1, without
+waiting for the peer's. Each side reads the peer's `Hello` before anything
+else; any other first message is a protocol error. A `Hello` later in the
+session is a protocol error too.
+
+On a pairing connection, pairing follows the Hello exchange (see
+[Pairing](#pairing)). Otherwise, and after pairing succeeds, each side sends
+`FeatureStatus` and then `PresenceUpdate`. After that, both sides may send
+any message of the features that are active in the session.
+
+### Version negotiation
+
+`Hello.protocol_version` is the highest protocol major version the sender
+speaks, and `Hello.min_protocol_version` the lowest (0 means the same as
+the highest). The session uses the highest version both ranges contain.
+Both sides compute it from the two Hellos, so they agree without another
+round trip. If the ranges do not overlap, each side sends `Goodbye` with
+`GOODBYE_REASON_VERSION_MISMATCH`, closes the connection, and tells the
+user which app to update.
+
+Some fields keep their numbers and meaning in every major version, so that
+the two Hellos and that Goodbye can always be read: Envelope fields 1 to 3,
+the Envelope payloads `hello` (10) and `goodbye` (13), Hello fields 1 to 7,
+and all of Goodbye.
+
+### Capabilities
+
+`Hello.features` lists capability tokens, the parts of the protocol the
+sender's build implements:
+
+- a feature name: `notifications`, `messages`, `calls`, `photos`, `files`,
+  `clipboard` or `screen`;
+- an optional part of a feature, written `feature.option`. Version 1
+  defines none; later versions add options this way instead of changing
+  the meaning of existing messages.
+
+A feature is **active** in a session when both Hellos list it. An option is
+active when both list it and its feature is active. Tokens a side does not
+know are ignored. A change that existing peers would misread gets a new
+token, for example `notifications2`, rather than a version number.
+
+`FeatureStatus` adds what the build cannot know: whether the feature can be
+used right now on the device. Each side sends a complete `FeatureStatus`
+after Hello and a new complete one whenever a state changes:
+
+| Availability | Meaning | What the other side shows |
+|---|---|---|
+| `READY` | Usable | The feature |
+| `DISABLED` | The user turned it off on that device | "Turned off on your phone" (or desktop) |
+| `PERMISSION_REQUIRED` | An OS permission is missing; `permission` says which | A setup hint for that permission |
+| `UNAVAILABLE` | The device cannot offer it, e.g. a phone without telephony | Nothing, or "Not available" |
+
+A side only sends a feature's requests while the feature is active and
+`READY` on both sides. Version 1 defines one permission token,
+`notification-access` (the phone's notification listener access). Each
+feature section defines its own.
+
+### Sequence numbers
+
+`Envelope.seq` starts at 1 with `Hello` and grows by exactly one with each
+envelope the side sends. A receiver checks that each `seq` is greater than
+the previous one; anything else is a protocol error. Sequence numbers start
+again at 1 on every connection.
+
+### Unknown and unexpected messages
+
+The schema grows over time, so each side meets messages it does not know.
+
+- **Unknown payload** (the Envelope's `payload` is empty after decoding):
+  if `expects_reply` is set, answer with `ErrorReply` and
+  `ERROR_CODE_UNSUPPORTED`; otherwise ignore it.
+- **Unknown fields** in a known message are ignored.
+- **Unknown enum values** are handled like the enum's zero value, unless
+  the field's documentation says otherwise.
+- **A request of a feature that is not active**: answer with
+  `ERROR_CODE_UNSUPPORTED`. A one-way message of such a feature is
+  ignored.
+- **A reply nobody waits for** (a `reply_to` that matches no open request,
+  for example one that timed out): ignore it.
+- **A message in the wrong place** (pairing messages in a normal session,
+  feature messages during pairing, a second `Hello`, a reply that the
+  request type does not allow): a protocol error.
+
+On a protocol error the side MAY send an `ErrorReply` with `reply_to` 0
+describing it, then sends `Goodbye` with `GOODBYE_REASON_PROTOCOL_ERROR`
+and closes the connection.
+
+### Ending a session
+
+A side that closes a connection on purpose first sends `Goodbye`. Its
+reason decides what happens next:
+
+| Reason | Receiver's action |
+|---|---|
+| `SHUTDOWN` | Desktop reconnects with the usual backoff. |
+| `USER_DISCONNECT` | No reconnect until the user reconnects on the device that sent it. A phone that sends it stops listening and announcing until then. |
+| `UNPAIRED` | Delete the pairing record. |
+| `REPLACED` | Nothing: a newer session already exists. |
+| `PROTOCOL_ERROR` | Log it; the desktop reconnects with backoff. |
+| `VERSION_MISMATCH` | No reconnect until one app is updated. |
+| `UNSPECIFIED` or none | As for a lost connection. |
