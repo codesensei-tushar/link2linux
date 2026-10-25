@@ -101,6 +101,24 @@ impl DeviceInfo {
     }
 }
 
+/// Why a request to one of the phone's features failed.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum FeatureError {
+    /// The feature is not enabled on both devices in this session.
+    #[error("{0} is not enabled on both devices")]
+    NotEnabled(Feature),
+    /// No session with the phone is open, or it ended during the request.
+    #[error("the phone is not connected")]
+    NotConnected,
+    /// The phone refused or failed the request.
+    #[error("the phone could not complete the request: {0}")]
+    Remote(String),
+    /// Reading or writing a local file failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
