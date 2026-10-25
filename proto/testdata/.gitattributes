@@ -1,0 +1,2 @@
+# Test vectors are raw wire bytes: never diff, merge or convert them as text.
+*.bin binary

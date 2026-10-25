@@ -1,0 +1,17 @@
+[package]
+name = "link2linux-protocol"
+description = "link2linux wire format: message types generated from proto/link2linux and length-delimited framing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+prost.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
