@@ -1386,10 +1386,11 @@ The rules that matter most for security, gathered in one place:
   version gets a new package, and an app may speak several.
 - Within a major version, changes are backward compatible: new messages,
   new fields, new enum values and new capability tokens. Field numbers and
-  enum values are never reused or renumbered. Whoever merges a change under
-  `proto/` runs `buf breaking` against `main` first; the local `make ci`
-  runs `buf lint` (or, without buf, a `protoc` compile), which does not
-  check compatibility.
+  enum values are never reused or renumbered. A change under `proto/` is
+  checked with `buf breaking` against `main` before it merges: the proto
+  job of `make ci` runs it when buf is installed. Without buf, that job
+  only compiles the schema with `protoc`, which does not check
+  compatibility.
 - The fields listed in [Version negotiation](#version-negotiation) never
   change, in any major version.
 - Envelope payload numbers are grouped: 10 to 29 for session messages and
