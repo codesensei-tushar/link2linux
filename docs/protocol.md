@@ -17,6 +17,7 @@ no relay: the two devices talk to each other directly or not at all.
 - [Conventions](#conventions)
 - [Identity](#identity)
 - [Discovery](#discovery)
+- [Pairing](#pairing)
 
 ## Conventions
 
@@ -232,3 +233,269 @@ runtime permission for everything in this section: listening for TCP,
 mDNS, and UDP broadcast and unicast. The version 1 phone app targets API 36
 and does not need it. The app that targets API 37 asks for it during
 onboarding, next to the other nearby-device permissions.
+
+## Pairing
+
+Pairing makes two devices trust each other's identity keys. It always runs
+on a TLS connection that the desktop dials, like any other connection, and
+the connection continues as a normal session once pairing succeeds.
+
+The desktop starts a pairing. It offers two methods:
+
+1. **QR code** (default). The desktop shows a QR code that carries its
+   fingerprint and a one-time secret. The phone scans it, so the phone
+   knows the desktop's key before they connect, and both sides prove that
+   they know the secret.
+2. **SAS** (fallback, for a phone that cannot scan). Both screens show a
+   six-digit code derived from the connection, and the user confirms on
+   both that they match.
+
+### QR code payload
+
+The QR code holds a URI, encoded in byte mode with error correction level
+M:
+
+```
+link2linux://pair?v=1&f=<fp_D>&s=<secret>&n=<name>&a=<addresses>
+```
+
+| Parameter | Content |
+|---|---|
+| `v` | Payload format version: `1`. A phone that does not know the version asks the user to update the app. |
+| `f` | `fp_D`, base64url (43 characters). |
+| `s` | The one-time secret: 16 random bytes, base64url (22 characters). |
+| `n` | The desktop's device name, percent-encoded, at most 64 bytes before encoding. Shown on the phone before it connects. |
+| `a` | Up to 4 of the desktop's addresses, comma-separated, for knocks: an IPv4 address or an IPv6 address, each optionally with `:port` (IPv6 in brackets then). The default port is 47474. |
+
+Unknown parameters MUST be ignored, so later versions can add some. A
+typical payload is about 160 characters long.
+
+The desktop creates a new secret each time it shows a code. An offer is
+valid for 5 minutes and for one successful pairing; after 5 failed proofs
+the desktop withdraws it and shows a new code. The phone does not need the
+expiry: the desktop enforces it.
+
+### Certificate checks
+
+These rules decide which certificates each side accepts, on every
+connection. The phone accepts a client certificate when any of these
+holds:
+
+- its `fp` is the current or next `fp` of a paired desktop;
+- a QR offer is active, and its `fp` equals `f` from the QR code;
+- SAS pairing mode is on (one connection at a time).
+
+The desktop accepts the phone's certificate when:
+
+- it dialed a paired phone, and the `fp` is that phone's current or next
+  `fp`; or
+- it dialed to pair. It then accepts any key and records `fp_P`.
+
+The signature in the TLS CertificateVerify message MUST be verified in
+every case, so that the peer proves it holds the private key.
+
+The desktop sets `Hello.pairing_method` on a pairing connection, even when
+it already has a record for the phone. The phone checks that it expects
+that method from this desktop: a QR offer whose `f` is the desktop's `fp`,
+or SAS mode. If it does not, it sends `PairingResult` with
+`PAIRING_OUTCOME_NOT_EXPECTED` and closes the connection. A connection
+whose Hello sets no pairing method is a normal session, which the phone
+closes unless the desktop is paired.
+
+### QR code handshake
+
+After the Hello exchange, both sides derive the same 32-byte value from the
+TLS connection with the keying material exporter (RFC 8446 section 7.5):
+
+```
+ekm = TLS-Exporter("EXPORTER-link2linux-pairing-v1", empty context, 32)
+```
+
+In TLS 1.3, an absent context and an empty one give the same value.
+
+Each side then sends a `PairingProof`:
+
+```
+mac = HMAC-SHA256(secret,
+        "link2linux pairing proof v1" || role || ekm || fp_D || fp_P)
+role = 0x44 ("D") in the desktop's proof, 0x50 ("P") in the phone's
+```
+
+`fp_D` and `fp_P` are the fingerprints of the certificates presented in this
+TLS connection. Each side recomputes the peer's expected `mac` and compares
+in constant time. On a mismatch it sends `PairingResult` with
+`PAIRING_OUTCOME_VERIFICATION_FAILED` and closes the connection.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant D as Desktop
+    participant P as Phone
+    D->>U: shows QR code (fp_D, secret, name, addresses)
+    U->>P: scans it
+    P->>P: pins fp_D, derives the pairing tag q
+    P-->>D: mDNS TXT q, broadcast announce, knock to the QR addresses
+    D->>P: TCP connect and TLS 1.3 (client certificate fp_D, server fp_P)
+    D->>P: Hello (pairing_method QR_CODE)
+    P->>D: Hello
+    D->>P: PairingProof (role D)
+    P->>D: PairingProof (role P)
+    P->>P: verifies the desktop's proof
+    P->>D: PairingResult ACCEPTED
+    D->>D: verifies the phone's proof, stores the pairing
+    D->>P: PairingResult ACCEPTED
+    P->>P: stores the pairing
+    Note over D,P: the connection continues as a session
+    D->>P: FeatureStatus, PresenceUpdate
+    P->>D: FeatureStatus, PresenceUpdate
+```
+
+The QR method needs no comparison by the user: scanning the code is the
+user's consent on both devices, and the code is only on the desktop's
+screen.
+
+### SAS pairing
+
+The user turns on "pair without camera" on the phone. For the next 2
+minutes, the phone accepts one pairing connection at a time from any
+desktop, and advertises `s=1` and its name. The desktop lists such phones,
+the user picks one, and the desktop dials it with
+`Hello.pairing_method = PAIRING_METHOD_SAS`. Then, with `ekm` as above:
+
+1. The phone picks a 32-byte random nonce `na` and sends `SasCommit`:
+   `commitment = SHA-256("link2linux sas commit v1" || ekm || fp_D || fp_P || na)`.
+2. Once the commitment has arrived, the desktop picks a 32-byte random
+   nonce `nb` and sends it in `SasNonce`.
+3. Once `nb` has arrived, the phone sends `na` in `SasNonce`.
+4. The desktop checks the commitment. On a mismatch it sends
+   `PAIRING_OUTCOME_VERIFICATION_FAILED` and closes the connection.
+5. Both devices show the code, formatted as two groups of three digits:
+
+   ```
+   h   = SHA-256("link2linux sas v1" || ekm || fp_D || fp_P || na || nb)
+   sas = (first 4 bytes of h, as an unsigned integer) mod 1000000
+   ```
+
+6. The user confirms on each device that the codes match, or declines.
+   Each device then sends `PairingResult` in the order described in
+   [Storing the pairing](#storing-the-pairing).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant D as Desktop
+    participant P as Phone
+    U->>P: "pair without camera"
+    P-->>D: mDNS TXT s=1, d=name
+    U->>D: picks the phone
+    D->>P: TCP connect and TLS 1.3 (no pins yet)
+    D->>P: Hello (pairing_method SAS)
+    P->>D: Hello
+    P->>D: SasCommit (commitment to na)
+    D->>P: SasNonce (nb)
+    P->>D: SasNonce (na)
+    D->>D: checks the commitment
+    D->>U: shows code
+    P->>U: shows code
+    U->>P: confirms
+    P->>D: PairingResult ACCEPTED
+    U->>D: confirms
+    D->>D: stores the pairing
+    D->>P: PairingResult ACCEPTED
+    P->>P: stores the pairing
+```
+
+The commitment is what makes six digits enough. An attacker in the middle
+runs two TLS connections, one with each device, and needs both screens to
+show the same code. Without the commitment it could try many keys or
+nonces offline until the codes collide, which takes seconds for a
+million-value code. With it, the phone's nonce is fixed before the desktop's
+nonce is known, and the phone reveals it only after receiving the desktop's
+nonce, so the attacker has to commit to its own values blindly on at least
+one of the two connections. One attempt then succeeds with probability
+10^-6, and each attempt needs the user to confirm a code.
+
+The phone leaves SAS mode after a successful pairing, after 2 minutes, or
+after 3 failed or declined attempts. Each device gives the user 60 seconds
+to confirm, then sends `PAIRING_OUTCOME_TIMED_OUT`.
+
+### Storing the pairing
+
+`PAIRING_OUTCOME_ACCEPTED` goes in a fixed order, so the desktop stores
+the pairing first:
+
+1. The phone sends `ACCEPTED` once it has verified the desktop (QR: the
+   desktop's proof; SAS: the user confirmed).
+2. The desktop stores the pairing once it has verified the phone and
+   received the phone's `ACCEPTED`, then sends its own `ACCEPTED`.
+3. The phone stores the pairing when the desktop's `ACCEPTED` arrives.
+
+Any other outcome may be sent by either side at any time; the sender then
+closes the connection, and neither side stores anything.
+
+If the connection drops between steps 2 and 3, only the desktop has a
+record. The desktop therefore marks a new record as unconfirmed until the
+phone's first `FeatureStatus` arrives, which the phone sends only after
+storing the pairing. When the phone rejects the desktop's certificate on a
+later dial, the desktop deletes an unconfirmed record and asks the user to
+pair again; for a confirmed record, it tells the user that the phone
+removed the pairing.
+
+### Phones without a TLS exporter
+
+Android exposes the keying material exporter from API level 31
+(`SSLSockets.exportKeyingMaterial`). The phone app supports API 26 and
+later, and the platform TLS stack below API 29 has no TLS 1.3 at all. Below
+API 31 the app therefore uses a bundled Conscrypt provider for its TLS
+connections, which brings TLS 1.3 and an exporter.
+
+A phone that still cannot export keying material MUST NOT pair: it sends
+`PAIRING_OUTCOME_UNSUPPORTED` and tells the user to update the app. It MUST
+NOT fall back to proofs without `ekm`. Binding to the connection is what
+keeps a proof or a code from being relayed into another connection if a
+certificate check is ever implemented wrongly.
+
+### Re-pairing
+
+Pairing again with a device that already has a record replaces that
+record, including its keys and presence key. A phone that scans a QR code
+whose `f` matches a paired desktop re-pairs with it, and a phone in SAS
+mode re-pairs with a paired desktop that dials it to pair: the method in
+the desktop's Hello decides, not the old record.
+
+Clearing an app's data creates a new device id and key. The other device
+then keeps a stale record until the user removes it; the desktop shows when
+each phone was last connected to help with that.
+
+### Unpairing
+
+Either user can remove a pairing at any time.
+
+- If a session is up, the side that removes it sends `Goodbye` with
+  `GOODBYE_REASON_UNPAIRED`, deletes its record and closes the connection.
+  The receiver deletes its record too.
+- If no session is up, the side deletes its record. When the phone removed
+  it, the desktop finds out on its next dial, which the phone rejects, and
+  offers to remove its own record. When the desktop removed it, the phone
+  cannot tell that from a desktop that is switched off; it shows when each
+  desktop last connected, so the user can remove stale ones.
+
+A phone that removes a pairing also picks a new presence key and sends it
+to its remaining desktops in their next sessions, so the removed desktop
+can no longer recognize its announcements.
+
+### Key rotation
+
+A device can replace its identity key without pairing again:
+
+1. During a session, it sends `KeyRotation` with the fingerprint of the
+   next key. The peer stores it as the next `fp` and answers with `Ack`.
+2. On later connections, the device uses the new key. The peer accepts
+   either the current or the next `fp`. After the first successful
+   connection with the next key, it makes that key current and forgets the
+   old one.
+
+A device that loses its private key, for example because the Android
+Keystore was reset, has to pair again.
