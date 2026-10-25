@@ -1,0 +1,20 @@
+# proto-file: link2linux/v1/envelope.proto
+# proto-message: link2linux.v1.Envelope
+#
+# Frame 1: a desktop's Hello. It is longer than 127 bytes, so its length
+# prefix takes two varint bytes. The device name holds a non-ASCII character
+# to pin down UTF-8 handling.
+seq: 1
+hello {
+  protocol_version: 1
+  device_id: "6f1c2a9e-3b7d-4e58-9a0c-d2b4f8e1a7c3"
+  device_name: "Büro workstation"
+  kind: DEVICE_KIND_DESKTOP
+  features: "notifications"
+  features: "messages"
+  features: "calls"
+  features: "photos"
+  features: "files"
+  features: "clipboard"
+  features: "screen"
+}

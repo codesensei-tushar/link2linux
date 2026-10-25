@@ -1,0 +1,8 @@
+# proto-file: link2linux/v1/envelope.proto
+# proto-message: link2linux.v1.Envelope
+#
+# Frame 3: the Pong that answers frame 2.
+seq: 3
+pong {
+  nonce: 1234567890123
+}
