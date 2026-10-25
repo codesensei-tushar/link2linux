@@ -1,0 +1,43 @@
+.card {
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.callout {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.callout > svg {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  margin-top: 0.125rem;
+}
+
+.callout--info {
+  border-color: var(--color-accent-soft);
+  background: color-mix(in srgb, var(--color-accent-soft) 55%, transparent);
+  color: var(--color-text);
+}
+
+.callout--info > svg {
+  color: var(--color-accent);
+}
+
+.callout--warning {
+  border-color: var(--color-warning-soft);
+  background: color-mix(in srgb, var(--color-warning-soft) 60%, transparent);
+  color: var(--color-text);
+}
+
+.callout--warning > svg {
+  color: var(--color-warning);
+}
