@@ -6,6 +6,7 @@ agp = "9.4.1"
 androidxActivity = "1.13.0"
 androidxComposeBom = "2026.06.01"
 androidxCore = "1.18.0"
+javaxInject = "1"
 junit4 = "4.13.2"
 kotlin = "2.4.21"
 
@@ -16,6 +17,7 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidxCore" }
+javax-inject = { group = "javax.inject", name = "javax.inject", version.ref = "javaxInject" }
 junit = { group = "junit", name = "junit", version.ref = "junit4" }
 
 # Used by build-logic
@@ -33,3 +35,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 # Convention plugins from build-logic
 l2l-android-application = { id = "l2l.android.application" }
 l2l-android-application-compose = { id = "l2l.android.application.compose" }
+l2l-jvm-library = { id = "l2l.jvm.library" }
