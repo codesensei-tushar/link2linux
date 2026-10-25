@@ -53,6 +53,11 @@ enum ErrorCode {
   ERROR_CODE_DECLINED = 9;
   // An unexpected failure on the receiving device.
   ERROR_CODE_INTERNAL = 10;
+  // The receiving device's OS does not allow this from another device right
+  // now, for example an action that needs the phone unlocked, or one that
+  // would open an app on the phone from the background. The user can do it
+  // on the device itself. Retrying cannot help.
+  ERROR_CODE_NOT_ALLOWED = 11;
 }
 
 // A position in a collection's change log, kept by the device that follows

@@ -780,13 +780,13 @@ sequenceDiagram
     P->>D: FeatureStatus, PresenceUpdate
     D->>P: NotificationSyncRequest (since cursor, expects_reply)
     P->>D: NotificationSyncBatch (reply_to, more = false)
-    loop every 15 s
+    loop every 15 s, or 60 s while idle
         D->>P: Ping
         P->>D: Pong
     end
     P-->>D: NotificationPosted, NotificationRemoved
     Note over D,P: Wi-Fi drops
-    D->>D: no frame for 45 s: session lost
+    D->>D: no frame for 3 ping intervals: session lost
     D->>P: dials the last known address after 1 s, 2 s, 4 s ... 60 s
     P-->>D: back on a network: mDNS announcement and a beacon burst
     D->>P: dials at once
@@ -797,12 +797,19 @@ sequenceDiagram
 The desktop drives liveness, because it is awake anyway and a phone that
 only answers can let its radio sleep.
 
-- The desktop sends a `Ping` every 15 seconds. It MAY use any interval
+- The desktop sends a `Ping` every 15 seconds while the session carries
+  activity the user can see (its window is focused, or a transfer or call
+  is running), and every 60 seconds otherwise. It MAY use any interval
   from 5 to 60 seconds. If nothing at all arrives from the phone for 3
   intervals, it considers the session lost.
 - The phone answers every `Ping` with a `Pong` carrying the same nonce, and
   never sends a `Ping` of its own. If nothing arrives from the desktop for
-  180 seconds, it considers the session lost.
+  240 seconds, 4 times the longest interval, it considers the session
+  lost.
+- Every `Ping` wakes a dozing phone, which makes it the main idle battery
+  cost of a session; the 60-second idle interval keeps that to about 1,440
+  wake-ups a day. A local network has no NAT state to keep alive, so a
+  shorter interval only buys faster detection of a lost connection.
 - Any frame counts as a sign of life, not only `Pong`.
 
 ### One session per pair
@@ -878,8 +885,9 @@ feature section defines its own.
 ### Sequence numbers
 
 `Envelope.seq` starts at 1 with `Hello` and grows by exactly one with each
-envelope the side sends. A receiver checks that each `seq` is greater than
-the previous one; anything else is a protocol error. Sequence numbers start
+envelope the side sends. A receiver checks that each `seq` is exactly one
+more than the previous one; anything else is a protocol error, which
+catches lost or repeated frames in either implementation. Sequence numbers start
 again at 1 on every connection.
 
 ### Unknown and unexpected messages
@@ -1000,8 +1008,8 @@ as dismissing a notification or sending a reply, go through a durable
 2. It sends the request whenever a session is up, and again after each
    reconnect, with the same key, until an answer arrives.
 3. `Ack`, and errors that retrying cannot fix (`NOT_FOUND`,
-   `UNSUPPORTED`, `INVALID_ARGUMENT`, `DECLINED`, `EXPIRED`), end the
-   entry, and the user sees the outcome. `BUSY`, `UNAVAILABLE` and
+   `UNSUPPORTED`, `INVALID_ARGUMENT`, `DECLINED`, `EXPIRED`,
+   `NOT_ALLOWED`), end the entry, and the user sees the outcome. `BUSY`, `UNAVAILABLE` and
    `INTERNAL` keep it for a retry with backoff; `DISABLED` and
    `PERMISSION_REQUIRED` keep it until the feature is `READY` again.
 4. Entries expire 1 hour after creation unless a feature says otherwise.
@@ -1046,9 +1054,10 @@ the receiver does not know counts as `INTERNAL`.
 | `EXPIRED` | The request is too old | No |
 | `DECLINED` | The user declined on the receiving device | No |
 | `INTERNAL` | Unexpected failure | With backoff, a few times |
+| `NOT_ALLOWED` | The receiving device's OS does not allow it from another device right now, for example an action that needs the phone unlocked; the user can do it on the device itself | No |
 
-`ErrorReply.detail` is English text for logs. User-facing text comes from
-the code, never from `detail`.
+`ErrorReply.detail` is English text for logs, at most 1 KiB. User-facing
+text comes from the code, never from `detail`.
 
 Pairing failures use `PairingResult` instead, and connection-level
 problems use `Goodbye`.
@@ -1077,6 +1086,24 @@ except:
 
 When the user excludes an app, its notifications are reported as removed
 with `NOTIFICATION_REMOVAL_REASON_NOT_SHARED`.
+
+The phone takes the posting app's name and icon from the application info
+that Android attaches to each notification, because package visibility
+rules on Android 11 and later can hide the app from a normal lookup.
+
+### Keys
+
+`key`, `group` and an action's `id` identify things, so they are never
+truncated. The phone sends a notification's platform key, or its group
+key, as it is when it is at most 256 bytes, and otherwise as `h:` followed
+by the base64url SHA-256 of it (45 bytes). Apps choose part of these keys
+themselves and can make them arbitrarily long.
+
+An action's `id` is derived from the action's label and semantic action
+(and, for a reply action, its reply input), never from its position alone,
+and two actions of one notification never share an id. An app that
+reorders or replaces its buttons then cannot make an old request run a
+different button.
 
 ### Sync
 
@@ -1107,10 +1134,13 @@ place.
   already.
 - The phone sets `alert` for new notifications with importance `DEFAULT`
   or `HIGH`, and for updates of those unless the app asked to alert only
-  once.
+  once. It does not set it when Android suppressed the notification's
+  interruption, for example under Do Not Disturb, or when the app's group
+  alert setting silences it.
 - `MIN` and `LOW` notifications only go to the desktop's list.
-- `ongoing` notifications cannot be dismissed on the phone, so the desktop
-  does not offer to dismiss them there.
+- The desktop offers dismissal on the phone only for notifications with
+  `dismissible` set. Android does not let notification listeners cancel
+  most `ongoing` notifications.
 - `visibility` is a hint for the desktop's own privacy settings, for
   example to hide `PRIVATE` content while the desktop's screen is shared.
 
@@ -1121,14 +1151,26 @@ place.
 
 - An action with `accepts_reply` takes free-form text in `reply_text`.
 - An action with `reply_choices` offers ready-made replies; the chosen one
-  is sent as `reply_text`.
+  is sent as `reply_text`. The phone may add the replies Android suggests.
 - `kind` helps the desktop present the action, for example by binding a
-  `REPLY` action to its notification server's inline-reply field.
+  `REPLY` action to its notification server's inline-reply field. For call
+  notifications, the phone also lists answer, decline and hang-up, which
+  Android keeps outside the regular action list.
+- `requires_unlock` marks actions that Android runs only on an unlocked
+  phone; the desktop can show them as unavailable while the phone is
+  locked.
 
-The phone looks the action up in the notification's current version. If
-the notification or the action is gone, it answers `ERROR_CODE_NOT_FOUND`.
-If Android blocks the action, for example because it would open an
-activity from the background, it answers `ERROR_CODE_UNAVAILABLE`.
+The phone looks the action up by `id` in the notification's current
+version. If the notification or an action with that id is gone, it answers
+`ERROR_CODE_NOT_FOUND`. It answers `ERROR_CODE_NOT_ALLOWED`, without running
+the action, in two cases that the system would otherwise not report:
+
+- the action requires an unlocked phone and the phone is locked, since
+  running it from the notification listener would skip that requirement;
+- the action opens an app on the phone, and the phone app may not start
+  activities from the background (it has no companion-device association
+  and is not in the foreground). When it may, it fires the action with the
+  background-start opt-in.
 
 ### Dismissing
 
@@ -1142,6 +1184,9 @@ activity from the background, it answers `ERROR_CODE_UNAVAILABLE`.
   `NOTIFICATION_REMOVAL_REASON_DISMISSED_FROM_DESKTOP`. This dismiss sync
   is on by default. The user can turn it off on the desktop; dismissing
   there then only removes the notification from the desktop.
+- The desktop sends no dismiss request for a notification without
+  `dismissible`; the phone answers `ERROR_CODE_INVALID_ARGUMENT` to one,
+  because Android would ignore the cancel without saying so.
 - When the desktop closes a banner because the phone removed the
   notification, it MUST NOT send a dismiss request back.
 
@@ -1164,30 +1209,41 @@ can answer requests for them.
 
 Android 15 and later withhold the content of some notifications, such as
 those that seem to contain a one-time code, from notification listeners
-that are not system-trusted. A store-installed app cannot get that trust,
-so the phone app receives a placeholder instead of the content.
+that are not system-trusted. An app that pairs with a computer honestly,
+through a plain companion-device association without a device profile,
+cannot get that trust, so the phone app receives placeholder text instead
+of the content. Android 17 can also withhold the content of apps the user
+locked.
 
-- When the phone can tell that the OS withheld content, it sets `content`
-  to `NOTIFICATION_CONTENT_REDACTED_BY_SYSTEM` and leaves the withheld
-  fields empty. It MUST NOT send the placeholder text as content.
+- Android gives normal apps no flag for this, so the phone detects it by
+  comparing the text with Android's redaction placeholders. When they
+  match, the phone SHOULD set `content` to
+  `NOTIFICATION_CONTENT_REDACTED_BY_SYSTEM` (or
+  `NOTIFICATION_CONTENT_REDACTED_APP_LOCKED` for a locked app), leave the
+  withheld fields empty, and not send the placeholder text. Detection is
+  best effort: a desktop can still receive placeholder text as content.
 - When the user chose not to share an app's content, the phone sets
   `NOTIFICATION_CONTENT_HIDDEN_BY_USER` and fills in only the app, time and
   category.
 - The desktop shows such notifications with an explanation, such as
-  "Content hidden by Android. Check your phone", and offers no reply.
+  "Content hidden by Android. Check your phone". It offers no reply, by
+  choice: the user cannot see what they would be replying to.
 
 ### Limits
 
 | Item | Limit |
 |---|---|
-| `key` | 256 bytes |
+| `key`, `group` | 256 bytes; longer ones are hashed as described in [Keys](#keys) |
+| `app_name`, a message's `sender` | 256 bytes each |
 | `title`, `sub_text`, `conversation_title`, an action `label` | 1 KiB each |
 | `text`, a message's `text` | 8 KiB each |
 | `messages` | 10, the latest |
 | `actions` | 8 |
+| `reply_choices` | 5 per action, 256 bytes each |
 | `reply_text` | 8 KiB |
 
-The phone truncates longer values at a character boundary.
+The phone truncates longer text values at a character boundary. `key`,
+`group` and action ids are never truncated.
 
 ## Security considerations
 
@@ -1330,8 +1386,11 @@ The rules that matter most for security, gathered in one place:
   version gets a new package, and an app may speak several.
 - Within a major version, changes are backward compatible: new messages,
   new fields, new enum values and new capability tokens. Field numbers and
-  enum values are never reused or renumbered. `buf breaking` checks this
-  in CI.
+  enum values are never reused or renumbered. A change under `proto/` is
+  checked with `buf breaking` against `main` before it merges: the proto
+  job of `make ci` runs it when buf is installed. Without buf, that job
+  only compiles the schema with `protoc`, which does not check
+  compatibility.
 - The fields listed in [Version negotiation](#version-negotiation) never
   change, in any major version.
 - Envelope payload numbers are grouped: 10 to 29 for session messages and

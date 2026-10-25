@@ -57,8 +57,8 @@ message NotificationRemoved {
 
 // From the desktop: dismiss a notification on the phone, as if the user
 // had swiped it away there. The desktop sends it whenever the user
-// dismisses the notification on the desktop, unless the user turned dismiss
-// sync off. Sent from the desktop's outbox; answered by an Ack, or an
+// dismisses a notification with dismissible set on the desktop, unless the
+// user turned dismiss sync off. Sent from the desktop's outbox; answered by an Ack, or an
 // ErrorReply such as ERROR_CODE_NOT_FOUND.
 message NotificationDismissRequest {
   // 16 random bytes, the same on every retry of this dismissal.
@@ -87,8 +87,9 @@ message NotificationActionRequest {
 // A notification as the phone shares it. Text fields are plain text
 // without markup.
 message PhoneNotification {
-  // The phone's key for the notification: opaque, at most 256 bytes, and
-  // stable for as long as the notification exists.
+  // The phone's key for the notification: opaque, stable for as long as the
+  // notification exists, and never truncated. The platform key when it is
+  // at most 256 bytes, else "h:" followed by the base64url SHA-256 of it.
   string key = 1;
   // The collection's revision at which this version was posted.
   uint64 revision = 2;
@@ -105,10 +106,11 @@ message PhoneNotification {
   string sub_text = 9;
   NotificationCategory category = 10;
   NotificationImportance importance = 11;
-  // The user cannot dismiss it on the phone, for example ongoing work,
-  // media playback or a call in progress.
+  // The app marked it as ongoing, for example running work, media playback
+  // or a call.
   bool ongoing = 12;
-  // Notifications with the same group are shown stacked. Opaque.
+  // Notifications with the same group are shown stacked. Opaque, and
+  // shortened like key when longer than 256 bytes.
   string group = 13;
   // Buttons, in display order.
   repeated NotificationAction actions = 14;
@@ -126,12 +128,20 @@ message PhoneNotification {
   NotificationContent content = 20;
   // How private the app marked the content.
   NotificationVisibility visibility = 21;
+  // The phone can dismiss it on the desktop's behalf. False for
+  // notifications Android does not let notification listeners cancel, such
+  // as most ongoing ones.
+  bool dismissible = 22;
+  // The notification is a group conversation.
+  bool is_group_conversation = 23;
 }
 
 // A button on a notification.
 message NotificationAction {
-  // Identifies the action within its notification: opaque, and unchanged
-  // across updates for as long as the app keeps the action.
+  // Identifies the action within its notification: opaque, derived from the
+  // action's label and semantic action, never from its position alone, and
+  // unchanged across updates for as long as the app keeps the action. Two
+  // actions of one notification never share an id.
   string id = 1;
   string label = 2;
   NotificationActionKind kind = 3;
@@ -139,6 +149,9 @@ message NotificationAction {
   bool accepts_reply = 4;
   // Ready-made replies the app offers. Picking one sends it as reply_text.
   repeated string reply_choices = 5;
+  // Android runs this action only on an unlocked phone, so the phone refuses
+  // it while locked.
+  bool requires_unlock = 6;
 }
 
 // What an action does, when the phone can tell. Lets the desktop show a
@@ -216,12 +229,16 @@ enum NotificationContent {
   NOTIFICATION_CONTENT_FULL = 1;
   // The phone's OS withheld the content from the phone app, as Android 15
   // and later do for notifications that look like they hold a one-time
-  // code. The withheld fields are empty, never filled with the OS's
-  // placeholder text. The user can read the content on the phone.
+  // code. The withheld fields are empty. Detected heuristically by the
+  // phone, since Android exposes no flag to normal apps.
   NOTIFICATION_CONTENT_REDACTED_BY_SYSTEM = 2;
   // The user chose on the phone not to share this app's content. Only the
   // app, the time and the category are filled in.
   NOTIFICATION_CONTENT_HIDDEN_BY_USER = 3;
+  // The phone's OS withheld the content because the user locked the app
+  // (Android 17 and later). Detected heuristically, like
+  // NOTIFICATION_CONTENT_REDACTED_BY_SYSTEM.
+  NOTIFICATION_CONTENT_REDACTED_APP_LOCKED = 4;
 }
 
 // How private the app marked the content, for the desktop to honor while
@@ -242,7 +259,8 @@ enum NotificationRemovalReason {
   NOTIFICATION_REMOVAL_REASON_UNSPECIFIED = 0;
   // The user dismissed it on the phone.
   NOTIFICATION_REMOVAL_REASON_DISMISSED = 1;
-  // A NotificationDismissRequest from a desktop dismissed it.
+  // A NotificationDismissRequest from a desktop dismissed it. Only for
+  // cancels the phone app itself made, not those of other apps.
   NOTIFICATION_REMOVAL_REASON_DISMISSED_FROM_DESKTOP = 2;
   // The user opened it on the phone.
   NOTIFICATION_REMOVAL_REASON_OPENED = 3;

@@ -29,10 +29,12 @@ from them with `protoc`. Inspect it with `xxd proto/testdata/v1/frames.bin`.
 Inputs and expected outputs for every hash, tag and code that
 `docs/protocol.md` defines on top of TLS: key fingerprints, the exporter
 context, the mDNS presence and pairing tags (also in their TXT form), a
-complete beacon, a QR code URI, both QR pairing proofs, and the SAS
-commitment and code. The exporter values themselves are inputs, because
-TLS derives them; interoperability tests between the two TLS stacks cover
-that part.
+complete beacon (and the same beacon while pairing), a QR code URI, both
+QR pairing proofs, and the SAS commitment and code, plus a second SAS code
+that starts with a zero. `bad_proof_phone` is a negative case: the phone's
+proof with one bit flipped, which a verifier must reject. The exporter
+values themselves are inputs, because TLS derives them; interoperability
+tests between the two TLS stacks have to compare those.
 
 Each line is `name = value`, with byte strings in lowercase hex. A
 conforming implementation computes every output from the inputs.
