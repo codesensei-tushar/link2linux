@@ -14,8 +14,17 @@ publish = false
 link2linux-protocol = { path = "crates/protocol" }
 
 # Wire format.
+bytes = "1.12"
 prost = "0.14.4"
 prost-build = "0.14.4"
+
+# Async runtime and I/O. Each crate enables only the tokio features it uses.
+futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
+tokio = { version = "1.54", default-features = false }
+tokio-util = { version = "0.7.20", default-features = false, features = ["codec"] }
+
+# Errors.
+thiserror = "2.0.21"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

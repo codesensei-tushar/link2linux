@@ -5,6 +5,9 @@
 //! always agree on every field. See `docs/protocol.md` for the layers that
 //! sit around these messages.
 //!
+//! [`codec::EnvelopeCodec`] frames envelopes on a byte stream, in the same
+//! length-delimited format the Android app uses.
+//!
 //! The most used types are re-exported at the crate root:
 //!
 //! ```
@@ -16,6 +19,8 @@
 
 #![warn(missing_docs)]
 
+pub mod codec;
+
 /// Version 1 of the wire format, generated from the `link2linux.v1` package.
 ///
 /// Field-level documentation lives in the `.proto` files and is copied into
@@ -26,6 +31,7 @@ pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/link2linux.v1.rs"));
 }
 
+pub use codec::{DEFAULT_MAX_FRAME_LEN, EnvelopeCodec, FrameError};
 pub use v1::envelope::Payload;
 pub use v1::{DeviceKind, Envelope, Hello, Ping, Pong};
 
