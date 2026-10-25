@@ -11,6 +11,8 @@
 
 use std::net::SocketAddr;
 
+pub mod presence;
+
 use crate::device::{DeviceInfo, DeviceKind};
 
 /// A device seen on the local network.
@@ -66,4 +68,46 @@ pub trait Discovery: Send {
 
     /// Stops announcing and browsing.
     fn stop(&mut self) -> impl Future<Output = Result<(), DiscoveryError>> + Send;
+}
+
+/// Reader for the `name = value` test vectors in `proto/testdata/v1`.
+#[cfg(test)]
+pub(crate) mod testvec {
+    use std::collections::HashMap;
+
+    pub struct Vector(HashMap<String, String>);
+
+    impl Vector {
+        pub fn parse(text: &str) -> Self {
+            Self(
+                text.lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .filter_map(|l| l.split_once(" = "))
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .collect(),
+            )
+        }
+
+        pub fn pairing() -> Self {
+            Self::parse(include_str!("../../../../proto/testdata/v1/pairing.txt"))
+        }
+
+        pub fn text(&self, name: &str) -> &str {
+            self.0
+                .get(name)
+                .unwrap_or_else(|| panic!("no vector value {name}"))
+        }
+
+        pub fn bytes(&self, name: &str) -> Vec<u8> {
+            let hex = self.text(name);
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect()
+        }
+
+        pub fn array<const N: usize>(&self, name: &str) -> [u8; N] {
+            self.bytes(name).try_into().expect("vector length")
+        }
+    }
 }

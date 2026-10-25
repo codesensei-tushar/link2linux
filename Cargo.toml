@@ -25,6 +25,10 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 tokio = { version = "1.54", default-features = false }
 tokio-util = { version = "0.7.20", default-features = false, features = ["codec"] }
 
+# Crypto, built on aws-lc-rs like the rest of the workspace, and encodings.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
+base64 = "0.23.1"
+
 # Errors and logging.
 thiserror = "2.0.21"
 tracing = "0.1.44"
