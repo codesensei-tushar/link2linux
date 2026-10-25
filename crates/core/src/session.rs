@@ -127,7 +127,8 @@ pub enum SessionError {
     /// The peer's `Hello` is missing required information.
     #[error("invalid Hello from the peer: {0}")]
     InvalidHello(&'static str),
-    /// The peer's sequence numbers did not increase.
+    /// The peer's sequence number was not exactly one above its previous
+    /// one: a frame was lost, repeated or reordered.
     #[error("the peer sent sequence number {received} after {previous}")]
     OutOfOrder {
         /// The last sequence number accepted from the peer (0 before any).
@@ -693,9 +694,10 @@ fn peer_from(hello: Hello) -> Result<DeviceInfo, SessionError> {
     })
 }
 
-/// Checks that a sequence number from the peer is above the last one.
+/// Checks that a sequence number from the peer is exactly one above the
+/// last one, which catches lost and repeated frames.
 fn check_seq(previous: u64, received: u64) -> Result<(), SessionError> {
-    if received > previous {
+    if previous.checked_add(1) == Some(received) {
         Ok(())
     } else {
         Err(SessionError::OutOfOrder { previous, received })
