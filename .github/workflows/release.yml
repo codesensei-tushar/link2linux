@@ -1,0 +1,128 @@
+name: Release
+
+# Builds every download when a version tag such as v0.1.0 is pushed, and
+# collects them in a draft GitHub release for a maintainer to publish.
+# docs/releasing.md has the full checklist. The asset names are fixed: the
+# website and install.sh look files up by name.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    # The oldest supported runner, so the binaries also run on distributions
+    # with an older glibc.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the workspace version
+        run: |
+          grep -qx "version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml ||
+            { echo "::error::Cargo.toml [workspace.package] version is not ${GITHUB_REF_NAME#v}"; exit 1; }
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
+            libayatana-appindicator3-dev librsvg2-dev protobuf-compiler libfuse2
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter desktop tauri build
+      - name: Give the bundles their published names
+        run: |
+          b=target/release/bundle
+          mkdir dist
+          cp $b/deb/*_amd64.deb dist/link2linux_amd64.deb
+          cp $b/rpm/*.x86_64.rpm dist/link2linux.x86_64.rpm
+          cp $b/appimage/*_amd64.AppImage dist/link2linux-x86_64.AppImage
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop
+          path: dist/
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the app's versionName
+        run: |
+          grep -q "versionName = \"${GITHUB_REF_NAME#v}\"" apps/android/app/build.gradle.kts ||
+            { echo "::error::apps/android/app/build.gradle.kts versionName is not ${GITHUB_REF_NAME#v}"; exit 1; }
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the release APK
+        working-directory: apps/android
+        run: ./gradlew :app:assembleRelease
+      # Signed here rather than in Gradle, so the key never reaches the build.
+      - name: Sign the APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          [ -n "$KEYSTORE_BASE64" ] ||
+            { echo "::error::The ANDROID_KEYSTORE_* secrets are not set; see docs/releasing.md"; exit 1; }
+          bt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          ks="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$ks"
+          mkdir dist
+          # -P 16 aligns native libraries for 16 KB memory pages.
+          "$bt/zipalign" -P 16 -f 4 \
+            apps/android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+          "$bt/apksigner" sign --ks "$ks" --ks-pass env:KEYSTORE_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD \
+            --out dist/link2linux.apk "$RUNNER_TEMP/aligned.apk"
+          rm -f "$ks"
+          "$bt/apksigner" verify --print-certs dist/link2linux.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          path: dist/link2linux.apk
+          if-no-files-found: error
+
+  publish:
+    needs: [desktop, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum link2linux* | tee SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/link2linux*
+      # A draft, so a maintainer checks it before anyone can download it.
+      # Versions before 1.0 are marked as pre-releases.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in v0.*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --draft $prerelease --generate-notes --title "link2linux ${GITHUB_REF_NAME#v}"
