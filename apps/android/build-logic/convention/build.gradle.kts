@@ -40,6 +40,10 @@ gradlePlugin {
             id = libs.plugins.l2l.android.application.compose.get().pluginId
             implementationClass = "AndroidApplicationComposeConventionPlugin"
         }
+        register("androidFeature") {
+            id = libs.plugins.l2l.android.feature.get().pluginId
+            implementationClass = "AndroidFeatureConventionPlugin"
+        }
         register("androidLibrary") {
             id = libs.plugins.l2l.android.library.asProvider().get().pluginId
             implementationClass = "AndroidLibraryConventionPlugin"

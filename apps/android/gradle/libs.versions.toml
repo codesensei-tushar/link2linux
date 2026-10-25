@@ -1,16 +1,21 @@
 # The app compiles against API 36. Newer AndroidX releases (Compose 1.12 /
-# BOM 2026.08+, core 1.19, Navigation 3 1.2) require compileSdk 37, so they
-# stay on the last versions that support 36 until compileSdk moves up.
+# BOM 2026.08+, core 1.19, Navigation 3 1.2, Lifecycle 2.11, androidx.hilt
+# 1.4) require compileSdk 37, so they stay on the last versions that
+# support 36 until compileSdk moves up.
 [versions]
 agp = "9.4.1"
 androidxActivity = "1.13.0"
 androidxComposeBom = "2026.06.01"
 androidxCore = "1.18.0"
+androidxHilt = "1.3.0"
+androidxLifecycle = "2.10.0"
+androidxNavigation3 = "1.1.7"
 hilt = "2.60.1"
 javaxInject = "1"
 junit4 = "4.13.2"
 kotlin = "2.4.21"
 kotlinxCoroutines = "1.11.0"
+kotlinxSerialization = "1.12.0"
 ksp = "2.3.12"
 protobuf = "4.36.2"
 protobufPlugin = "0.10.0"
@@ -22,11 +27,18 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidxCore" }
+androidx-hilt-lifecycle-viewmodel-compose = { group = "androidx.hilt", name = "hilt-lifecycle-viewmodel-compose", version.ref = "androidxHilt" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "androidxLifecycle" }
+androidx-lifecycle-viewmodel-navigation3 = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-navigation3", version.ref = "androidxLifecycle" }
+androidx-navigation3-runtime = { group = "androidx.navigation3", name = "navigation3-runtime", version.ref = "androidxNavigation3" }
+androidx-navigation3-ui = { group = "androidx.navigation3", name = "navigation3-ui", version.ref = "androidxNavigation3" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
 javax-inject = { group = "javax.inject", name = "javax.inject", version.ref = "javaxInject" }
 junit = { group = "junit", name = "junit", version.ref = "junit4" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
+kotlinx-serialization-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-core", version.ref = "kotlinxSerialization" }
 protobuf-kotlin-lite = { group = "com.google.protobuf", name = "protobuf-kotlin-lite", version.ref = "protobuf" }
 protobuf-protoc = { group = "com.google.protobuf", name = "protoc", version.ref = "protobuf" }
 
@@ -42,12 +54,14 @@ android-lint = { id = "com.android.lint", version.ref = "agp" }
 compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 protobuf = { id = "com.google.protobuf", version.ref = "protobufPlugin" }
 
 # Convention plugins from build-logic
 l2l-android-application = { id = "l2l.android.application" }
 l2l-android-application-compose = { id = "l2l.android.application.compose" }
+l2l-android-feature = { id = "l2l.android.feature" }
 l2l-android-library = { id = "l2l.android.library" }
 l2l-android-library-compose = { id = "l2l.android.library.compose" }
 l2l-hilt = { id = "l2l.hilt" }
