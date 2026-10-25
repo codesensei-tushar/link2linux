@@ -1000,10 +1000,12 @@ activity from the background, it answers `ERROR_CODE_UNAVAILABLE`.
   phone sends `NotificationRemoved`, and the desktop removes it from its
   list and closes its banner.
 - **Desktop to phone.** When the user dismisses a notification on the
-  desktop and the user has turned on dismiss sync, the desktop sends
-  `NotificationDismissRequest` through its outbox. The phone cancels the
-  notification and then reports its removal like any other, with
-  `NOTIFICATION_REMOVAL_REASON_DISMISSED_FROM_DESKTOP`.
+  desktop, the desktop sends `NotificationDismissRequest` through its
+  outbox, so the notification is cleared on the phone too. The phone
+  cancels it and then reports its removal like any other, with
+  `NOTIFICATION_REMOVAL_REASON_DISMISSED_FROM_DESKTOP`. This dismiss sync
+  is on by default. The user can turn it off on the desktop; dismissing
+  there then only removes the notification from the desktop.
 - When the desktop closes a banner because the phone removed the
   notification, it MUST NOT send a dismiss request back.
 
