@@ -1,2 +1,7 @@
 packages:
   - apps/desktop
+
+peerDependencyRules:
+  allowedVersions:
+    # Works with ESLint 10; its peer range has not caught up yet.
+    eslint-plugin-jsx-a11y>eslint: "10"
