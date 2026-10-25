@@ -95,8 +95,9 @@ when it expires, without affecting its peers.
 A **pairing record** is what a device stores about a peer it trusts: the
 peer's device id, name, kind, current `fp`, an optional next `fp` (see
 [key rotation](#key-rotation)), and the time of pairing. A desktop also
-stores the phone's presence key and last known addresses; a phone stores
-the desktop's Bluetooth LE address and last known addresses.
+stores the presence key the phone made for it and the phone's last known
+addresses; a phone stores the presence key it made for the desktop, the
+desktop's Bluetooth LE address and its last known addresses.
 
 A device finds a peer's record by the `fp` the peer presented in TLS (its
 current or next `fp`), never by device id. When the peer's `Hello` arrives,
@@ -108,20 +109,28 @@ selects a record to show, update or replace.
 ## Discovery
 
 The phone listens for connections and makes itself findable. The desktop
-looks for phones and dials them. The desktop never needs an open inbound
-TCP port, so a desktop firewall that blocks inbound connections, which is
-common, does not get in the way.
+looks for phones and dials them, so it never needs an inbound TCP port. It
+needs inbound mDNS, which ufw's defaults and Fedora Workstation's firewall
+allow, and inbound UDP port 27381 for beacons on networks that filter
+multicast (see [Firewalls](#firewalls)).
 
 The phone listens on TCP port 27380. If that port is taken it MAY listen on
-any other port, which it then advertises. It listens while its connection
-service runs, which is whenever it has a pairing (or a pairing is under
-way) and is on a Wi-Fi or Ethernet network, unless the user turned
-link2linux off.
+any other port, which it then advertises. It runs its connection service
+(a `connectedDevice` foreground service) for as long as it has a pairing or
+a pairing is under way, unless the user turned link2linux off. The service
+keeps running when the phone leaves Wi-Fi or Ethernet: it closes the
+listener and stops announcing until the phone is on such a network again.
+It does not stop and restart with the network, because Android lets an app
+start a foreground service from the background only in a few cases. The
+service starts at boot and when the app is opened, and from the background
+only where Android allows it, through the companion-device association
+(see [Bluetooth LE](#bluetooth-le)).
 
-Discovery only ever flows from the phone to the desktop. A phone whose app
-is in the background does not receive multicast or broadcast traffic:
-Android drops it in the Wi-Fi firmware unless the app holds a multicast
-lock, which costs battery. So the desktop does not rely on asking: the
+Discovery only ever flows from the phone to the desktop. While no app on a
+phone holds a multicast lock, its Wi-Fi firmware drops inbound multicast
+and broadcast traffic, and Android takes such a lock for an app only while
+the app is visible. A phone whose app is in the background therefore does
+not hear queries or broadcasts. So the desktop does not rely on asking: the
 phone announces itself, and the desktop listens.
 
 The desktop learns where a phone is from these sources, all of them hints
@@ -136,11 +145,13 @@ that only ever lead to a dial attempt. Trust comes from TLS alone.
 
 ### mDNS
 
-The phone registers one service of type `_link2linux._tcp` on every
-Wi-Fi or Ethernet interface. The SRV record carries its TCP port; the A and
-AAAA records carry its addresses. The instance name is `l2l-` followed by 8
-random hex digits, picked anew together with the presence nonce below, so
-the name says nothing about the phone.
+The phone registers one service of type `_link2linux._tcp`; Android
+advertises it on the phone's Wi-Fi and Ethernet interfaces. The SRV record
+carries its TCP port; the A and AAAA records carry its addresses. The
+instance name is `l2l-` followed by 8 random hex digits, picked anew
+together with the presence nonce below, so the name says nothing about the
+phone. Android may rename the instance on a conflict; the phone always
+uses the name Android reports as registered.
 
 TXT keys (unknown keys MUST be ignored):
 
@@ -148,25 +159,28 @@ TXT keys (unknown keys MUST be ignored):
 |---|---|---|
 | `v` | Highest protocol major version, in decimal | Always |
 | `n` | Presence nonce: 8 random bytes, base64url | When the phone has at least one pairing |
-| `t` | Presence tag, base64url (see below) | With `n` |
+| `t`, `t2`, `t3` | Presence tags, base64url (see below) | With `n`: one per paired desktop, for up to three |
 | `q` | Pairing tag of the scanned QR code, base64url | While waiting for the desktop after a QR scan |
 | `pm` | `1` | While the phone is in SAS pairing mode |
 
 The TXT record stays below 200 bytes and carries no stable identifier and
 no name: the phone's name travels inside TLS, in `Hello`.
 
-The **presence tag** lets a paired desktop recognize its phone while
-everyone else sees only random values:
+The **presence tags** let each paired desktop recognize its phone while
+everyone else sees only random values. The phone creates a separate
+32-byte random `presence_key` for each desktop at pairing and gives it to
+that desktop in `PresenceUpdate`:
 
 ```
-t = first 8 bytes of HMAC-SHA256(presence_key, "l2l-presence-v1" || n)
+tag = first 8 bytes of HMAC-SHA256(presence_key, "l2l-presence-v1" || n)
 ```
 
-`presence_key` is 32 random bytes that the phone creates once and gives to
-each paired desktop in `PresenceUpdate`. The phone picks a fresh nonce, and
-with it a fresh instance name, whenever it joins a network and at least
-every 15 minutes. A desktop checks a record against each paired phone's key;
-the cost is one HMAC per paired phone.
+`t` holds the tag for the desktop the phone was connected to most recently,
+`t2` and `t3` for the next two. Desktops beyond the third find the phone
+through beacons and last known addresses. A desktop checks every tag
+against each paired phone's key; the cost is a few HMACs per record. The
+phone picks a fresh nonce, and with it a fresh instance name, whenever it
+joins a network and about every 15 minutes.
 
 The **pairing tag** lets the desktop that showed a QR code find the phone
 that scanned it, without putting the secret on the network:
@@ -177,10 +191,12 @@ q = first 8 bytes of HMAC-SHA256(secret, "l2l-pairing-tag-v1")
 
 Because a phone in the background may not answer queries, the phone
 re-registers its service, which makes it send fresh unsolicited
-announcements, at the start of every beacon burst (see below). The desktop
-keeps a browse running and acts on those announcements; it does not rely on
-its queries being answered. It browses with its own mDNS implementation, so
-it does not depend on a system mDNS daemon.
+announcements, at the start of every beacon burst (see below). On Android
+versions before 14 it also re-registers after every network change. The
+desktop keeps a browse running and acts on those announcements; it does not
+rely on its queries being answered, and it ignores removals, since
+discovery records only ever trigger dials. It browses with its own mDNS
+implementation, so it does not depend on a system mDNS daemon.
 
 ### Beacons
 
@@ -198,15 +214,18 @@ beacon is 40 bytes, with integers in network byte order:
 | 16 | 8 | Nonce: 8 random bytes, new in every beacon |
 | 24 | 16 | Tag: the first 16 bytes of `HMAC-SHA256(key, "l2l-beacon-v1" || bytes 0 to 23)` |
 
-The key is the phone's `presence_key` once it is paired, or the secret of
-the QR code it scanned while it waits for that desktop (flag bit 0 set). A
-phone that is neither paired nor waiting after a QR scan sends no beacons.
+The key is the `presence_key` of one paired desktop, or the secret of the
+QR code the phone scanned while it waits for that desktop (flag bit 0 set).
+A paired phone sends one beacon per paired desktop at each step, each with
+that desktop's key. A phone that is neither paired nor waiting after a QR
+scan sends no beacons.
 
-The phone sends each beacon to the broadcast address of its Wi-Fi network
-(both the subnet's and 255.255.255.255, because some access points drop
-one of them) and, by unicast, to each desktop address it knows: those in
-the QR code it scanned, and the last known addresses of its paired
-desktops. Unicast gets through access points that filter broadcast.
+The phone sends each beacon to the IPv4 broadcast address of its Wi-Fi
+network (both the subnet's and 255.255.255.255, because some access points
+drop one of them) and, by unicast, to the addresses of the desktop the key
+belongs to: those in the QR code it scanned, or that desktop's last known
+addresses. Unicast gets through access points that filter broadcast, and is
+the only way beacons reach a desktop on a network without IPv4.
 
 The phone sends beacons in bursts, each starting with a fresh mDNS
 registration:
@@ -219,19 +238,58 @@ registration:
   then one every 30 seconds up to 10 minutes, then none until the next such
   event.
 
-It stops as soon as the session it waits for is up.
+The phone keeps the device awake (a partial wake lock) only for the first
+minute of a burst. Later beacons are best effort: Android suspends the
+processor between wake-ups while the phone dozes, so the phone sends them
+when it is awake anyway and may skip them. Joining a network and presence
+events wake the phone by themselves, which is when beacons matter most. The
+phone stops a burst as soon as the session it waits for is up.
 
-The desktop accepts a beacon only if its version is known, its timestamp is
-within 5 minutes of the desktop's clock, its tag verifies (checked in
-constant time against each paired phone's key, or against the active QR
-offer's secret when bit 0 is set), and the same tag has not been seen in
-the last 10 minutes. It then dials the beacon's source address at the
-beacon's port. Beacons from a phone with a live session are ignored.
+The desktop accepts a beacon only if its version is known, its tag
+verifies (checked in constant time against the key of each paired phone,
+or against the active QR offer's secret when bit 0 is set), its timestamp
+is within 15 minutes of the desktop's clock, and it has not accepted the
+same tag before. It keeps each accepted tag until the beacon's timestamp is
+more than 15 minutes in the past by its own clock, and for at least 30
+minutes, so a backward step of the clock does not readmit a replay. It then
+dials the beacon's source address at the beacon's port. Beacons from a
+phone with a live session are ignored. When a tag verifies but the
+timestamp is outside the window, the desktop logs a clock-skew hint for that
+phone.
 
-The desktop needs one inbound UDP port for beacons. The desktop packages
-ship firewall service definitions for it (firewalld and ufw), and the
-desktop shows a hint when a paired phone is expected but neither mDNS
-announcements nor beacons arrive.
+A beacon tells the desktop which phone may be at an address; it never
+authenticates the address. Replays and forgeries can only cause dials,
+which then fail the TLS key check.
+
+### Firewalls
+
+The desktop needs inbound mDNS (UDP port 5353 to 224.0.0.251 and ff02::fb)
+and inbound UDP port 27381, and never an inbound TCP port. Outbound TCP to
+the phone needs no rule. Default firewall setups differ:
+
+- ufw is off by default on Ubuntu; when it is on, its default rules allow
+  mDNS but not UDP 27381.
+- Fedora Workstation's firewalld zone allows both.
+- The upstream firewalld default zone (`public`) allows neither, so on such
+  desktops neither announcements nor beacons arrive until the user allows
+  them once.
+
+The desktop packages ship a firewalld service definition (`link2linux`,
+which includes the `mdns` service and UDP port 27381) and a ufw application
+profile. Where it can, the desktop checks firewalld's active zone over
+D-Bus. When a paired phone is expected but nothing arrives, it shows the
+exact command (`firewall-cmd --permanent --add-service=link2linux`, or
+`ufw allow link2linux`).
+
+The desktop binds its UDP ports with address reuse, so it coexists with a
+system mDNS daemon. With several users logged in to one desktop, broadcast
+beacons reach every user's session, but a unicast beacon reaches only one
+of them.
+
+When a network isolates its clients from each other, no path exists at all.
+The phone's own hotspot is then a way out: the desktop joins it, and the
+phone listens and announces on the hotspot interface too. A VPN on either
+device that blocks local traffic has the same effect as isolation.
 
 ### Choosing what to dial
 
@@ -255,24 +313,35 @@ given.
 
 The desktop MAY advertise the link2linux service UUID over Bluetooth LE.
 No data flows over Bluetooth in version 1. The advertisement exists so that
-the phone can create a companion-device association with the desktop and
-ask Android to watch for its presence. Android then starts the phone app
-when the desktop comes near, and exempts it from some background limits
-while the desktop is present, which keeps the connection service alive
-without the phone polling. On such a presence event the phone starts a
-beacon burst.
+the phone can create a companion-device association with the desktop
+(Android 8 and later) and ask Android to watch for its presence. On Android
+12 and later, on phones whose Bluetooth controller supports offloaded scan
+filters, Android then starts the phone app when the desktop's advertisement
+appears and lets it start its connection service from the background. On
+Android 16 and later it also exempts the app from battery restrictions
+while the desktop is in range. Detection can take tens of seconds while the
+phone's screen is off, and may flap. On such a presence event the phone
+starts a beacon burst. The foreground service, not the association, is what
+keeps the connection alive.
 
-- The advertisement is connectable, so the desktop sends it from its stable
-  identity address; Bluetooth privacy (rotating addresses) is off for it,
-  because Android's presence detection cannot follow a rotating address
-  without an LE bond.
+- The advertisement is connectable, so the controller sends it from the
+  adapter's identity address rather than a throwaway one. Android's
+  presence detection cannot follow rotating addresses without an LE bond,
+  and BlueZ's privacy setting applies to the whole adapter. The desktop
+  therefore offers Bluetooth presence only when the adapter's address is
+  public and BlueZ privacy is off (its default); otherwise it explains why
+  the feature is unavailable.
 - Advertising data: flags and the 128-bit service UUID. Scan response: the
-  desktop's device name, truncated to fit, which the system's association
-  dialog shows. Legacy advertising PDUs only, and no GATT service.
+  desktop's device name, which the system's association dialog shows. The
+  desktop cuts the name to fit at a UTF-8 character boundary itself,
+  because BlueZ would cut it at a byte. Legacy advertising PDUs only, and no
+  GATT service.
 - The QR code carries the desktop's Bluetooth address (parameter `b`), so
   the phone's association request can filter on exactly that desktop.
-  `PresenceUpdate.ble_address` keeps it current afterwards, for example
-  after the desktop's Bluetooth adapter changes.
+  `PresenceUpdate.ble_address` tells the phone when that address changes,
+  for example after the desktop's Bluetooth adapter is replaced. An
+  association cannot be moved to a new address, so the phone then asks the
+  user to repeat the association and removes the old one.
 - The phone treats a presence event only as a reason to announce itself.
   It never treats one as proof of anything.
 
@@ -282,12 +351,13 @@ foreground connection service alone.
 ### Android local network access
 
 Apps that target Android API 37 or later need the `ACCESS_LOCAL_NETWORK`
-runtime permission for everything in this section: listening for TCP,
-registering the mDNS service (Android then refuses the registration without
-it) and sending UDP. The version 1 phone app targets API 36 and does not
-need it. The app that targets API 37 asks for it during onboarding, next to
-the other nearby-device permissions, or through its companion-device
-association request.
+runtime permission for everything in this section. Without it, Android
+refuses the mDNS registration with an exception, the listener accepts no
+connections (the desktop sees connect timeouts), and sending UDP fails.
+The version 1 phone app targets API 36 and does not need it. The app that
+targets API 37 asks for it during onboarding, next to the other
+nearby-device permissions (an earlier Bluetooth permission grant covers it
+without a new prompt), or through its companion-device association request.
 
 ## Pairing
 
@@ -320,8 +390,8 @@ link2linux://pair?v=1&f=<fp_D>&s=<secret>&n=<name>&a=<addresses>&b=<address>
 | `f` | `fp_D`, base64url (43 characters). |
 | `s` | The one-time secret: 16 random bytes, base64url (22 characters). |
 | `n` | The desktop's device name, percent-encoded, at most 64 bytes before encoding. Shown on the phone before it connects. |
-| `a` | Up to 4 of the desktop's addresses, comma-separated, where the phone sends its beacons: an IPv4 address or an IPv6 address, each optionally with `:port` (IPv6 in brackets then). The default port is 27381. |
-| `b` | The desktop's Bluetooth address, as 12 hexadecimal digits, most significant first. Present only when the desktop advertises over Bluetooth LE. |
+| `a` | Up to 4 of the desktop's addresses, comma-separated, where the phone sends its beacons: an IPv4 address or an IPv6 address, each optionally with `:port` (IPv6 in brackets then). The default port is 27381. Never an IPv6 link-local address, whose interface the phone cannot know. |
+| `b` | The desktop's Bluetooth address, as 12 hexadecimal digits, most significant first. Present only when the desktop advertises over Bluetooth LE from a public address. |
 
 Unknown parameters MUST be ignored, so later versions can add some. A
 typical payload is about 180 characters long.
@@ -338,6 +408,10 @@ The pairing tag `q` and the beacons sent while pairing are public, so
 anyone can check a guess of the secret against them offline. That takes
 about 2^128 work for a 16-byte secret. The secret MUST therefore never be
 shorter than 16 random bytes, typed in, or derived from a code.
+
+If no session starts within 15 seconds of the scan, the phone shows its
+own address and port, and the desktop offers a field to type them in, for
+networks or firewalls that let neither announcements nor beacons through.
 
 The phone app scans the code itself and does not register a browsable
 handler for `link2linux://`, so no other app can receive the secret from
@@ -443,7 +517,7 @@ screen.
 The user turns on "pair without camera" on the phone. For the next 2
 minutes, the phone accepts one pairing connection at a time from any
 desktop, advertises `pm=1`, keeps its mDNS instance name fixed, and shows
-that name and its address on screen. The desktop lists the phones that
+that name (as Android registered it) and its address on screen. The desktop lists the phones that
 advertise `pm=1` by instance name, the user picks the one their phone
 shows (or types its address when mDNS does not get through), and the
 desktop dials it with `Hello.pairing_method = PAIRING_METHOD_SAS`. Both
@@ -595,9 +669,9 @@ Either user can remove a pairing at any time.
   cannot tell that from a desktop that is switched off; it shows when each
   desktop last connected, so the user can remove stale ones.
 
-A phone that removes a pairing also picks a new presence key and sends it
-to its remaining desktops in their next sessions, so the removed desktop
-can no longer recognize its announcements.
+A phone that removes a pairing also deletes the presence key it made for
+that desktop, so the removed desktop can no longer recognize its
+announcements. The other desktops keep their own keys.
 
 ### Key rotation
 
@@ -1131,8 +1205,10 @@ of a shared Wi-Fi network:
 
 - sees the mDNS records and beacons. They reveal that a link2linux phone
   is present and its address, but not which phone it is: the instance
-  name, nonces and tags change at least every 15 minutes (every beacon has
-  a new nonce), and only a desktop holding the presence key can link them;
+  name, nonces and tags change whenever the phone joins a network and
+  about every 15 minutes (every beacon has a new nonce), and only a desktop
+  holding one of the phone's presence keys can link them. On one network
+  the phone's IP and hardware addresses still link them;
 - sees TLS 1.3 handshakes. Certificates are encrypted, no server name is
   sent, and the ALPN value `l2l/1` only names the protocol;
 - does not see any content. Traffic sizes and timing remain visible.
@@ -1185,7 +1261,7 @@ TLS rules out replay across connections. Within the protocol, requests
 that change state come with an idempotency key, so a request that is sent
 again after a reconnect is carried out once. Beacons carry a timestamp and
 a nonce under their tag, and the desktop drops beacons that are more than
-5 minutes off or that it has seen before. mDNS records carry no timestamp;
+15 minutes off or that it has accepted before. mDNS records carry no timestamp;
 replaying one, like forging any discovery hint, only causes dial attempts
 that fail the key check.
 
@@ -1210,10 +1286,13 @@ that fail the key check.
   content or metadata.
 - The phone advertises no stable identifier over mDNS or UDP. The desktop
   advertises nothing over mDNS.
-- The desktop's Bluetooth advertisement, when enabled, uses a stable address
-  and a fixed service UUID, so a nearby observer can recognize a
-  link2linux desktop over time. It is off unless the user turns on the
-  Bluetooth presence feature.
+- The desktop's Bluetooth advertisement, when enabled, uses the adapter's
+  public address and a fixed service UUID, so a nearby observer can
+  recognize a link2linux desktop over time. It is off unless the user turns
+  on the Bluetooth presence feature.
+- Each paired desktop gets its own presence key, so a desktop can recognize
+  only the tags meant for it, and removing one desktop does not affect the
+  others.
 - When it dials to pair by QR code, the desktop sends its `Hello` (device
   id, name, app version) to whichever host announced the pairing tag,
   before that host has proven anything. A host on the network can learn
@@ -1240,8 +1319,8 @@ The rules that matter most for security, gathered in one place:
 7. Generate secrets, nonces and keys with the platform's cryptographic
    random generator.
 8. Never dial off-link addresses taken from discovery, and drop beacons
-   whose tag fails, whose timestamp is off by more than 5 minutes, or whose
-   tag was seen before.
+   whose tag fails, whose timestamp is off by more than 15 minutes, or
+   whose tag was accepted before.
 9. Check the hash of every received image before using it.
 10. Keep private keys and presence keys out of logs and backups.
 
