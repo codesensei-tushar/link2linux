@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="feature_pairing_title" translatable="false">link2linux</string>
+    <string name="feature_pairing_empty_title">No computer paired yet</string>
+    <string name="feature_pairing_empty_body">Open link2linux on your Linux computer and keep both devices on the same network. To pair, you check that both screens show the same short code.</string>
+    <string name="feature_pairing_paired">Paired</string>
+</resources>

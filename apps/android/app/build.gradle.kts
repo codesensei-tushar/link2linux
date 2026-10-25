@@ -17,8 +17,12 @@ android {
 dependencies {
     implementation(projects.core.data)
     implementation(projects.core.designsystem)
+    implementation(projects.feature.pairing)
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.lifecycle.viewmodel.navigation3)
+    implementation(libs.androidx.navigation3.runtime)
+    implementation(libs.androidx.navigation3.ui)
 }
