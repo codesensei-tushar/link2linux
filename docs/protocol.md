@@ -111,8 +111,8 @@ link2linux off.
 Discovery only ever flows from the phone to the desktop. A phone whose app
 is in the background does not receive multicast or broadcast traffic:
 Android drops it in the Wi-Fi firmware unless the app holds a multicast
-lock, which costs battery. So the desktop never asks; the phone announces
-itself, and the desktop listens.
+lock, which costs battery. So the desktop does not rely on asking: the
+phone announces itself, and the desktop listens.
 
 The desktop learns where a phone is from these sources, all of them hints
 that only ever lead to a dial attempt. Trust comes from TLS alone.
@@ -318,8 +318,10 @@ typical payload is about 180 characters long.
 
 The desktop creates a new secret each time it shows a code. An offer is
 valid for 5 minutes and for one successful pairing; after 5 failed proofs
-the desktop withdraws it and shows a new code. The phone does not need the
-expiry: the desktop enforces it.
+the desktop withdraws it and shows a new code. It tolerates a few failures
+because a forged announcement can make it dial the wrong host first, and
+the secret's 128 bits make a failed attempt worthless to an attacker. The
+phone does not need the expiry: the desktop enforces it.
 
 ### Certificate checks
 
