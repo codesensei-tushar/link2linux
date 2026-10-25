@@ -5,9 +5,7 @@ use std::time::Duration;
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use link2linux_core::session::{ReconnectPolicy, VersionRange};
-use link2linux_core::{
-    DeviceInfo, DeviceKind, Feature, Session, SessionConfig, SessionError, SessionEvent,
-};
+use link2linux_core::{DeviceKind, Feature, Session, SessionConfig, SessionError, SessionEvent};
 use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload, Ping, Pong};
 use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
@@ -15,50 +13,9 @@ use tokio::time::Instant;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Encoder, Framed};
 
-/// Far end of a pipe, scripted frame by frame by a test.
-type RawPeer = Framed<DuplexStream, EnvelopeCodec>;
+mod session_common;
 
-fn desktop() -> DeviceInfo {
-    DeviceInfo::new(
-        "desktop-1",
-        "Desk",
-        DeviceKind::Desktop,
-        [Feature::Notifications, Feature::Clipboard, Feature::Files],
-    )
-}
-
-fn phone() -> DeviceInfo {
-    DeviceInfo::new(
-        "phone-1",
-        "Pixel",
-        DeviceKind::Phone,
-        [Feature::Clipboard, Feature::Files, Feature::Messages],
-    )
-}
-
-fn pipe() -> (DuplexStream, RawPeer) {
-    let (local, remote) = duplex(64 * 1024);
-    (local, Framed::new(remote, EnvelopeCodec::new()))
-}
-
-fn phone_hello() -> Hello {
-    Hello {
-        protocol_version: PROTOCOL_VERSION,
-        device_id: "phone-1".into(),
-        device_name: "Pixel".into(),
-        kind: DeviceKind::Phone.into(),
-        features: vec!["clipboard".into(), "files".into(), "messages".into()],
-        ..Hello::default()
-    }
-}
-
-fn envelope(seq: u64, payload: Payload) -> Envelope {
-    Envelope {
-        seq,
-        payload: Some(payload),
-        ..Envelope::default()
-    }
-}
+use session_common::*;
 
 /// Runs the desktop's handshake against a peer that reads one frame and
 /// answers with `reply`.
@@ -294,45 +251,6 @@ async fn times_out_on_a_silent_peer() {
         matches!(err, SessionError::HandshakeTimeout(t) if t == Duration::from_secs(5)),
         "{err:?}"
     );
-}
-
-/// Completes the desktop's handshake with a scripted phone.
-async fn connected(config: SessionConfig) -> (Session<DuplexStream>, RawPeer) {
-    let (io, mut peer) = pipe();
-    let script = async move {
-        peer.next().await.unwrap().unwrap();
-        peer.send(&envelope(1, Payload::Hello(phone_hello())))
-            .await
-            .unwrap();
-        peer
-    };
-    let (session, peer) = tokio::join!(Session::handshake(io, desktop(), config), script);
-    (session.unwrap(), peer)
-}
-
-/// Short timers, so paused-time tests stay readable.
-fn fast() -> SessionConfig {
-    SessionConfig {
-        ping_interval: Duration::from_secs(1),
-        idle_timeout: Duration::from_secs(3),
-        ..SessionConfig::default()
-    }
-}
-
-/// Sends `ping` from the scripted peer and returns the session's answer.
-/// The peer hangs up afterwards, so the session must report a clean close.
-async fn answer_to(
-    session: &mut Session<DuplexStream>,
-    mut peer: RawPeer,
-    ping: Envelope,
-) -> Envelope {
-    let script = async move {
-        peer.send(&ping).await.unwrap();
-        peer.next().await.unwrap().unwrap()
-    };
-    let (event, reply) = tokio::join!(session.next_event(), script);
-    assert!(matches!(event, Ok(None)), "{event:?}");
-    reply
 }
 
 #[tokio::test]
