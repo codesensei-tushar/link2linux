@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { describe, expect, it } from "vitest";
 
-import { createFakeApi, type FakeApi } from "@/test/fake-api";
+import { createFakeApi, testDevice, type FakeApi } from "@/test/fake-api";
 
 import { AppProviders } from "./providers";
 import { routes } from "./routes";
@@ -77,6 +77,17 @@ describe("app shell", () => {
     expect(skip).toHaveFocus();
     await user.keyboard("{Enter}");
     expect(screen.getByRole("main")).toHaveFocus();
+  });
+
+  it("shows the connection state and app version in the status area", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue([testDevice({ name: "Pixel", status: "connected" })]);
+    renderApp({ api });
+
+    const status = screen.getByRole("region", { name: "Connection" });
+    expect(await within(status).findByText("Connected")).toBeInTheDocument();
+    expect(within(status).getByText("Pixel")).toBeInTheDocument();
+    expect(await within(status).findByText("link2linux 0.1.0")).toBeInTheDocument();
   });
 
   it("sends unknown routes to pairing", () => {

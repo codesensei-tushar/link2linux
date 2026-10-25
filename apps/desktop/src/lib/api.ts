@@ -1,3 +1,4 @@
+import { isTauri } from "@tauri-apps/api/core";
 import { createContext, use } from "react";
 
 import { commands, type AppInfo, type Device } from "./bindings";
@@ -21,8 +22,27 @@ export const tauriApi: DesktopApi = {
   listDevices: () => commands.listDevices(),
 };
 
+/**
+ * Stand-in for running the UI in a plain browser (`pnpm dev` without Tauri),
+ * where IPC does not exist: no phones, and a version marked as a preview.
+ */
+export const browserPreviewApi: DesktopApi = {
+  appInfo: () =>
+    Promise.resolve({
+      name: "link2linux",
+      version: "browser preview",
+      identifier: "dev.link2linux.desktop",
+      os: "browser",
+      arch: "",
+    }),
+  listDevices: () => Promise.resolve([]),
+};
+
+/** The backend for the current environment. */
+export const defaultApi: DesktopApi = isTauri() ? tauriApi : browserPreviewApi;
+
 /** Provide a different `DesktopApi` with `<DesktopApiContext value={...}>`. */
-export const DesktopApiContext = createContext<DesktopApi>(tauriApi);
+export const DesktopApiContext = createContext<DesktopApi>(defaultApi);
 
 export function useDesktopApi(): DesktopApi {
   return use(DesktopApiContext);

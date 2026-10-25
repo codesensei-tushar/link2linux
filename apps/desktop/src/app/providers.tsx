@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { DevicesProvider } from "@/features/pairing/DevicesProvider";
-import { DesktopApiContext, tauriApi, type DesktopApi } from "@/lib/api";
+import { defaultApi, DesktopApiContext, type DesktopApi } from "@/lib/api";
 
 export interface AppProvidersProps {
   /** The backend to talk to. Tests pass a fake. */
@@ -10,7 +10,7 @@ export interface AppProvidersProps {
 }
 
 /** App-wide context: the backend client and the shared paired-device state. */
-export function AppProviders({ api = tauriApi, children }: AppProvidersProps) {
+export function AppProviders({ api = defaultApi, children }: AppProvidersProps) {
   return (
     <DesktopApiContext value={api}>
       <DevicesProvider>{children}</DevicesProvider>
