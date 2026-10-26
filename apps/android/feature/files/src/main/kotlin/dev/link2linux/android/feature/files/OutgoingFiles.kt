@@ -1,5 +1,6 @@
 package dev.link2linux.android.feature.files
 
+import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.content.Context
 import android.content.res.AssetFileDescriptor
@@ -10,6 +11,7 @@ import dev.link2linux.android.core.files.OutgoingFile
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.io.InputStream
 import java.util.UUID
 
@@ -104,12 +106,35 @@ internal object OutgoingFiles {
         resolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
     }.getOrNull()?.takeIf { it != AssetFileDescriptor.UNKNOWN_LENGTH && it >= 0 }
 
+    /**
+     * Copies a document whose size its provider does not tell. A copy may
+     * not grow past [MAX_COPY_BYTES], nor leave less than [SPARE_CACHE_BYTES]
+     * free: such a document is not sent.
+     */
     private fun copyToCache(context: Context, resolver: ContentResolver, uri: Uri): File {
         val directory = File(context.cacheDir, CACHE_DIRECTORY).apply { mkdirs() }
         val copy = File(directory, UUID.randomUUID().toString())
         try {
             val input = resolver.openInputStream(uri) ?: throw FileNotFoundException("The provider gave no stream")
-            input.use { source -> copy.outputStream().use { source.copyTo(it) } }
+            input.use { source ->
+                copy.outputStream().use { target ->
+                    val buffer = ByteArray(COPY_BUFFER_BYTES)
+                    var copied = 0L
+                    while (true) {
+                        val n = source.read(buffer)
+                        if (n < 0) break
+                        copied += n
+                        if (copied > MAX_COPY_BYTES) throw IOException("The document is too large to copy")
+                        if (copied % SPACE_CHECK_BYTES < n) {
+                            // Usable space without clearing other apps' caches: the copy must not cause that.
+                            @SuppressLint("UsableSpace")
+                            val free = directory.usableSpace
+                            if (free < SPARE_CACHE_BYTES) throw IOException("No room to copy the document")
+                        }
+                        target.write(buffer, 0, n)
+                    }
+                }
+            }
         } catch (e: Exception) {
             copy.delete()
             throw e
@@ -123,4 +148,13 @@ internal object OutgoingFiles {
     }
 
     private const val CACHE_DIRECTORY = "outgoing"
+
+    private const val COPY_BUFFER_BYTES = 64 * 1024
+
+    /** The largest document of unknown size that is copied to be sent. */
+    private const val MAX_COPY_BYTES = 1L shl 30
+
+    /** Free space a copy leaves, checked every [SPACE_CHECK_BYTES]. */
+    private const val SPARE_CACHE_BYTES = 256L * 1024 * 1024
+    private const val SPACE_CHECK_BYTES = 8L * 1024 * 1024
 }

@@ -78,7 +78,7 @@ fun FilesScreen(
         viewModel.refreshStorageAccess()
     }
     val send: (FilePeer, List<Uri>) -> Unit = { peer, uris ->
-        scope.launch { toastUnreadable(context, viewModel.send(peer, uris, shared = false).await()) }
+        scope.launch { toastUnreadable(context, viewModel.send(peer, uris).await()) }
     }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult

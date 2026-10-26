@@ -38,6 +38,26 @@
     <string name="files_share_off">Files are turned off. Turn them on in the link2linux app to send files.</string>
     <string name="files_sending_to">Sending to %1$s</string>
     <string name="files_sending_later">The files go to %1$s once it connects</string>
+    <plurals name="files_share_preparing">
+        <item quantity="one">Getting %d file ready…</item>
+        <item quantity="other">Getting %d files ready…</item>
+    </plurals>
+    <plurals name="files_share_confirm">
+        <item quantity="one">Send %d file?</item>
+        <item quantity="other">Send %d files?</item>
+    </plurals>
+    <plurals name="files_share_more">
+        <item quantity="one">and %d more</item>
+        <item quantity="other">and %d more</item>
+    </plurals>
+    <string name="files_share_total">%1$s in all</string>
+    <string name="files_share_to">To %1$s</string>
+    <plurals name="files_share_left_out">
+        <item quantity="one">%d file could not be read and is left out.</item>
+        <item quantity="other">%d files could not be read and are left out.</item>
+    </plurals>
+    <string name="files_share_none_readable">None of the shared files could be read.</string>
+    <string name="files_send_now">Send</string>
     <plurals name="files_unreadable">
         <item quantity="one">%d file could not be read</item>
         <item quantity="other">%d files could not be read</item>

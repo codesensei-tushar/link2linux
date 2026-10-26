@@ -11,20 +11,14 @@ import dev.link2linux.android.core.files.Transfer
 import dev.link2linux.android.core.files.TransferKey
 import dev.link2linux.android.core.files.toFilePeer
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /** A paired desktop to send files to. */
 data class DesktopChoice(val peer: FilePeer, val connected: Boolean)
-
-/** What came of a share: the desktop it went to, and how many of its files could not be read. */
-data class ShareResult(val desktop: DesktopChoice, val unreadable: Int, val total: Int)
 
 /** The files feature for the Files screen and the share target. */
 @HiltViewModel
@@ -48,27 +42,30 @@ class FilesViewModel @Inject internal constructor(
 
     fun refreshStorageAccess() = runtime.refreshStorageAccess()
 
-    /** Sends [uris] to [peer]; the result is how many could not be read. See [FilesRuntime.send]. */
-    fun send(peer: FilePeer, uris: List<Uri>, shared: Boolean): Deferred<Int> = runtime.send(peer, uris, shared)
+    /** Sends documents the user picked to [peer]; the result is how many could not be read. See [FilesRuntime.send]. */
+    fun send(peer: FilePeer, uris: List<Uri>): Deferred<Int> = runtime.send(peer, uris)
 
-
-    private val _shareStarted = MutableStateFlow(false)
-
-    /** The share target handed its files over, or is doing so. */
-    val shareStarted: StateFlow<Boolean> = _shareStarted.asStateFlow()
-
-    private val _shareResult = MutableStateFlow<ShareResult?>(null)
-    val shareResult: StateFlow<ShareResult?> = _shareResult.asStateFlow()
+    private val shareFlow = ShareFlow<Uri, FilesRuntime.Prepared, DesktopChoice>(
+        scope = viewModelScope,
+        read = runtime::prepareShare,
+        send = { desktop, prepared -> runtime.sendShare(desktop.peer, prepared) },
+        discard = runtime::discard,
+    )
 
     /**
-     * Sends a share's [uris] to [desktop], once: this model outlives the
-     * share activity being recreated, while a composition would send again.
+     * The share target's share. It lives here, which outlives the activity
+     * being recreated, so the documents are read once and sent at most once.
      */
-    fun share(desktop: DesktopChoice, uris: List<Uri>) {
-        if (!_shareStarted.compareAndSet(expect = false, update = true)) return
-        val sending = runtime.send(desktop.peer, uris, shared = true)
-        viewModelScope.launch { _shareResult.value = ShareResult(desktop, sending.await(), uris.size) }
-    }
+    val share: StateFlow<ShareState<FilesRuntime.Prepared, DesktopChoice>> = shareFlow.state
+
+    /** Reads the shared [uris], for the user to confirm. */
+    fun prepareShare(uris: List<Uri>) = shareFlow.prepare(uris)
+
+    fun confirmShare(desktop: DesktopChoice) = shareFlow.confirm(desktop)
+
+    fun cancelShare() = shareFlow.cancel()
+
+    override fun onCleared() = shareFlow.close()
 
     fun cancel(key: TransferKey) = runtime.cancel(key)
 

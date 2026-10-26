@@ -113,30 +113,67 @@ class FilesRuntime @Inject internal constructor(@ApplicationContext context: Con
     }
 
     /**
-     * Sends the documents [uris] to [peer]: now when it is connected and
-     * ready, or once it is. Returns how many of them could not be read.
+     * Sends the documents [uris] the user picked in the app to [peer]: now
+     * when it is connected and ready, or once it is. Returns how many could
+     * not be read.
      *
      * Call this while the activity that got the URIs runs: its read grant
      * lasts only as long, and is kept for the transfers from here on.
-     *
-     * @param shared the URIs came with a share, whose grant is held by a job;
-     *   otherwise the user picked them, and their grants are kept.
      */
-    fun send(peer: FilePeer, uris: List<Uri>, shared: Boolean = false): Deferred<Int> {
-        val grants = if (shared) ReadGrants.hold(app, uris) else null
-        val kept = if (shared) emptyList() else uris.filter(keptGrants::keep)
+    fun send(peer: FilePeer, uris: List<Uri>): Deferred<Int> {
+        val kept = uris.filter(keptGrants::keep)
         return scope.async {
             cacheCleared.await()
             val resolved = OutgoingFiles.resolve(app, uris)
-            val keys = if (resolved.files.isEmpty()) emptyList() else engine.send(peer, resolved.files)
-            val batch = Sent(keys, resolved.files, grants, kept)
-            sent += batch
-            // The transfers may have ended already, with no change of the list left to notice it.
-            val running = engine.transfers.value.filter { !it.state.isFinished }.map { it.key }
-            if (keys.none(running::contains) && sent.remove(batch)) release(batch)
-            Log.d(TAG, "Sending ${resolved.files.size} files, ${resolved.unreadable} unreadable")
+            start(peer, resolved.files, grants = null, kept = kept)
             resolved.unreadable
         }
+    }
+
+    /** A share's documents, read and described, waiting for the user to confirm them. */
+    class Prepared internal constructor(
+        internal val files: List<OutgoingFile>,
+        /** How many of the shared documents could not be read. */
+        val unreadable: Int,
+        internal val grants: Int?,
+    ) {
+        val count: Int get() = files.size
+        val totalBytes: Long get() = files.sumOf { it.size }
+        val names: List<String> get() = files.map { it.name }
+    }
+
+    /**
+     * Reads and describes the documents of a share, which another app may
+     * have started without the user (docs/protocol.md, "Sending"): nothing
+     * goes until the user confirms them with [sendShare], and [discard] lets
+     * them go.
+     *
+     * Call this while the share's activity runs: its read grant lasts only
+     * as long, and a job holds it from here on.
+     */
+    fun prepareShare(uris: List<Uri>): Deferred<Prepared> {
+        val grants = ReadGrants.hold(app, uris)
+        return scope.async {
+            cacheCleared.await()
+            val resolved = OutgoingFiles.resolve(app, uris)
+            Prepared(resolved.files, resolved.unreadable, grants)
+        }
+    }
+
+    /** Sends a share the user confirmed to [peer]. */
+    fun sendShare(peer: FilePeer, prepared: Prepared) = start(peer, prepared.files, prepared.grants, kept = emptyList())
+
+    /** Lets go of a share the user did not send. Doing it twice does no harm. */
+    fun discard(prepared: Prepared) = release(Sent(emptyList(), prepared.files, prepared.grants, emptyList()))
+
+    private fun start(peer: FilePeer, files: List<OutgoingFile>, grants: Int?, kept: List<Uri>) {
+        val keys = if (files.isEmpty()) emptyList() else engine.send(peer, files)
+        val batch = Sent(keys, files, grants, kept)
+        sent += batch
+        // The transfers may have ended already, with no change of the list left to notice it.
+        val running = engine.transfers.value.filter { !it.state.isFinished }.map { it.key }
+        if (keys.none(running::contains) && sent.remove(batch)) release(batch)
+        Log.d(TAG, "Sending ${files.size} files")
     }
 
     /**
