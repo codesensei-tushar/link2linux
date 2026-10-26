@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Connects the files engine to sessions with paired desktops.
@@ -60,7 +61,9 @@ class FileSessionHooks(
     private val requestTimeoutMillis: Long = Session.REQUEST_TIMEOUT_MILLIS,
 ) : SessionHooks {
 
-    private class Attached(val link: SessionLink, val requests: Channel<Envelope>, val worker: Job)
+    private class Attached(val link: SessionLink, val requests: Channel<Envelope>, val worker: Job, val chunksWaiting: AtomicInteger) {
+        /** Chunks queued for the worker or being handled, not yet answered. */
+        }
 
     private val lock = Mutex()
     private val attached = HashMap<Session, Attached>() // guarded by lock
@@ -75,10 +78,17 @@ class FileSessionHooks(
         if (!isActive(session)) return
         val link = SessionLink(desktop.toFilePeer(), session, requestTimeoutMillis)
         val requests = Channel<Envelope>(MAX_WAITING)
+        val chunksWaiting = AtomicInteger()
         val worker = scope.launch {
-            for (envelope in requests) answer(link, session, envelope)
+            for (envelope in requests) {
+                try {
+                    answer(link, session, envelope)
+                } finally {
+                    if (envelope.payloadCase == PayloadCase.FILE_CHUNK) chunksWaiting.decrementAndGet()
+                }
+            }
         }
-        lock.withLock { attached[session] = Attached(link, requests, worker) }
+        lock.withLock { attached[session] = Attached(link, requests, worker, chunksWaiting) }
         engine.attach(link)
     }
 
@@ -91,9 +101,18 @@ class FileSessionHooks(
         // Only a request is answered; a request message sent as a one-way event is ignored.
         if (!envelope.expectsReply) return true
         // Attached before the reader starts, and only removed once it stopped.
-        val requests = lock.withLock { attached[session] }?.requests ?: return true
-        // At most 8 chunks wait for their answers; far more waiting is a peer that ignores that.
-        if (requests.trySend(envelope).isFailure) session.protocolError("More than $MAX_WAITING file requests wait for their answers")
+        val waiting = lock.withLock { attached[session] } ?: return true
+        // At most 8 chunks wait for their answers (docs/protocol.md); a 9th is a peer that ignores that,
+        // and it bounds the chunk data the queue holds.
+        val isChunk = envelope.payloadCase == PayloadCase.FILE_CHUNK
+        if (isChunk && waiting.chunksWaiting.incrementAndGet() > MAX_CHUNKS_WAITING) {
+            session.protocolError("More than $MAX_CHUNKS_WAITING file chunks wait for their answers")
+            return true
+        }
+        // Offers and cancels are small, so the queue as a whole may hold far more.
+        if (waiting.requests.trySend(envelope).isFailure) {
+            session.protocolError("More than $MAX_WAITING file requests wait for their answers")
+        }
         return true
     }
 
@@ -151,12 +170,15 @@ class FileSessionHooks(
         }
     }
 
-    private companion object {
+    internal companion object {
         /**
          * The desktop's requests that may wait for the worker: 8 chunks, and offers and cancels besides.
          * Pipelined requests have no other bound, so this matches the session's posted-answer cap.
          */
         const val MAX_WAITING = Session.MAX_POSTED
+
+        /** Chunks the desktop may have without an answer in one session. */
+        const val MAX_CHUNKS_WAITING = 8
     }
 
     /** One session, as the engine's link to its desktop. */
