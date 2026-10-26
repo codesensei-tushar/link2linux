@@ -2,7 +2,7 @@
 //!
 //! [`NotificationService`] joins the other parts of the module: it keeps the
 //! [`Mirror`] in step with the phone, shows banners through a
-//! [`NotificationSink`] with the images the [`ImageCache`] holds, and
+//! [`NotificationSink`], fetches their images into the [`ImageCache`], and
 //! sends the user's dismissals and actions through the [`Outbox`]. It does
 //! not own the session, so it can share one with other features:
 //!
@@ -71,6 +71,7 @@ pub enum ServiceError {
 /// What a request this service sent is waiting for.
 enum Pending {
     Sync,
+    Image(Vec<u8>),
     Outbox(IdempotencyKey),
 }
 
@@ -181,7 +182,7 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                             self.pending.insert(request, Pending::Sync);
                         }
                         let changes = self.mirror.apply_batch(batch)?;
-                        self.apply(changes).await;
+                        self.apply(session, changes).await?;
                     }
                     (Pending::Sync, Err(refused)) => {
                         tracing::info!(
@@ -190,6 +191,15 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                         );
                         self.mirror.session_ended();
                     }
+                    (Pending::Image(sha256), Ok(Payload::ImageData(image))) => {
+                        if image.sha256 == sha256 {
+                            match self.images.store(&image) {
+                                Ok(_) => self.refresh_banners_with(session, &sha256).await?,
+                                Err(e) => tracing::warn!(%e, "dropped a notification image"),
+                            }
+                        }
+                    }
+                    (Pending::Image(_), Err(_)) => {}
                     (Pending::Outbox(key), Ok(_)) => {
                         self.outbox.acked(&key)?;
                     }
@@ -210,6 +220,7 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                     self.mirror.session_ended();
                     Ok(None)
                 }
+                Some(Pending::Image(_)) => Ok(None),
                 None => Ok(Some(SessionEvent::RequestTimedOut { request })),
             },
             SessionEvent::Message {
@@ -217,7 +228,7 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                 ..
             } => {
                 let change = self.mirror.apply_posted(posted)?;
-                self.apply(change.into_iter().collect()).await;
+                self.apply(session, change.into_iter().collect()).await?;
                 Ok(None)
             }
             SessionEvent::Message {
@@ -225,7 +236,7 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                 ..
             } => {
                 let change = self.mirror.apply_removed(removed)?;
-                self.apply(change.into_iter().collect()).await;
+                self.apply(session, change.into_iter().collect()).await?;
                 Ok(None)
             }
             SessionEvent::FeatureStatus(status) => {
@@ -360,7 +371,14 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
 
     /// Shows the changes: banners for new alerting notifications, quiet
     /// updates of banners on screen, and closing banners of removed ones.
-    async fn apply(&mut self, changes: Vec<Change>) {
+    async fn apply<S>(
+        &mut self,
+        session: &mut Session<S>,
+        changes: Vec<Change>,
+    ) -> Result<(), ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         for change in changes {
             match &change {
                 Change::Posted {
@@ -369,7 +387,7 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                 } => {
                     let on_screen = self.banners.get(&notification.key).copied();
                     if on_screen.is_some() || present::wants_banner(notification, *alert) {
-                        let image = self.cached_image(notification);
+                        let image = self.image_for(session, notification).await?;
                         self.show(notification, on_screen, !*alert, image).await;
                     }
                 }
@@ -385,6 +403,7 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
             // No subscriber is fine: the page may not be open.
             let _ = self.changes.send(change);
         }
+        Ok(())
     }
 
     async fn show(
@@ -415,9 +434,56 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
         }
     }
 
-    /// The local file of the notification's image, when cached.
-    fn cached_image(&self, notification: &PhoneNotification) -> Option<std::path::PathBuf> {
-        banner_image(notification).and_then(|sha256| self.images.get(sha256))
+    /// The local file of the notification's image, when cached; otherwise
+    /// asks the phone for it, and the banner is updated when it arrives.
+    async fn image_for<S>(
+        &mut self,
+        session: &mut Session<S>,
+        notification: &PhoneNotification,
+    ) -> Result<Option<std::path::PathBuf>, ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let Some(sha256) = banner_image(notification) else {
+            return Ok(None);
+        };
+        if let Some(path) = self.images.get(sha256) {
+            return Ok(Some(path));
+        }
+        let asked = self
+            .pending
+            .values()
+            .any(|p| matches!(p, Pending::Image(s) if s.as_slice() == sha256));
+        if !asked {
+            let request = Payload::ImageRequest(ImageCache::request(sha256));
+            let seq = session.start_request(request).await?;
+            self.pending.insert(seq, Pending::Image(sha256.to_vec()));
+        }
+        Ok(None)
+    }
+
+    /// Shows the image that just arrived in the banners that wait for it.
+    async fn refresh_banners_with<S>(
+        &mut self,
+        session: &mut Session<S>,
+        sha256: &[u8],
+    ) -> Result<(), ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let waiting: Vec<(PhoneNotification, NotificationId)> = self
+            .banners
+            .iter()
+            .filter_map(|(key, id)| {
+                let notification = self.mirror.get(key)?;
+                (banner_image(notification) == Some(sha256)).then(|| (notification.clone(), *id))
+            })
+            .collect();
+        for (notification, id) in waiting {
+            let image = self.image_for(session, &notification).await?;
+            self.show(&notification, Some(id), true, image).await;
+        }
+        Ok(())
     }
 }
 
