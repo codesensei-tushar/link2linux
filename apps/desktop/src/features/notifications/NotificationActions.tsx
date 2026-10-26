@@ -1,5 +1,5 @@
-import { Send } from "lucide-react";
-import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { Lock, Send } from "lucide-react";
+import { useEffect, useId, useRef, useState, type SyntheticEvent } from "react";
 
 import { Button } from "@/components/ui";
 
@@ -16,6 +16,7 @@ export function NotificationActions({ actions, onRun }: NotificationActionsProps
   const [replying, setReplying] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const buttonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const hintId = useId();
   const [draft, setDraft] = useState("");
   const returnFocusTo = useRef<string | null>(null);
 
@@ -53,22 +54,30 @@ export function NotificationActions({ actions, onRun }: NotificationActionsProps
     <div className="notification__actions">
       <div role="group" aria-label="Actions" className="notification__buttons">
         {actions.map((action) => (
-          <Button
-            key={action.id}
-            size="sm"
-            ref={(node: HTMLButtonElement | null) => {
-              if (node) buttonRefs.current.set(action.id, node);
-              else buttonRefs.current.delete(action.id);
-            }}
-            aria-expanded={action.acceptsReply ? replying === action.id : undefined}
-            onClick={() => {
-              if (!action.acceptsReply) onRun(action);
-              else if (replying === action.id) closeReply();
-              else setReplying(action.id);
-            }}
-          >
-            {action.label}
-          </Button>
+          <div key={action.id} className="notification__action">
+            <Button
+              size="sm"
+              icon={action.requiresUnlock ? Lock : undefined}
+              aria-describedby={action.requiresUnlock ? `${hintId}-${action.id}` : undefined}
+              ref={(node: HTMLButtonElement | null) => {
+                if (node) buttonRefs.current.set(action.id, node);
+                else buttonRefs.current.delete(action.id);
+              }}
+              aria-expanded={action.acceptsReply ? replying === action.id : undefined}
+              onClick={() => {
+                if (!action.acceptsReply) onRun(action);
+                else if (replying === action.id) closeReply();
+                else setReplying(action.id);
+              }}
+            >
+              {action.label}
+            </Button>
+            {action.requiresUnlock && (
+              <span id={`${hintId}-${action.id}`} className="notification__hint">
+                Unlock your phone to use this
+              </span>
+            )}
+          </div>
         ))}
       </div>
       {replyAction && (

@@ -289,3 +289,69 @@ describe("NotificationsPage actions", () => {
     expect(screen.getByRole("button", { name: "Reply" })).toHaveFocus();
   });
 });
+
+describe("NotificationsPage withheld content", () => {
+  it.each([
+    ["redactedBySystem", "Content hidden by Android. Check your phone"],
+    ["redactedAppLocked", "Hidden because the app is locked on your phone"],
+    ["hiddenByUser", "You chose not to share this app's content"],
+  ] as const)("explains %s instead of showing empty text", async (content, explanation) => {
+    renderPage([
+      testNotification({
+        appName: "Bank",
+        title: "",
+        text: "",
+        content,
+        actions: [replyAction, archiveAction],
+      }),
+    ]);
+
+    const item = await screen.findByRole("article", { name: "Bank: content hidden" });
+    expect(item).toHaveTextContent(explanation);
+    expect(within(item).queryByRole("button", { name: "Reply" })).not.toBeInTheDocument();
+    expect(within(item).queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+  });
+
+  it("does not announce withheld content", async () => {
+    const api = renderPage([]);
+    await screen.findByRole("region", { name: "No notifications" });
+
+    act(() => {
+      api.emitNotification({
+        type: "posted",
+        alert: true,
+        notification: testNotification({ title: "Code 123456", content: "redactedBySystem" }),
+      });
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent(/^New notification from Chat$/);
+  });
+
+  it("still lets the user dismiss withheld content", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([
+      testNotification({ key: "o", appName: "Bank", title: "", content: "redactedBySystem" }),
+    ]);
+
+    await user.click(await screen.findByRole("button", { name: "Dismiss Bank" }));
+    expect(api.dismissNotification).toHaveBeenCalledWith("phone-1", "o");
+  });
+
+  it("marks actions that need an unlocked phone", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([
+      testNotification({
+        key: "a",
+        actions: [{ ...archiveAction, requiresUnlock: true }, replyAction],
+      }),
+    ]);
+
+    const archive = await screen.findByRole("button", { name: "Archive" });
+    expect(archive).toHaveAccessibleDescription("Unlock your phone to use this");
+    expect(screen.getByRole("button", { name: "Reply" })).not.toHaveAccessibleDescription();
+    expect(screen.getAllByText("Unlock your phone to use this")).toHaveLength(1);
+
+    await user.click(archive);
+    expect(api.runNotificationAction).toHaveBeenCalled();
+  });
+});

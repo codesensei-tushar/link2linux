@@ -163,3 +163,28 @@
   outline: 2px solid var(--color-focus);
   outline-offset: 1px;
 }
+
+.notification__withheld {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.notification__withheld svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+.notification__action {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+}
+
+.notification__hint {
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+}
