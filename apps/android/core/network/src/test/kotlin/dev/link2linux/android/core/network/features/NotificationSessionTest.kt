@@ -7,12 +7,14 @@ import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
 import dev.link2linux.android.core.model.DeviceKind
+import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.model.PresenceKey
 import dev.link2linux.android.core.network.FrameCodec
 import dev.link2linux.android.core.network.Session
 import dev.link2linux.android.core.network.Transport
 import dev.link2linux.android.core.network.pairing.DesktopPeer
+import dev.link2linux.android.core.network.pairing.PairedSession
 import dev.link2linux.android.core.network.pairing.PairingService
 import dev.link2linux.android.core.network.tls.TestDesktop
 import dev.link2linux.android.core.network.tls.asSource
@@ -48,6 +50,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -422,29 +425,34 @@ class NotificationSessionTest {
     @Test
     fun anAvailabilityChangeOnADeadConnectionDoesNotCrashTheApp() = runBlocking {
         val uncaught = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
-        val hooksScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, e -> uncaught += e })
-        val hooks = NotificationSessionHooks(engine, hooksScope)
+        val sessionsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, e -> uncaught += e })
+        val hooks = NotificationSessionHooks(engine, sessionsScope)
         val record = PairedDevice(
             device = Device(DeviceId(DesktopPeer.DEVICE_ID), "Test desktop", DeviceKind.DESKTOP),
             fingerprint = desktop.fingerprint!!,
             pairedAtEpochMillis = 0,
             presenceKey = PresenceKey.of(ByteArray(32) { 9 }),
         )
+        devices.save(record)
         val phoneHello = hello {
             protocolVersion = 1
             deviceId = "phone-1"
             deviceName = "Phone"
             kind = WireDeviceKind.DEVICE_KIND_PHONE
         }
-        suspend fun established(transport: Transport) = Session(transport).also {
-            withTimeout(5_000) { it.handshake(phoneHello) }
-            hooks.featureStatus()
-            hooks.onEstablished(record, it)
+
+        /** Runs a session over [transport] as the pairing service does, once its first messages are out. */
+        suspend fun established(transport: BreakingTransport) {
+            val session = Session(transport)
+            withTimeout(5_000) { session.handshake(phoneHello) }
+            sessionsScope.launch { PairedSession(devices, hooks).run(record.fingerprint, KeyFingerprint.of(ByteArray(32) { 1 }), session) }
+            withTimeout(5_000) { while (transport.envelopes().none { it.hasPresenceUpdate() }) delay(10) }
         }
         engine.onListenerConnected(emptyList())
         withTimeout(5_000) { engine.availability.first { it == NotificationAvailability.READY } }
+        val dead = BreakingTransport()
+        val live = BreakingTransport()
         try {
-            val dead = BreakingTransport()
             established(dead)
             dead.broken = true
 
@@ -454,15 +462,19 @@ class NotificationSessionTest {
             delay(200)
 
             // A later session still gets the changes.
-            val live = BreakingTransport()
             established(live)
             policy.accessGranted = true
             engine.onPolicyChanged()
-            withTimeout(5_000) { while (live.envelopes().none { it.hasFeatureStatus() }) delay(10) }
-            assertEquals(FeatureAvailability.FEATURE_AVAILABILITY_READY, live.envelopes().last { it.hasFeatureStatus() }.availability())
+            withTimeout(5_000) {
+                while (live.envelopes().lastOrNull { it.hasFeatureStatus() }?.availability() != FeatureAvailability.FEATURE_AVAILABILITY_READY) {
+                    delay(10)
+                }
+            }
             assertTrue("uncaught: $uncaught", uncaught.isEmpty())
         } finally {
-            hooksScope.cancel()
+            dead.close()
+            live.close()
+            sessionsScope.cancel()
         }
     }
 }

@@ -3,7 +3,6 @@ package dev.link2linux.android.core.network.features
 import dev.link2linux.android.core.model.Feature
 import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.network.Session
-import dev.link2linux.android.core.network.SessionState
 import dev.link2linux.android.core.network.pairing.SessionHooks
 import dev.link2linux.android.core.notifications.NotificationAvailability
 import dev.link2linux.android.core.notifications.NotificationEngine
@@ -20,10 +19,8 @@ import dev.link2linux.protocol.v1.FeatureStatus
 import dev.link2linux.protocol.v1.featureState
 import dev.link2linux.protocol.v1.featureStatus
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,47 +33,29 @@ import kotlinx.coroutines.sync.withLock
  * its requests fall through to `ERROR_CODE_UNSUPPORTED`.
  *
  * Every session with the feature is attached to the engine, so with several
- * desktops connected each gets the live events once it has synced.
+ * desktops connected each gets the live events once it has synced. The
+ * session sends a new `FeatureStatus` whenever the engine's availability
+ * changes.
  */
 class NotificationSessionHooks(
     private val engine: NotificationEngine,
     private val scope: CoroutineScope,
 ) : SessionHooks {
 
-    private class Attached(val transport: NotificationTransport, val statusUpdates: Job)
-
     private val lock = Mutex()
-    private val attached = HashMap<Session, Attached>() // guarded by lock
-
-    @Volatile
-    private var reported = engine.availability.value
+    private val attached = HashMap<Session, NotificationTransport>() // guarded by lock
 
     override fun features(): Set<Feature> = setOf(Feature.NOTIFICATIONS)
 
-    override fun featureStatus(): FeatureStatus {
-        val availability = engine.availability.value
-        reported = availability
-        return statusOf(availability)
-    }
+    override fun featureStatus(): FeatureStatus = statusOf(engine.availability.value)
+
+    override fun featureStatusChanges(): Flow<FeatureStatus> = engine.availabilityChanges.map(::statusOf)
 
     override suspend fun onEstablished(desktop: PairedDevice, session: Session) {
         if (!isActive(session)) return
-        val reportedAtStart = reported
-        val updates = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            // A change between the status the session started with and this
-            // subscription would otherwise be lost.
-            val now = engine.availability.value
-            if (now != reportedAtStart && !sendStatus(session, now)) return@launch
-            // A failed send means the connection is gone; its reader ends the
-            // session, which cancels this. Until then nothing more goes out.
-            engine.availabilityChanges.takeWhile { sendStatus(session, it) }.collect()
-        }
         val transport = SessionTransport(session, scope)
         lock.withLock {
-            attached.put(session, Attached(transport, updates))?.let { old ->
-                old.statusUpdates.cancel()
-                engine.detach(old.transport)
-            }
+            attached.put(session, transport)?.let { engine.detach(it) }
             engine.attach(transport)
         }
     }
@@ -93,26 +72,16 @@ class NotificationSessionHooks(
         // Only a request is answered; a request message sent as a one-way event is ignored.
         if (!envelope.expectsReply) return true
         // A session that already ended still gets its answer, but no live events.
-        val from = lock.withLock { attached[session]?.transport } ?: SessionTransport(session, scope)
+        val from = lock.withLock { attached[session] } ?: SessionTransport(session, scope)
         engine.handle(request, RepliesTo(session, envelope.seq), from)
         return true
     }
 
     override suspend fun onEnded(desktop: PairedDevice, session: Session) {
-        lock.withLock {
-            val ended = attached.remove(session) ?: return
-            ended.statusUpdates.cancel()
-            engine.detach(ended.transport)
-        }
+        lock.withLock { attached.remove(session)?.let { engine.detach(it) } }
     }
 
-    private suspend fun sendStatus(session: Session, availability: NotificationAvailability): Boolean =
-        runCatching { session.send { featureStatus = statusOf(availability) } }.isSuccess
-
-    private fun isActive(session: Session): Boolean {
-        val state = session.state.value
-        return state is SessionState.Established && Feature.NOTIFICATIONS.wireName in state.peer.featuresList
-    }
+    private fun isActive(session: Session): Boolean = session.isActive(Feature.NOTIFICATIONS.wireName)
 
     private fun statusOf(availability: NotificationAvailability): FeatureStatus = featureStatus {
         features += featureState {

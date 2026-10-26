@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package link2linux.v1;
 
+import "link2linux/v1/clipboard.proto";
 import "link2linux/v1/common.proto";
 import "link2linux/v1/notifications.proto";
 import "link2linux/v1/pairing.proto";
@@ -56,6 +57,8 @@ message Envelope {
     NotificationRemoved notification_removed = 103;
     NotificationDismissRequest notification_dismiss_request = 104;
     NotificationActionRequest notification_action_request = 105;
+
+    ClipboardPush clipboard_push = 350;
   }
 }
 

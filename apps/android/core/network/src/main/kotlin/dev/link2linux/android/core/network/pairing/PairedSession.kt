@@ -14,9 +14,14 @@ import dev.link2linux.protocol.v1.ErrorReply
 import dev.link2linux.protocol.v1.FeatureStatus
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.PresenceUpdate
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -32,6 +37,17 @@ interface SessionHooks {
 
     /** The phone's complete `FeatureStatus`, sent first in every session. */
     fun featureStatus(): FeatureStatus = FeatureStatus.getDefaultInstance()
+
+    /**
+     * The phone's complete `FeatureStatus` after each change, every change in
+     * order: a change away from a state and back is two statuses, which the
+     * desktop may act on. The session sends each one.
+     *
+     * Collecting it must subscribe at once, as collecting a `SharedFlow` or
+     * `StateFlow` does: the session starts collecting just before its first
+     * status, and a change in between must not be lost.
+     */
+    fun featureStatusChanges(): Flow<FeatureStatus> = emptyFlow()
 
     /** The session with [desktop] is up; `FeatureStatus` and `PresenceUpdate` went out. */
     suspend fun onEstablished(desktop: PairedDevice, session: Session) = Unit
@@ -56,7 +72,7 @@ interface SessionHooks {
 /**
  * Runs a session with a paired desktop until it ends: sends the phone's
  * `FeatureStatus` and this desktop's presence key, then serves the
- * desktop's messages.
+ * desktop's messages. A new `FeatureStatus` follows each change.
  *
  * - `KeyRotation` stores the announced key as the record's next key and is
  *   answered with `Ack`, unless the key is this phone's or another paired
@@ -89,6 +105,12 @@ internal class PairedSession(
             devices.pairedDevices.first { list -> list.none { it.accepts(key) || it.presenceKey == desktop.presenceKey } }
             session.goodbye(GoodbyeReason.GOODBYE_REASON_UNPAIRED)
         }
+        // Subscribed before the first status goes out, so a change in between is not lost.
+        val statusUpdates = launch(start = CoroutineStart.UNDISPATCHED) {
+            // A failed send means the connection is gone; its reader ends the
+            // session. Until then nothing more goes out.
+            hooks.featureStatusChanges().takeWhile { sendStatus(session, it) }.collect()
+        }
         try {
             session.send { featureStatus = hooks.featureStatus() }
             session.send {
@@ -101,6 +123,7 @@ internal class PairedSession(
             }
         } finally {
             unpaired.cancel()
+            statusUpdates.cancel()
             session.close()
             withContext(NonCancellable) { hooks.onEnded(desktop, session) }
         }
@@ -151,6 +174,9 @@ internal class PairedSession(
         val taken = devices.pairedDevices.first().any { it.fingerprint != desktop.fingerprint && it.accepts(key) }
         return if (taken) "next_spki_sha256 belongs to another paired device" else null
     }
+
+    private suspend fun sendStatus(session: Session, status: FeatureStatus): Boolean =
+        runCatching { session.send { featureStatus = status } }.isSuccess
 
     private suspend fun reply(session: Session, request: Envelope, fill: Envelope.Builder.() -> Unit) =
         session.send {

@@ -23,6 +23,7 @@ no relay: the two devices talk to each other directly or not at all.
 - [Message patterns](#message-patterns)
 - [Errors](#errors)
 - [Notifications](#notifications)
+- [Clipboard](#clipboard)
 - [Security considerations](#security-considerations)
 - [Versioning](#versioning)
 - [Message index](#message-index)
@@ -1383,6 +1384,89 @@ bytes, and treats a longer `key` or `group` as a protocol error. It also
 keeps at most 1000 notifications per phone, and ignores new ones past
 that.
 
+## Clipboard
+
+Capability token `clipboard`. Text the user copies on one device can be
+pasted on the other. Each device keeps its own clipboard: a device pushes
+what the user copied, and the other device puts it on its clipboard.
+Version 1 shares plain text only.
+
+The feature needs no permission. Each side reports it `DISABLED` while its
+user has it turned off there. The phone keeps it off until the user turns
+it on, like its other features.
+
+### Sharing a copy
+
+When the user copies text on a device that shares its clipboard, the device
+sends `ClipboardPush` to each connected peer where the feature is active and
+`READY`. Which copies a device can see depends on its OS:
+
+- The desktop shares each copy as it happens where its desktop session lets
+  a background app follow the clipboard. Where it does not, it shares the
+  clipboard when its window gains focus and when the user asks it to.
+- Android 10 and later let an app read the clipboard only while it has
+  focus, so the phone shares only when the user asks: in the app, from a
+  quick settings tile, the share sheet, the text selection menu or the
+  app's notification.
+
+The sender keeps pushes few and in order:
+
+- At most one push per peer waits for its answer. A newer copy made in the
+  meantime replaces any copy still queued for that peer, and only the
+  newest is sent once the answer arrives.
+- A device does not on its own push to a peer the text that peer already
+  holds as far as it knows: the text it last received from that peer or
+  last pushed to it, whichever came last. It recognizes it by content, so
+  putting received text on its own clipboard does not echo.
+- A device does not relay on its own: text it received from one peer is not
+  pushed to its other peers.
+- The two rules above are for copies a device shares by itself. When the
+  user explicitly shares, the text goes to every peer.
+- When a session starts, a device MAY push its latest copy if the user made
+  it less than 60 seconds earlier and it has not reached that peer.
+- The phone's share targets can be started directly by any app in the
+  foreground on the phone, which could put text on the desktop's clipboard
+  without the user choosing to. The phone offers them only while the
+  feature is on, and confirms every share it sends on screen.
+
+### Content
+
+- `text` is 1 byte to 256 KiB. A device does not share longer text and does
+  not truncate it, since a partial paste is worse than none; it tells the
+  user instead.
+- The desktop shares the plain-text form of what the user copied. It does
+  not share copied files (a `text/uri-list` of `file:` URIs) or images.
+- `sensitive` marks text the source app flagged as secret: on the desktop,
+  the `x-kde-passwordManagerHint` type with the value `secret`; on Android
+  13 and later, `ClipDescription.EXTRA_IS_SENSITIVE`. The desktop shares
+  such text only when the user turned on "Share passwords", which is off by
+  default. The phone shares it when the user explicitly shares it, with
+  `sensitive` set.
+
+### Receiving
+
+- The receiver puts the text on its clipboard, replacing what was there, and
+  answers `Ack`. A `sensitive` push is marked the same way on the receiver's
+  clipboard, so its clipboard history and copy previews leave it out.
+- It answers `DISABLED` while its user has the feature off,
+  `INVALID_ARGUMENT` to empty text or text over the limit, and
+  `UNAVAILABLE` when it cannot set its clipboard right now.
+- A desktop that cannot set the clipboard from the background holds the
+  newest text it received, answers `Ack`, and offers it to the user: it puts
+  the text on the clipboard when its window gains focus or when the user
+  clicks its banner. If the user copied something else on the desktop in
+  the meantime, which it sees when the window gains focus, that copy wins:
+  the desktop shares it and leaves the held text to the banner.
+- The phone sets the clipboard from the background, which Android allows.
+  Android 13 and later show their own confirmation of the copy.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| `text` | 1 byte to 256 KiB |
+| Pushes waiting for an answer | 1 per peer |
+
 ## Security considerations
 
 ### What is protected
@@ -1494,6 +1578,10 @@ from the desktop app's data. The desktop app narrows what it leaves open:
 - Its main process is not dumpable, so other programs of the user cannot
   attach a debugger to it or read its memory. The webview that draws the
   window runs in separate processes, which this does not cover.
+- Text the phone shares through the clipboard feature lands on the
+  desktop's clipboard, where any program of the user can read it, as with
+  anything the user copies there. Text marked secret keeps its mark, so
+  clipboard managers that honor it leave it out of their history.
 
 ### Privacy
 
@@ -1587,3 +1675,4 @@ The rules that matter most for security, gathered in one place:
 | 103 | `NotificationRemoved` | phone to desktop | event |
 | 104 | `NotificationDismissRequest` | desktop to phone | outbox request: `Ack` |
 | 105 | `NotificationActionRequest` | desktop to phone | outbox request: `Ack` |
+| 350 | `ClipboardPush` | both | request: `Ack` |

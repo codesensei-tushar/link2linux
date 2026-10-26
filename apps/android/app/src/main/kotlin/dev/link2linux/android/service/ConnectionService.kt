@@ -26,6 +26,8 @@ import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.android.ConnectivityLocalNetworks
+import dev.link2linux.android.feature.clipboard.ClipboardRuntime
+import dev.link2linux.android.feature.clipboard.ClipboardSendActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import dev.link2linux.android.feature.clipboard.R as ClipboardR
 
 /**
  * The foreground service that keeps the phone findable and connected
@@ -54,6 +57,9 @@ import javax.inject.Inject
  * The app starts it while it is visible and the policy says so, and from
  * the background only the companion-device service ([DesktopPresenceService])
  * does. Running it on a device is unverified.
+ *
+ * Its notification offers "Send clipboard" while that feature is on and a
+ * connected computer takes the clipboard.
  */
 @AndroidEntryPoint
 class ConnectionService : Service() {
@@ -68,9 +74,12 @@ class ConnectionService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + loggingUncaught("the connection service"))
 
+    /** What the notification shows: the connected computers, and whether one of them takes the clipboard. */
+    private data class Shown(val connectedTo: List<String> = emptyList(), val clipboard: Boolean = false)
+
     // Read and written on the main thread only, where the notification is posted too.
     private var destroyed = false
-    private var connectedTo = emptyList<String>()
+    private var shown = Shown()
 
     override fun onCreate() {
         super.onCreate()
@@ -80,7 +89,7 @@ class ConnectionService : Service() {
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            notification(connectedTo),
+            notification(shown),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
         networks.start()
@@ -100,12 +109,13 @@ class ConnectionService : Service() {
                 .collectLatest { listen -> if (listen) listen() else runCatching { listener.stop() } }
         }
         scope.launch {
-            combine(pairedDevices.pairedDevices, connections.connected) { devices, connected ->
-                devices.connectedIn(connected).map { it.device.name }
-            }.distinctUntilChanged().collect { names ->
+            val clipboard = ClipboardRuntime.get(this@ConnectionService).canSend
+            combine(pairedDevices.pairedDevices, connections.connected, clipboard) { devices, connected, canSendClipboard ->
+                Shown(devices.connectedIn(connected).map { it.device.name }, canSendClipboard)
+            }.distinctUntilChanged().collect { next ->
                 withContext(Dispatchers.Main) {
-                    connectedTo = names
-                    if (!destroyed) getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(names))
+                    shown = next
+                    if (!destroyed) getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(next))
                 }
             }
         }
@@ -171,7 +181,7 @@ class ConnectionService : Service() {
         )
     }
 
-    private fun notification(connectedTo: List<String> = emptyList()): Notification {
+    private fun notification(shown: Shown): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -184,17 +194,25 @@ class ConnectionService : Service() {
             stopIntent(this),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(getString(R.string.service_notification_title))
             .setContentText(
-                if (connectedTo.isEmpty()) {
+                if (shown.connectedTo.isEmpty()) {
                     getString(R.string.service_notification_text)
                 } else {
-                    getString(R.string.service_notification_connected, connectedTo.joinToString(", "))
+                    getString(R.string.service_notification_connected, shown.connectedTo.joinToString(", "))
                 },
             )
             .setContentIntent(open)
+        if (shown.clipboard) {
+            builder.addAction(
+                0,
+                getString(ClipboardR.string.clipboard_send_action),
+                ClipboardSendActivity.pendingIntent(this, SEND_CLIPBOARD_REQUEST),
+            )
+        }
+        return builder
             .addAction(0, getString(R.string.service_notification_stop), stop)
             .setOngoing(true)
             .setSilent(true)
@@ -206,6 +224,7 @@ class ConnectionService : Service() {
         private const val CHANNEL_ID = "connection"
         private const val NOTIFICATION_ID = 1
         private const val LISTEN_RETRY_MILLIS = 10_000L
+        private const val SEND_CLIPBOARD_REQUEST = 2
         const val ACTION_STOP = "dev.link2linux.android.action.STOP"
         const val ACTION_DESKTOP_NEARBY = "dev.link2linux.android.action.DESKTOP_NEARBY"
 

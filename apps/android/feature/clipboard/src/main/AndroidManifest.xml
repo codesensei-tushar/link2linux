@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Sends the clipboard to the connected computers. It has no UI: it takes focus for a
+             moment, because Android lets an app read the clipboard only then, and finishes.
+             Only this app starts it, from its tile, notification and screens. -->
+        <activity
+            android:name="dev.link2linux.android.feature.clipboard.ClipboardSendActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- "Copy to computer" in the share sheet and the text selection menu. It sends only the
+             text another app hands over and never reads the clipboard; a shared file is the file
+             feature's. Off until the user turns the feature on (ClipboardRuntime enables it). -->
+        <activity-alias
+            android:name="dev.link2linux.android.feature.clipboard.CopyToComputer"
+            android:enabled="false"
+            android:exported="true"
+            android:label="@string/clipboard_copy_to_computer"
+            android:targetActivity="dev.link2linux.android.feature.clipboard.ClipboardSendActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- The quick settings tile "Send clipboard". Exported because the system binds it, and
+             protected by the permission only the system holds. -->
+        <service
+            android:name="dev.link2linux.android.feature.clipboard.ClipboardTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_content_paste"
+            android:label="@string/clipboard_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

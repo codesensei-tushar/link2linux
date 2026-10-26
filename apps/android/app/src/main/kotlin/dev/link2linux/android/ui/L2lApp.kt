@@ -12,6 +12,7 @@ import dev.link2linux.android.core.model.Feature
 import dev.link2linux.android.feature.calls.CallsRoute
 import dev.link2linux.android.feature.calls.callsEntry
 import dev.link2linux.android.feature.clipboard.ClipboardRoute
+import dev.link2linux.android.feature.clipboard.SendClipboardButton
 import dev.link2linux.android.feature.clipboard.clipboardEntry
 import dev.link2linux.android.feature.files.FilesRoute
 import dev.link2linux.android.feature.files.filesEntry
@@ -55,6 +56,7 @@ fun L2lApp(modifier: Modifier = Modifier) {
             pairingEntry(
                 features = featureRoutes.keys.toList(),
                 onOpenFeature = { feature -> backStack.add(featureRoutes.getValue(feature)) },
+                connectedActions = { SendClipboardButton() },
             )
             notificationsEntry(onBack = goBack)
             messagesEntry(onBack = goBack)

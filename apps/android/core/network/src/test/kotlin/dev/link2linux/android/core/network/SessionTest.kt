@@ -1,19 +1,27 @@
 package dev.link2linux.android.core.network
 
+import dev.link2linux.protocol.v1.Ack
 import dev.link2linux.protocol.v1.DeviceKind
 import dev.link2linux.protocol.v1.Envelope
+import dev.link2linux.protocol.v1.FeatureAvailability
 import dev.link2linux.protocol.v1.GoodbyeReason
+import dev.link2linux.protocol.v1.clipboardPush
 import dev.link2linux.protocol.v1.envelope
+import dev.link2linux.protocol.v1.featureState
+import dev.link2linux.protocol.v1.featureStatus
 import dev.link2linux.protocol.v1.hello
 import dev.link2linux.protocol.v1.notificationPosted
 import dev.link2linux.protocol.v1.phoneNotification
 import dev.link2linux.protocol.v1.ping
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -269,6 +277,142 @@ class SessionTest {
                 assertTrue("got $error", error!!.message!!.contains("${FrameCodec.HANDSHAKE_MAX_FRAME_BYTES}-byte limit"))
             }
         }
+    }
+
+    /** A phone session and a desktop session over one connection, Hellos exchanged. */
+    private suspend fun establishedPair(): Pair<Session, Session> {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        val phone = Session(phoneEnd)
+        val desktop = Session(desktopEnd)
+        withTimeout(5_000) {
+            val desktopSaw = async { desktop.handshake(desktopHello) }
+            phone.handshake(phoneHello)
+            desktopSaw.await()
+        }
+        return phone to desktop
+    }
+
+    private val push = clipboardPush { text = "hi" }
+
+    @Test
+    fun aRequestGetsTheAnswerThatNamesIt() = runBlocking {
+        val (phone, desktop) = establishedPair()
+        // The phone's reader hands the answer over and returns only what nobody waits for.
+        val reader = async(Dispatchers.IO) { phone.next() }
+        val answer = async { phone.request { clipboardPush = push } }
+
+        val request = withTimeout(5_000) { desktop.next()!! }
+        assertTrue(request.expectsReply)
+        desktop.send {
+            replyTo = request.seq
+            ack = Ack.getDefaultInstance()
+        }
+        desktop.send {
+            replyTo = request.seq + 100
+            ack = Ack.getDefaultInstance()
+        }
+
+        assertEquals(request.seq, withTimeout(5_000) { answer.await() }.replyTo)
+        assertEquals(request.seq + 100, withTimeout(5_000) { reader.await() }!!.replyTo)
+    }
+
+    @Test
+    fun openRequestsGetTheirOwnAnswersInAnyOrder() = runBlocking {
+        val (phone, desktop) = establishedPair()
+        val reader = async(Dispatchers.IO) { phone.next() }
+
+        val pending = List(3) { phone.sendRequest { clipboardPush = push } }
+        val requests = withTimeout(5_000) { List(3) { desktop.next()!! } }
+        assertEquals(pending.map { it.seq }, requests.map { it.seq })
+        for (request in requests.reversed()) {
+            desktop.send {
+                replyTo = request.seq
+                ack = Ack.getDefaultInstance()
+            }
+        }
+
+        withTimeout(5_000) { pending.forEach { assertEquals(it.seq, it.await().replyTo) } }
+        // None of them reached the reader.
+        desktop.close()
+        assertNull(withTimeout(5_000) { reader.await() })
+    }
+
+    @Test
+    fun anAnswerThatCameInTimeCountsWhenAwaitedLate() = runBlocking {
+        val (phone, desktop) = establishedPair()
+        val reader = async(Dispatchers.IO) { phone.next() }
+        val pending = phone.sendRequest(timeoutMillis = 300) { clipboardPush = push }
+
+        val request = withTimeout(5_000) { desktop.next()!! }
+        desktop.send {
+            replyTo = request.seq
+            ack = Ack.getDefaultInstance()
+        }
+        delay(600)
+
+        assertEquals(request.seq, pending.await().replyTo)
+        desktop.close()
+        assertNull(withTimeout(5_000) { reader.await() })
+    }
+
+    @Test
+    fun aRequestWithoutAnAnswerGivesUpAndALateAnswerIsPassedOn() = runBlocking {
+        val (phone, desktop) = establishedPair()
+
+        val error = withTimeout(5_000) { runCatching { phone.request(timeoutMillis = 200) { clipboardPush = push } } }.exceptionOrNull()
+        assertTrue("got $error", error is RequestTimeoutException)
+
+        val request = withTimeout(5_000) { desktop.next()!! }
+        desktop.send {
+            replyTo = request.seq
+            ack = Ack.getDefaultInstance()
+        }
+        assertEquals(request.seq, withTimeout(5_000) { phone.next() }!!.replyTo)
+    }
+
+    @Test
+    fun aRequestFailsAtOnceWhenTheSessionEnds() = runBlocking {
+        val (phone, desktop) = establishedPair()
+        val answer = async { runCatching { phone.request { clipboardPush = push } } }
+        withTimeout(5_000) { desktop.next()!! }
+
+        phone.close()
+
+        val error = withTimeout(5_000) { answer.await() }.exceptionOrNull()
+        assertTrue("got $error", error is SessionException)
+    }
+
+    @Test
+    fun thePeersLatestFeatureStatusIsKeptAndAFeatureIsActiveWhenBothHellosListIt() = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        val phone = Session(phoneEnd)
+        val desktop = Session(desktopEnd)
+        withTimeout(5_000) {
+            val desktopSaw = async { desktop.handshake(desktopHello.toBuilder().addFeatures("clipboard").addFeatures("files").build()) }
+            phone.handshake(phoneHello)
+            desktopSaw.await()
+        }
+        assertTrue(phone.isActive("clipboard"))
+        assertFalse("only the desktop lists it", phone.isActive("files"))
+        assertFalse(phone.isReadyOnPeer("clipboard"))
+
+        fun status(vararg states: Pair<String, FeatureAvailability>) = featureStatus {
+            states.forEach { (name, availability) ->
+                features += featureState {
+                    feature = name
+                    this.availability = availability
+                }
+            }
+        }
+        desktop.send { featureStatus = status("clipboard" to FeatureAvailability.FEATURE_AVAILABILITY_READY) }
+        desktop.send { featureStatus = status("files" to FeatureAvailability.FEATURE_AVAILABILITY_DISABLED) }
+
+        assertTrue(withTimeout(5_000) { phone.next()!! }.hasFeatureStatus())
+        assertTrue(phone.isReadyOnPeer("clipboard"))
+        withTimeout(5_000) { phone.next()!! }
+        // Each status replaces the last.
+        assertEquals(mapOf("files" to FeatureAvailability.FEATURE_AVAILABILITY_DISABLED), phone.peerFeatures.value)
+        assertFalse(phone.isReadyOnPeer("clipboard"))
     }
 
     private fun assertHandshakeFails(vararg fromDesktop: Envelope) = runBlocking {

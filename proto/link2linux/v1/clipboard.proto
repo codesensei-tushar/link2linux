@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The clipboard feature, capability token "clipboard": text the user copies
+// on one device can be pasted on the other.
+//
+// Each device keeps its own clipboard. When the user copies text on a
+// device that shares its clipboard, the device pushes the text to the other
+// one, which puts it on its own clipboard. docs/protocol.md, "Clipboard",
+// says when a device shares and how the receiver treats the text.
+
+// Either direction: put this text on the receiver's clipboard. Answered by
+// an Ack once the receiver has taken the text, or by an ErrorReply such as
+// ERROR_CODE_DISABLED or ERROR_CODE_INVALID_ARGUMENT. Not sent through the
+// outbox: a push that fails is not retried, because a late paste of old
+// text would surprise the user more than a lost one.
+message ClipboardPush {
+  // The copied text: UTF-8, 1 byte to 256 KiB, never truncated.
+  string text = 1;
+  // The app the text was copied from marked it as secret, such as a
+  // password manager does. The receiver marks it the same way on its own
+  // clipboard, so clipboard history and copy previews leave it out.
+  bool sensitive = 2;
+}

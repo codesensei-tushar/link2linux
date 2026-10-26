@@ -31,6 +31,7 @@ rootProject.name = "link2linux"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 include(":app")
+include(":core:clipboard")
 include(":core:common")
 include(":core:data")
 include(":core:designsystem")
