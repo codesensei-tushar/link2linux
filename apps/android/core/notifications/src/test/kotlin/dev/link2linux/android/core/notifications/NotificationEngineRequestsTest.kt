@@ -121,4 +121,158 @@ class NotificationEngineRequestsTest {
             .assertError(ErrorCode.ERROR_CODE_EXPIRED)
         assertTrue(h.canceller.cancelled.isEmpty())
     }
+
+    // Actions
+
+    @Test
+    fun `an action fires and is acknowledged`() = runTest {
+        val rec = Recorder()
+        val h = ready(this, withAction(ActionSnapshot("Archive", AndroidValues.SEMANTIC_ARCHIVE, invoker = rec)))
+        val id = actionId(h)
+        assertEquals(NotificationReply.Ack, h.act("n", id).single)
+        assertEquals(listOf<Pair<String?, Boolean>>(null to false), rec.calls)
+    }
+
+    @Test
+    fun `an unknown notification or action is not found`() = runTest {
+        val h = ready(this, withAction(ActionSnapshot("Archive", invoker = Recorder())))
+        h.act("zzz", "a").assertError(ErrorCode.ERROR_CODE_NOT_FOUND)
+        h.act("n", "zzz", idem = idempotency(3)).assertError(ErrorCode.ERROR_CODE_NOT_FOUND)
+    }
+
+    @Test
+    fun `a reply sends its text to the action`() = runTest {
+        val rec = Recorder()
+        val h = ready(
+            this,
+            withAction(ActionSnapshot("Reply", AndroidValues.SEMANTIC_REPLY, "r", ReplyInput(), invoker = rec)),
+        )
+        val id = actionId(h)
+        assertEquals(NotificationReply.Ack, h.act("n", id, reply = "On my way").single)
+        assertEquals(listOf<Pair<String?, Boolean>>("On my way" to false), rec.calls)
+    }
+
+    @Test
+    fun `reply text rules`() = runTest {
+        val reply = Recorder()
+        val plain = Recorder()
+        val h = ready(
+            this,
+            snap("n").copy(
+                actions = listOf(
+                    ActionSnapshot("Reply", replyKey = "r", reply = ReplyInput(allowFreeForm = false, choices = listOf("Yes", "No")), invoker = reply),
+                    ActionSnapshot("Open", invoker = plain),
+                ),
+            ),
+        )
+        val replyId = actionId(h, index = 0)
+        val plainId = actionId(h, index = 1)
+        h.act("n", replyId, reply = "", idem = idempotency(1)).assertError(ErrorCode.ERROR_CODE_INVALID_ARGUMENT)
+        h.act("n", replyId, reply = "Maybe", idem = idempotency(2)).assertError(ErrorCode.ERROR_CODE_INVALID_ARGUMENT)
+        h.act("n", replyId, reply = "x".repeat(9000), idem = idempotency(3)).assertError(ErrorCode.ERROR_CODE_INVALID_ARGUMENT)
+        h.act("n", plainId, reply = "hi", idem = idempotency(4)).assertError(ErrorCode.ERROR_CODE_INVALID_ARGUMENT)
+        assertTrue(reply.calls.isEmpty() && plain.calls.isEmpty())
+        assertEquals(NotificationReply.Ack, h.act("n", replyId, reply = "Yes", idem = idempotency(5)).single)
+        assertEquals("Yes", reply.calls.single().first)
+    }
+
+    @Test
+    fun `an action that needs unlock is not allowed while the phone is locked`() = runTest {
+        val rec = Recorder()
+        val h = ready(this, withAction(ActionSnapshot("Pay", requiresUnlock = true, invoker = rec)))
+        val id = actionId(h)
+        h.env.isLocked = true
+        h.act("n", id).assertError(ErrorCode.ERROR_CODE_NOT_ALLOWED)
+        assertTrue(rec.calls.isEmpty())
+        h.env.isLocked = false
+        assertEquals(NotificationReply.Ack, h.act("n", id, idem = idempotency(7)).single)
+        assertEquals(1, rec.calls.size)
+    }
+
+    @Test
+    fun `a locked phone does not block actions that do not need unlock`() = runTest {
+        val rec = Recorder()
+        val h = ready(this, withAction(ActionSnapshot("Mark read", invoker = rec)))
+        h.env.isLocked = true
+        assertEquals(NotificationReply.Ack, h.act("n", actionId(h)).single)
+    }
+
+    @Test
+    fun `an action that opens an activity is not allowed from the background`() = runTest {
+        val rec = Recorder()
+        val h = ready(this, withAction(ActionSnapshot("Open", opensActivity = true, invoker = rec)))
+        val id = actionId(h)
+        h.act("n", id).assertError(ErrorCode.ERROR_CODE_NOT_ALLOWED)
+        assertTrue(rec.calls.isEmpty())
+        h.env.canStartActivitiesFromBackground = true
+        assertEquals(NotificationReply.Ack, h.act("n", id, idem = idempotency(8)).single)
+        assertEquals(listOf<Pair<String?, Boolean>>(null to true), rec.calls)
+    }
+
+    @Test
+    fun `a cancelled pending intent means the action is gone`() = runTest {
+        val h = ready(this, withAction(ActionSnapshot("Old", invoker = Recorder(ActionOutcome.CANCELED))))
+        h.act("n", actionId(h)).assertError(ErrorCode.ERROR_CODE_NOT_FOUND)
+    }
+
+    @Test
+    fun `a system refusal is not allowed and a crash is internal`() = runTest {
+        val blocked = ready(this, withAction(ActionSnapshot("X", invoker = Recorder(ActionOutcome.BLOCKED))))
+        blocked.act("n", actionId(blocked)).assertError(ErrorCode.ERROR_CODE_NOT_ALLOWED)
+        val broken = ready(this, withAction(ActionSnapshot("X", invoker = { _, _ -> error("boom") })))
+        broken.act("n", actionId(broken)).assertError(ErrorCode.ERROR_CODE_INTERNAL)
+        assertEquals(1, broken.errors.size)
+    }
+
+    @Test
+    fun `an action id from an older version of a notification still finds its action after an update`() = runTest {
+        val rec = Recorder()
+        val a = ActionSnapshot("Mark read", AndroidValues.SEMANTIC_MARK_AS_READ, invoker = rec)
+        val b = ActionSnapshot("Mute", AndroidValues.SEMANTIC_MUTE, invoker = Recorder())
+        val h = ready(this, snap("n").copy(actions = listOf(a, b)))
+        val id = actionId(h, index = 0)
+        h.post(snap("n", text = "v2").copy(actions = listOf(b, a)))
+        assertEquals(NotificationReply.Ack, h.act("n", id).single)
+        assertEquals(1, rec.calls.size)
+    }
+
+    @Test
+    fun `a call notification offers answer and decline that run`() = runTest {
+        val answer = Recorder()
+        val h = ready(
+            this,
+            snap("call").copy(
+                category = "call",
+                actions = listOf(
+                    ActionSnapshot("", callRole = CallRole.ANSWER, invoker = answer),
+                    ActionSnapshot("", callRole = CallRole.DECLINE, invoker = Recorder()),
+                ),
+            ),
+        )
+        assertEquals(NotificationReply.Ack, h.act("call", "call:answer").single)
+        assertEquals(1, answer.calls.size)
+    }
+
+    // Images
+
+    private class Png(val seed: Int) : ImageSource {
+        override fun render(kind: ImageKind) =
+            EncodedImage(ImageFormat.IMAGE_FORMAT_PNG, ByteArray(20) { (it + seed).toByte() }, 8, 8)
+    }
+
+    @Test
+    fun `an image of a shared notification is served by its hash`() = runTest {
+        val h = ready(this, snap("n").copy(appIcon = Png(1)))
+        val ref = (h.sync().replies.first() as NotificationReply.Batch).message.getNotifications(0).appIcon
+        val sink = h.image(ref.sha256)
+        val data = (sink.single as NotificationReply.Image).message
+        assertArrayEquals(WireText.sha256(data.data.toByteArray()), ref.sha256.toByteArray())
+    }
+
+    @Test
+    fun `an unknown image is not found and a short hash is invalid`() = runTest {
+        val h = ready(this)
+        h.image(ByteString.copyFrom(ByteArray(32))).assertError(ErrorCode.ERROR_CODE_NOT_FOUND)
+        h.image(ByteString.copyFrom(ByteArray(5))).assertError(ErrorCode.ERROR_CODE_INVALID_ARGUMENT)
+    }
 }
