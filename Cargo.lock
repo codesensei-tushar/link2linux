@@ -2242,6 +2242,7 @@ dependencies = [
  "percent-encoding",
  "proptest",
  "rcgen",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

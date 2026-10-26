@@ -20,6 +20,8 @@ mdns-sd.workspace = true
 if-addrs.workspace = true
 percent-encoding.workspace = true
 rcgen.workspace = true
+# Free space, and renaming a received file without replacing another.
+rustix = { workspace = true, features = ["fs"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
