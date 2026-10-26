@@ -179,7 +179,14 @@ export type NotificationChanged = {
 };
 
 /**  Whether the text fields hold the real content. */
-export type NotificationContentView = "full" | "redactedBySystem" | "redactedAppLocked" | "hiddenByUser";
+export type NotificationContentView = "full" | "redactedBySystem" | "redactedAppLocked" | "hiddenByUser" | 
+/**
+ *  The phone kept it to itself because it looks like it holds a
+ *  one-time code.
+ */
+"oneTimeCode" | 
+/**  Withheld by a newer phone, for a reason this desktop does not know. */
+"withheld";
 
 /**  A change to a phone's mirrored list, as pushed to the UI. */
 export type NotificationEvent = 

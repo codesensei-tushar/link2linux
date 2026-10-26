@@ -96,7 +96,7 @@ export function demoNotifications(now: number): MirroredNotification[] {
       whenUnixMs: now - 3 * MINUTE,
       title: "",
       text: "",
-      content: "redactedBySystem",
+      content: "oneTimeCode",
       visibility: "secret",
     },
     {

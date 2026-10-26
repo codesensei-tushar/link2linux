@@ -8,6 +8,15 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+### Added
+
+- **One-time codes stay on the phone.** Notifications that look like they hold
+  a sign-in, payment or verification code, in English or one of thirteen other
+  languages, reach the computer as "One-time code hidden. Check your phone",
+  with no text, pictures or actions, on every Android version. They can still
+  be dismissed from the computer. "Keep one-time codes on your phone" on the
+  phone's Notifications screen turns this off; it is on by default.
+
 ### Fixed
 
 - The phone keeps listening, announcing and sending beacons while it hosts a

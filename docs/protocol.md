@@ -1257,9 +1257,27 @@ locked.
 - When the user chose not to share an app's content, the phone sets
   `NOTIFICATION_CONTENT_HIDDEN_BY_USER` and fills in only the app, time and
   category.
+- The phone also keeps one-time codes to itself, on every Android version,
+  when the user's setting "Keep one-time codes on your phone" is on, which
+  it is by default. It looks for a code-shaped token, such as `482913`,
+  `482-913`, `G-482913` or `K7Q2XM`, near a word such as "code", "OTP" or
+  "verification" in any language it knows, in every text it would send:
+  the title, text, sub text, conversation title and messages, action labels
+  and reply choices. Phone numbers, dates, times, amounts and numbers
+  labelled as an order or a card do not count. When it finds one, the
+  phone SHOULD set `NOTIFICATION_CONTENT_ONE_TIME_CODE` and fill in only
+  the app, time and category: no text, messages, pictures, large icon,
+  progress or actions. The desktop can still dismiss it. This check runs
+  before the placeholder comparison above, so a code that Android left in
+  another field is caught too. It is a heuristic as well: an unusual code
+  can pass as content, and now and then an ordinary notification is
+  withheld.
+- A desktop MUST treat a `content` value it does not know as withheld, as
+  for `NOTIFICATION_CONTENT_HIDDEN_BY_USER`, and never as full content.
 - The desktop shows such notifications with an explanation, such as
-  "Content hidden by Android. Check your phone". It offers no reply, by
-  choice: the user cannot see what they would be replying to.
+  "Content hidden by Android. Check your phone" or "One-time code hidden.
+  Check your phone". It offers no reply, by choice: the user cannot see what
+  they would be replying to.
 
 ### Limits
 

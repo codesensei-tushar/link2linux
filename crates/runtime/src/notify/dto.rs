@@ -5,6 +5,7 @@
 //! assignable to it.
 
 use link2linux_core::notifications::Change;
+use link2linux_core::notifications::present::app_only;
 use link2linux_protocol::v1::{
     ConversationMessage, NotificationAction, NotificationActionKind, NotificationCategory,
     NotificationContent, NotificationImportance, NotificationVisibility, PhoneNotification,
@@ -57,6 +58,11 @@ pub enum NotificationContentView {
     RedactedBySystem,
     RedactedAppLocked,
     HiddenByUser,
+    /// The phone kept it to itself because it looks like it holds a
+    /// one-time code.
+    OneTimeCode,
+    /// Withheld by a newer phone, for a reason this desktop does not know.
+    Withheld,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -214,17 +220,18 @@ fn importance(value: NotificationImportance) -> NotificationImportanceView {
     }
 }
 
-fn content(value: NotificationContent) -> NotificationContentView {
-    match value {
+fn content(value: i32) -> NotificationContentView {
+    match NotificationContent::try_from(value) {
         // A phone that says nothing shares the real content.
-        NotificationContent::Unspecified | NotificationContent::Full => {
+        Ok(NotificationContent::Unspecified | NotificationContent::Full) => {
             NotificationContentView::Full
         }
-        NotificationContent::RedactedBySystem => NotificationContentView::RedactedBySystem,
-        NotificationContent::RedactedAppLocked => NotificationContentView::RedactedAppLocked,
-        NotificationContent::HiddenByUser | NotificationContent::OneTimeCode => {
-            NotificationContentView::HiddenByUser
-        }
+        Ok(NotificationContent::RedactedBySystem) => NotificationContentView::RedactedBySystem,
+        Ok(NotificationContent::RedactedAppLocked) => NotificationContentView::RedactedAppLocked,
+        Ok(NotificationContent::HiddenByUser) => NotificationContentView::HiddenByUser,
+        Ok(NotificationContent::OneTimeCode) => NotificationContentView::OneTimeCode,
+        // Never full: a value this desktop does not know is withheld content.
+        Err(_) => NotificationContentView::Withheld,
     }
 }
 
@@ -273,10 +280,12 @@ fn message(message: &ConversationMessage) -> ConversationMessageInfo {
     }
 }
 
-/// The UI's form of a notification the phone shared.
+/// The UI's form of a notification the phone shared. When only its app,
+/// time and category may be shown, anything else the phone sent is dropped
+/// here as well, so the page cannot show it.
 #[must_use]
 pub fn mirrored(notification: &PhoneNotification) -> MirroredNotification {
-    MirroredNotification {
+    let shown = MirroredNotification {
         key: notification.key.clone(),
         app_name: notification.app_name.clone(),
         app_icon: image(&notification.app_icon),
@@ -303,8 +312,23 @@ pub fn mirrored(notification: &PhoneNotification) -> MirroredNotification {
             }),
         large_icon: image(&notification.large_icon),
         picture: image(&notification.picture),
-        content: content(notification.content()),
+        content: content(notification.content),
         visibility: visibility(notification.visibility()),
+    };
+    if !app_only(notification) {
+        return shown;
+    }
+    MirroredNotification {
+        title: String::new(),
+        text: String::new(),
+        sub_text: String::new(),
+        actions: Vec::new(),
+        messages: Vec::new(),
+        conversation_title: String::new(),
+        progress: None,
+        large_icon: None,
+        picture: None,
+        ..shown
     }
 }
 
@@ -336,7 +360,7 @@ mod tests {
             title: "Ana".into(),
             category: NotificationCategory::MissedCall.into(),
             importance: NotificationImportance::High.into(),
-            content: NotificationContent::HiddenByUser.into(),
+            content: NotificationContent::RedactedBySystem.into(),
             dismissible: true,
             actions: vec![NotificationAction {
                 id: "a".into(),
@@ -368,7 +392,7 @@ mod tests {
         let shown = mirrored(&rich());
         assert_eq!(shown.category, NotificationCategoryView::MissedCall);
         assert_eq!(shown.importance, NotificationImportanceView::High);
-        assert_eq!(shown.content, NotificationContentView::HiddenByUser);
+        assert_eq!(shown.content, NotificationContentView::RedactedBySystem);
         assert_eq!(shown.actions[0].kind, NotificationActionKindView::Reply);
         assert!(shown.actions[0].accepts_reply && shown.actions[0].requires_unlock);
         assert_eq!(shown.progress.unwrap().max, 4);
@@ -377,6 +401,36 @@ mod tests {
             shown.large_icon, None,
             "a hash of the wrong length is no image"
         );
+    }
+
+    #[test]
+    fn content_the_user_hid_a_one_time_code_or_an_unknown_kind_keeps_only_the_app() {
+        for (value, view) in [
+            (
+                NotificationContent::HiddenByUser.into(),
+                NotificationContentView::HiddenByUser,
+            ),
+            (
+                NotificationContent::OneTimeCode.into(),
+                NotificationContentView::OneTimeCode,
+            ),
+            (99, NotificationContentView::Withheld),
+        ] {
+            let notification = PhoneNotification {
+                content: value,
+                text: "482913 is your code".into(),
+                messages: vec![ConversationMessage::default()],
+                ..rich()
+            };
+            let shown = mirrored(&notification);
+            assert_eq!(shown.content, view);
+            assert_eq!((shown.title.as_str(), shown.text.as_str()), ("", ""));
+            assert!(shown.actions.is_empty() && shown.messages.is_empty());
+            assert_eq!(shown.progress, None);
+            assert_eq!(shown.app_name, "Chat");
+            assert_eq!(shown.category, NotificationCategoryView::MissedCall);
+            assert!(shown.app_icon.is_some() && shown.dismissible);
+        }
     }
 
     #[test]
