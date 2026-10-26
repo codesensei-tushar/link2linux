@@ -94,7 +94,7 @@ internal data class PairingActions(
 private fun HomePreview() {
     L2lTheme(dynamicColor = false) {
         PairingScreen(
-            uiState = PairingUiState(emptyList(), PairingScreenState.Home, null, connectionEnabled = true),
+            uiState = PairingUiState(emptyList(), PairingScreenState.Home, null, connectionEnabled = true, connected = emptyList()),
             features = Feature.optIn,
             onOpenFeature = {},
             actions = PairingActions(),

@@ -65,10 +65,25 @@ internal fun HomeContent(
         }
         if (!devices.isNullOrEmpty()) {
             item { SectionHeader(stringResource(R.string.feature_pairing_computers_header)) }
+            if (uiState.connected.isNotEmpty()) {
+                item {
+                    Text(
+                        text = stringResource(
+                            R.string.feature_pairing_connected_to,
+                            uiState.connected.joinToString(", ") { it.device.name },
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
+                }
+            }
             items(devices, key = { it.fingerprint.toHex() }) { paired ->
                 ListItem(
                     headlineContent = { Text(paired.device.name) },
-                    supportingContent = { Text(stringResource(R.string.feature_pairing_paired)) },
+                    supportingContent = {
+                        val connected = uiState.connected.any { it.fingerprint == paired.fingerprint }
+                        Text(stringResource(if (connected) R.string.feature_pairing_connected else R.string.feature_pairing_paired))
+                    },
                     leadingContent = { Icon(painterResource(DesignR.drawable.ic_devices), contentDescription = null) },
                     trailingContent = {
                         TextButton(onClick = { unpairing = paired }) {
