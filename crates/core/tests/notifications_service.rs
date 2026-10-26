@@ -6,6 +6,7 @@ mod session_common;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use aws_lc_rs::digest;
 use futures_util::{SinkExt, StreamExt};
 use link2linux_core::Session;
 use link2linux_core::notifications::{
@@ -18,8 +19,8 @@ use link2linux_platform::{
     NotificationResponse, NotificationSink, PlatformError,
 };
 use link2linux_protocol::v1::{
-    Ack, NotificationImportance, NotificationPosted, NotificationRemoved, NotificationSyncBatch,
-    PhoneNotification, SyncCursor,
+    Ack, ImageData, ImageFormat, ImageRef, NotificationImportance, NotificationPosted,
+    NotificationRemoved, NotificationSyncBatch, PhoneNotification, SyncCursor,
 };
 use link2linux_protocol::{Envelope, Payload};
 use session_common::{
@@ -289,6 +290,51 @@ async fn the_users_dismissal_goes_to_the_phone_until_it_answers() {
             .is_none()
     );
     assert!(s.service.pending().is_empty());
+}
+
+#[tokio::test]
+async fn fetches_a_banner_image_and_shows_it_when_it_arrives() {
+    let mut s = synced_setup(vec![]).await;
+    let bytes = b"a photo".to_vec();
+    let sha256 = digest::digest(&digest::SHA256, &bytes).as_ref().to_vec();
+    let mut with_photo = note("photo", 2);
+    with_photo.large_icon = Some(ImageRef {
+        sha256: sha256.clone(),
+        width: 64,
+        height: 64,
+    });
+
+    s.phone
+        .send(&envelope(4, posted(with_photo, true)))
+        .await
+        .unwrap();
+    let event = next(&mut s.session).await;
+    s.service.handle_event(&mut s.session, event).await.unwrap();
+    assert_eq!(s.desktop.lock().unwrap().shown[0].0.image_path, None);
+
+    let request: Envelope = s.phone.next().await.unwrap().unwrap();
+    assert!(matches!(&request.payload, Some(Payload::ImageRequest(r)) if r.sha256 == sha256));
+    let image = ImageData {
+        sha256,
+        format: ImageFormat::Png.into(),
+        data: bytes,
+    };
+    s.phone
+        .send(&answer(5, request.seq, Payload::ImageData(image)))
+        .await
+        .unwrap();
+    let reply = next(&mut s.session).await;
+    s.service.handle_event(&mut s.session, reply).await.unwrap();
+
+    let desktop = s.desktop.lock().unwrap();
+    let (refreshed, replaces) = desktop.shown.last().unwrap();
+    assert_eq!(
+        *replaces,
+        Some(NotificationId(1)),
+        "the banner is updated in place"
+    );
+    assert!(refreshed.quiet);
+    assert!(refreshed.image_path.as_ref().is_some_and(|p| p.exists()));
 }
 
 #[tokio::test]
