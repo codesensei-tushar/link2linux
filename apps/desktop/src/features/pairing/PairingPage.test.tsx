@@ -273,3 +273,120 @@ describe("PairingPage: finished", () => {
     expect(screen.getByRole("button", { name: "Start again" })).toBeInTheDocument();
   });
 });
+
+describe("PairingPage: paired phones", () => {
+  const phones = [
+    testDevice({
+      id: "a",
+      name: "Work phone",
+      model: "Pixel 9",
+      status: "connected",
+      lastConnectedUnixMs: Date.UTC(2026, 9, 25, 12),
+    }),
+    testDevice({
+      id: "b",
+      name: "Old phone",
+      lastConnectedUnixMs: Date.UTC(2026, 9, 20, 9, 30),
+    }),
+    testDevice({ id: "c", name: "Spare", status: "reconnecting" }),
+    testDevice({ id: "d", name: "Lost", status: "revoked" }),
+  ];
+
+  it("lists phones with their status and history", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue(phones);
+    await renderPage(api);
+
+    const list = await screen.findByRole("list", { name: "Paired phones" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("Work phonePixel 9");
+    expect(items[0]).toHaveTextContent("Connected");
+    expect(items[0]).toHaveTextContent(/Paired .*2026/);
+    expect(items[0]).not.toHaveTextContent("Last connected");
+    expect(items[1]).toHaveTextContent("Not connected");
+    expect(items[1]).toHaveTextContent("Last connected");
+    expect(items[2]).toHaveTextContent("Reconnecting…");
+    expect(items[3]).toHaveTextContent("Removed on the phone");
+    expect(screen.getByRole("button", { name: "Pair another phone" })).toBeInTheDocument();
+  });
+
+  it("updates a status live from device events", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue([testDevice({ name: "Pixel" })]);
+    await renderPage(api);
+    expect(await screen.findByText("Not connected")).toBeInTheDocument();
+
+    api.emitDevices([testDevice({ name: "Pixel", status: "connected" })]);
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+  });
+
+  it("explains a loading failure and retries", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.listDevices.mockRejectedValueOnce(new Error("The desktop service did not answer."));
+    await renderPage(api);
+
+    expect(await screen.findByText("The desktop service did not answer.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("region", { name: "No phone paired yet" })).toBeVisible();
+  });
+
+  it("asks before unpairing, then forgets the phone and keeps focus in the list", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue(phones.slice(0, 2));
+    await renderPage(api);
+
+    const trigger = await screen.findByRole("button", { name: "Unpair Old phone" });
+    await user.click(trigger);
+    const dialog = screen.getByRole("alertdialog", { name: "Unpair Old phone?" });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    expect(api.unpairDevice).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Unpair" }));
+    expect(api.unpairDevice).toHaveBeenCalledExactlyOnceWith("b");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    api.emitDevices(phones.slice(0, 1));
+    expect(screen.queryByText("Old phone")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Paired phones" })).toHaveFocus();
+  });
+
+  it("keeps the dialog open and says why when unpairing fails", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue(phones.slice(0, 1));
+    api.unpairDevice.mockRejectedValueOnce(new Error("That phone is no longer available."));
+    await renderPage(api);
+
+    await user.click(await screen.findByRole("button", { name: "Unpair Work phone" }));
+    await user.click(screen.getByRole("button", { name: "Unpair" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("no longer available");
+  });
+
+  it("returns focus to the Unpair button when the question is cancelled", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue(phones.slice(0, 1));
+    await renderPage(api);
+
+    const trigger = await screen.findByRole("button", { name: "Unpair Work phone" });
+    await user.click(trigger);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("moves focus to the start button after the last phone is unpaired", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue(phones.slice(0, 1));
+    await renderPage(api);
+
+    await user.click(await screen.findByRole("button", { name: "Unpair Work phone" }));
+    await user.click(screen.getByRole("button", { name: "Unpair" }));
+    api.emitDevices([]);
+    expect(await screen.findByRole("button", { name: "Pair a phone" })).toHaveFocus();
+  });
+});
