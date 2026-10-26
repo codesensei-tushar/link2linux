@@ -144,6 +144,9 @@ pub enum IdentityError {
     /// Reading or writing the key file failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// The private key is in the keyring, which cannot be reached now.
+    #[error("the keyring that holds the private key is unavailable: {0}")]
+    KeyringUnavailable(String),
 }
 
 /// This device's identity key and the certificate presented in TLS.
@@ -205,24 +208,32 @@ impl Identity {
         Zeroizing::new(key.serialize_pem())
     }
 
-    /// Loads the key stored at `path`, or creates one and stores it there.
+    /// Loads the key stored at `path` by [`Self::save`], or returns `None`
+    /// when there is no such file.
     ///
-    /// The file holds the PKCS #8 PEM key and has mode 0600; it is written
-    /// atomically. This is the fallback for desktops without a Secret
-    /// Service keyring.
+    /// The file holds the PKCS #8 PEM key and has mode 0600. Desktops keep
+    /// their key there only without a Secret Service keyring; see
+    /// [`crate::key_storage`].
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read or written, or holds no valid key.
-    pub fn load_or_generate(path: &Path) -> Result<Self, IdentityError> {
-        if let Some(bytes) = secure_file::read(path)? {
-            let pem =
-                Zeroizing::new(String::from_utf8(bytes).map_err(|_| IdentityError::Encoding)?);
-            return Self::from_pkcs8_pem(&pem);
-        }
-        let identity = Self::generate()?;
-        identity.save(path)?;
-        Ok(identity)
+    /// Fails if the file cannot be read or holds no valid key.
+    pub fn load(path: &Path) -> Result<Option<Self>, IdentityError> {
+        let Some(bytes) = secure_file::read(path)? else {
+            return Ok(None);
+        };
+        Self::from_pem_bytes(Zeroizing::new(bytes)).map(Some)
+    }
+
+    /// Loads a key from PKCS #8 PEM in bytes, as a file or a keyring
+    /// holds it.
+    ///
+    /// # Errors
+    ///
+    /// Fails unless `pem` is UTF-8 holding a valid P-256 private key.
+    pub fn from_pem_bytes(pem: Zeroizing<Vec<u8>>) -> Result<Self, IdentityError> {
+        let pem = std::str::from_utf8(&pem).map_err(|_| IdentityError::Encoding)?;
+        Self::from_pkcs8_pem(pem)
     }
 
     /// Stores the private key at `path` as PKCS #8 PEM, with mode 0600.
@@ -360,8 +371,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("identity.pem");
 
-        let created = Identity::load_or_generate(&path).unwrap();
-        let loaded = Identity::load_or_generate(&path).unwrap();
+        assert!(Identity::load(&path).unwrap().is_none());
+        let created = Identity::generate().unwrap();
+        created.save(&path).unwrap();
+        let loaded = Identity::load(&path).unwrap().unwrap();
         assert_eq!(created.fingerprint(), loaded.fingerprint());
         assert!(
             std::fs::read_to_string(&path)

@@ -63,6 +63,10 @@ impl RuntimeConfig {
 
 /// What the shell provides to the runtime.
 pub struct Shell {
+    /// This desktop's identity, which the shell loads with
+    /// [`DataDir::load_identity`](crate::paths::DataDir::load_identity)
+    /// before starting, since the keyring may prompt the user.
+    pub identity: Identity,
     /// Shows banners on the desktop.
     pub presenter: Arc<dyn Presenter>,
     /// Receives every change as a snapshot.
@@ -133,7 +137,7 @@ impl Core {
         shell: Shell,
     ) -> Result<Arc<Self>, RuntimeError> {
         config.data_dir.create()?;
-        let identity = Identity::load_or_generate(&config.data_dir.identity())?;
+        let identity = shell.identity;
         let store = FileTrustStore::open(config.data_dir.trust_store())?;
         let id = config.data_dir.load_or_create_device_id()?;
         let name = config.desktop_name.clone().unwrap_or_else(desktop_name);
