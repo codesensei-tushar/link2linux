@@ -249,6 +249,7 @@ pub fn failure_of(error: &PairingError, method: PairingMethod) -> PairingFailure
             PairingMethod::QrCode => PairingFailure::Rejected,
         },
         PairingError::TimedOut => PairingFailure::TimedOut,
+        PairingError::ReplaceDeclined => PairingFailure::AlreadyPaired,
         PairingError::Rejected(outcome) => match outcome {
             PairingOutcome::Declined => PairingFailure::DeclinedByPhone,
             PairingOutcome::VerificationFailed => PairingFailure::VerificationFailed,
@@ -316,6 +317,7 @@ mod tests {
             F::Expired
         );
         assert_eq!(of(&PairingError::Blocked, M::QrCode), F::NotExpected);
+        assert_eq!(of(&PairingError::ReplaceDeclined, M::Sas), F::AlreadyPaired);
         assert_eq!(of(&PairingError::Closed, M::Sas), F::ConnectionLost);
         assert_eq!(
             of(&PairingError::VerificationFailed, M::QrCode),

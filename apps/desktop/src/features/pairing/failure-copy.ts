@@ -47,4 +47,8 @@ export const failureCopy: Record<PairingFailure, FailureCopy> = {
     title: "Too many tries",
     body: "For safety, pairing with a code stops after three tries. Start again to get fresh codes.",
   },
+  alreadyPaired: {
+    title: "This phone is already paired under another key",
+    body: "Nothing was replaced. If it's your phone, remove it from your phones first, then pair again.",
+  },
 };

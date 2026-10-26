@@ -266,9 +266,9 @@ impl PairingPrompt for Prompt {
     }
 
     async fn confirm_replace(&mut self, phone: &DeviceInfo, _replaces: &[PairedDevice]) -> bool {
-        // The screen has no way to ask yet, so a pairing never replaces a
-        // record of the same device under another key: remove the old one
-        // first.
+        // The screen has no way to ask yet, so a pairing by either method
+        // never replaces a record of the same device under another key:
+        // remove the old one first.
         tracing::info!(phone = %phone.name, "declined to replace a pairing record without asking");
         false
     }

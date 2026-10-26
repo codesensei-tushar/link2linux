@@ -97,8 +97,10 @@ pub enum SasDecision {
 pub trait PairingPrompt: Send {
     /// Shows the SAS code (with [`PairingCode::grouped`]) and the phone's
     /// name, and waits for the user. `replaces` lists records the pairing
-    /// replaces: the same device id under another key; show them too.
-    /// Dropping the future means the question is withdrawn.
+    /// would replace: the same device id under another key; show them too.
+    /// The pairing still asks [`confirm_replace`](Self::confirm_replace)
+    /// before it replaces them. Dropping the future means the question is
+    /// withdrawn.
     fn confirm_code(
         &mut self,
         code: &PairingCode,
@@ -106,9 +108,11 @@ pub trait PairingPrompt: Send {
         replaces: &[PairedDevice],
     ) -> impl Future<Output = SasDecision> + Send;
 
-    /// Asks whether a QR code pairing with `phone` replaces `replaces`,
-    /// records with the same device id under another key (name, kind, date
-    /// paired). `false` declines the pairing.
+    /// Asks whether a pairing with `phone` replaces `replaces`, records
+    /// with the same device id under another key (name, kind, date paired).
+    /// Both methods ask it once the phone has proven its key, since the
+    /// device id alone must never replace a record. `false` declines the
+    /// pairing.
     fn confirm_replace(
         &mut self,
         phone: &DeviceInfo,
@@ -344,17 +348,7 @@ where
     }
 
     let replaces = conflicting_records(store, binding, phone)?;
-    if !replaces.is_empty() {
-        match time::timeout(timeouts.confirm, prompt.confirm_replace(phone, &replaces)).await {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(abort(channel, PairingOutcome::Declined, PairingError::Declined).await);
-            }
-            Err(_) => {
-                return Err(abort(channel, PairingOutcome::TimedOut, PairingError::TimedOut).await);
-            }
-        }
-    }
+    ask_to_replace(channel, prompt, phone, &replaces, timeouts).await?;
 
     let stored = {
         let mut offer = lock(offer)?;
@@ -380,14 +374,17 @@ where
 /// one of its few attempts. The phone commits first; the desktop sends its
 /// nonce only after the commitment arrived, and checks the revealed nonce
 /// against it. Both screens then show the code, and the pairing is stored
-/// once the user here confirmed it and the phone accepted.
+/// once the user here confirmed it and the phone accepted, and, if it
+/// replaces records of the same device id under another key, the user
+/// agreed to that too.
 ///
 /// # Errors
 ///
 /// Fails when the messages come in another order or the commitment does
 /// not verify, when either user declines or does not decide in time, when
-/// the phone ends the pairing, on protocol violations, and on connection or
-/// store errors.
+/// the user keeps the records the pairing would replace, when the phone
+/// ends the pairing, on protocol violations, and on connection or store
+/// errors.
 pub async fn pair_by_sas<C, P, S>(
     channel: &mut C,
     binding: &PairingBinding,
@@ -466,6 +463,7 @@ where
         }
     }
 
+    ask_to_replace(channel, prompt, phone, &replaces, timeouts).await?;
     let stored = store_pairing(store, binding, phone, replaces);
     finish(channel, stored).await
 }
@@ -543,6 +541,32 @@ async fn unexpected<C: PairingChannel>(channel: &mut C, payload: &Payload) -> Pa
             abort(channel, PairingOutcome::VerificationFailed, error).await
         }
         other => PairingError::Protocol(format!("{} during pairing", payload_name(other))),
+    }
+}
+
+/// Asks the user whether the pairing replaces `replaces`, if there are
+/// any, and declines it unless they agree in time.
+async fn ask_to_replace<C, P>(
+    channel: &mut C,
+    prompt: &mut P,
+    phone: &DeviceInfo,
+    replaces: &[PairedDevice],
+    timeouts: &PairingTimeouts,
+) -> Result<(), PairingError>
+where
+    C: PairingChannel,
+    P: PairingPrompt,
+{
+    if replaces.is_empty() {
+        return Ok(());
+    }
+    match time::timeout(timeouts.confirm, prompt.confirm_replace(phone, replaces)).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let error = PairingError::ReplaceDeclined;
+            Err(abort(channel, PairingOutcome::Declined, error).await)
+        }
+        Err(_) => Err(abort(channel, PairingOutcome::TimedOut, PairingError::TimedOut).await),
     }
 }
 

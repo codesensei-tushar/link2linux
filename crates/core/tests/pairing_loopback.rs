@@ -12,8 +12,8 @@ use link2linux_core::device::{DeviceInfo, DeviceKind};
 use link2linux_core::identity::{CertificateFingerprint, Identity};
 use link2linux_core::pairing::{
     MAX_FAILED_PROOFS, MemoryTrustStore, OFFER_LIFETIME, OfferStatus, PairedDevice, PairingBinding,
-    PairingError, PairingSecret, PairingSuccess, PairingTimeouts, QrOffer, QrPayload, SasDecision,
-    TrustStore, pair_by_qr, pair_by_sas, records,
+    PairingCode, PairingError, PairingSecret, PairingSuccess, PairingTimeouts, QrOffer, QrPayload,
+    SasDecision, TrustStore, pair_by_qr, pair_by_sas, records,
 };
 use link2linux_core::transport::{Connection, PeerPin, TlsConnection, TlsDialer, TransportError};
 use link2linux_protocol::v1::{KeyRotation, PairingMethod, PairingOutcome};
@@ -431,7 +431,10 @@ async fn re_pairing_over_another_key_asks_first() {
     let secret = offer.lock().unwrap().secret().clone();
     let mut refusing = ScriptedPrompt::answering(SasDecision::Confirmed, false);
     let (result, report) = qr_attempt(&desktop, &phone, &offer, &secret, &mut refusing).await;
-    assert!(matches!(result, Err(PairingError::Declined)), "{result:?}");
+    assert!(
+        matches!(result, Err(PairingError::ReplaceDeclined)),
+        "{result:?}"
+    );
     assert_eq!(report.desktop_outcome, Some(PairingOutcome::Declined));
     assert_eq!(desktop.records(), std::slice::from_ref(&old));
     assert_eq!(
@@ -441,6 +444,56 @@ async fn re_pairing_over_another_key_asks_first() {
 
     // The user agrees: the new record replaces the old one.
     let (result, _) = qr_attempt(&desktop, &phone, &offer, &secret, &mut confirming()).await;
+    let success = result.unwrap();
+    assert_eq!(success.replaced, [old]);
+    assert_eq!(desktop.records(), [success.device]);
+}
+
+#[tokio::test]
+async fn a_code_pairing_over_another_key_asks_too() {
+    let desktop = Desktop::new();
+    let phone = TestPhone::bind(LOCALHOST, "phone-1").await;
+    // A record for the device id this phone claims, under another key.
+    let old = PairedDevice::new(
+        "phone-1",
+        "Old phone",
+        DeviceKind::Phone,
+        CertificateFingerprint([9; 32]),
+        SystemTime::UNIX_EPOCH,
+    );
+    desktop.store.lock().unwrap().insert(old.clone()).unwrap();
+
+    // The codes match, but the user keeps the old record.
+    let mut keeping = ScriptedPrompt::answering(SasDecision::Confirmed, false);
+    let (result, report) = sas_attempt(
+        &desktop,
+        &phone,
+        &mut keeping,
+        false,
+        SasDecision::Confirmed,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(PairingError::ReplaceDeclined)),
+        "{result:?}"
+    );
+    assert_eq!(report.desktop_outcome, Some(PairingOutcome::Declined));
+    assert_eq!(desktop.records(), std::slice::from_ref(&old));
+    // The code came with the record it would replace, then the question.
+    let shown = keeping.shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 2);
+    assert_eq!(shown[0].0, report.code.unwrap());
+    assert_eq!(shown[1], (PairingCode::new(""), vec![old.clone()]));
+
+    // The user agrees: the new record replaces the old one.
+    let (result, _) = sas_attempt(
+        &desktop,
+        &phone,
+        &mut confirming(),
+        false,
+        SasDecision::Confirmed,
+    )
+    .await;
     let success = result.unwrap();
     assert_eq!(success.replaced, [old]);
     assert_eq!(desktop.records(), [success.device]);
@@ -486,6 +539,21 @@ async fn the_phone_refuses_a_desktop_it_did_not_pin() {
         "{desktop_result:?}"
     );
     assert!(accepted.is_err());
+}
+
+#[tokio::test]
+async fn an_alert_during_the_handshake_is_no_refusal() {
+    let desktop = Desktop::new();
+    let paired = Identity::generate().unwrap().fingerprint();
+    // Whoever holds the phone's old address answers in plaintext.
+    let phone = TestPhone::bind(LOCALHOST, "phone-1").await;
+
+    let (dialed, forged) = tokio::join!(
+        desktop.dialer.dial(phone.addr(), PeerPin::from(paired)),
+        phone.forge_refusal()
+    );
+    forged.unwrap();
+    assert!(matches!(dialed, Err(TransportError::Tls(_))), "{dialed:?}");
 }
 
 #[tokio::test]

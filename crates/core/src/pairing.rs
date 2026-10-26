@@ -176,6 +176,10 @@ pub enum PairingError {
     /// The user declined on this device.
     #[error("pairing was declined")]
     Declined,
+    /// The pairing would replace records of the same device id under
+    /// another key, and the user kept them.
+    #[error("pairing was declined to keep the device's other pairing")]
+    ReplaceDeclined,
     /// The user, or the peer, did not go on in time.
     #[error("pairing timed out")]
     TimedOut,

@@ -246,7 +246,12 @@ export type PairingFailure =
 /**  The connection dropped part way. */
 "connectionLost" | 
 /**  Three code comparisons did not succeed. */
-"tooManyAttempts";
+"tooManyAttempts" | 
+/**
+ *  A phone with the same id is paired under another key. Pairing never
+ *  replaces it without asking, so the user removes it first.
+ */
+"alreadyPaired";
 
 /**  How the user pairs a new phone. */
 export type PairingMethod = 

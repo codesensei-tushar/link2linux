@@ -73,6 +73,7 @@ use tokio_util::codec::{Encoder, Framed};
 use tracing::debug;
 
 use crate::device::{DeviceInfo, Feature};
+use crate::transport::TransportError;
 
 mod goodbye;
 mod liveness;
@@ -338,6 +339,16 @@ impl SessionError {
             | Self::Protocol(_) => true,
             _ => false,
         }
+    }
+
+    /// Whether the peer refused this device's certificate
+    /// ([`TransportError::RejectedByPeer`]). On the desktop the refusal
+    /// arrives on the first read after the TLS handshake, which is in
+    /// [`Session::handshake`], when the phone does not, or no longer, trust
+    /// its key.
+    #[must_use]
+    pub fn is_rejected_by_peer(&self) -> bool {
+        matches!(self, Self::Frame(FrameError::Io(error)) if TransportError::is_refusal(error))
     }
 
     /// What the desktop does after a session failed with this error.

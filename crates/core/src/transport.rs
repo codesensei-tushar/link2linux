@@ -19,7 +19,10 @@
 //! key, the dial therefore succeeds and the refusal arrives as an error on
 //! the first read, normally while reading the phone's `Hello`. Pass such
 //! errors through [`TransportError::from`] to tell a refusal
-//! ([`TransportError::RejectedByPeer`]) from other failures.
+//! ([`TransportError::RejectedByPeer`]) from other failures. Only such a
+//! refusal counts: it is encrypted with keys of a handshake that checked
+//! the phone's key. An alert during the handshake is unauthenticated, so a
+//! dial reports it as an ordinary TLS failure.
 
 mod tls;
 mod verifier;
@@ -120,7 +123,8 @@ pub enum TransportError {
     #[error("the peer's certificate has no usable P-256 key")]
     UnsupportedPeerKey,
     /// The peer refused this side's certificate: for the desktop, the phone
-    /// does not (or no longer) trust its key.
+    /// does not (or no longer) trust its key. Only a read or write after the
+    /// handshake reports it, never a dial.
     #[error("the peer refused this device's certificate ({0})")]
     RejectedByPeer(String),
     /// The peer did not select the `l2l/1` protocol.
@@ -170,6 +174,21 @@ impl From<io::Error> for TransportError {
             Ok(tls) => Self::from(*tls),
             Err(other) => Self::Io(io::Error::new(io::ErrorKind::InvalidData, other)),
         }
+    }
+}
+
+impl TransportError {
+    /// Whether `error`, from a read or write on a [`TlsConnection`], is the
+    /// peer refusing this side's certificate, as [`TransportError::from`]
+    /// would classify it.
+    #[must_use]
+    pub fn is_refusal(error: &io::Error) -> bool {
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+            .is_some_and(|tls| {
+                matches!(tls, rustls::Error::AlertReceived(alert) if is_certificate_alert(*alert))
+            })
     }
 }
 
@@ -250,6 +269,7 @@ mod tests {
             io::ErrorKind::InvalidData,
             rustls::Error::AlertReceived(AlertDescription::BadCertificate),
         );
+        assert!(TransportError::is_refusal(&refused));
         assert!(matches!(
             TransportError::from(refused),
             TransportError::RejectedByPeer(_)
@@ -258,11 +278,13 @@ mod tests {
             io::ErrorKind::InvalidData,
             rustls::Error::NoApplicationProtocol,
         );
+        assert!(!TransportError::is_refusal(&alpn));
         assert!(matches!(
             TransportError::from(alpn),
             TransportError::NoApplicationProtocol
         ));
         let plain = io::Error::from(io::ErrorKind::ConnectionReset);
+        assert!(!TransportError::is_refusal(&plain));
         assert!(matches!(TransportError::from(plain), TransportError::Io(_)));
     }
 }
