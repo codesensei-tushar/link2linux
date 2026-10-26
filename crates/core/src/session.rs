@@ -16,6 +16,12 @@
 //! [`SessionError::IdleTimeout`] when nothing arrives from the peer for
 //! [`SessionConfig::idle_timeout`]. Feature messages come out as
 //! [`SessionEvent::Message`] and go in through [`Session::send`].
+//!
+//! A session ends with a `Goodbye`. The peer's comes out as
+//! [`SessionEvent::Goodbye`], whose [`ReconnectPolicy`] tells the desktop
+//! what to do next; [`Session::goodbye`] sends this side's. When the peer
+//! breaks a protocol rule, the session sends `Goodbye` with
+//! `GOODBYE_REASON_PROTOCOL_ERROR` before it reports the error.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::future::poll_fn;
@@ -23,7 +29,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
@@ -35,8 +41,10 @@ use tracing::debug;
 
 use crate::device::{DeviceInfo, Feature};
 
+mod goodbye;
 mod version;
 
+pub use goodbye::{PeerGoodbye, ReconnectPolicy};
 pub use version::VersionRange;
 
 /// Tunables for a [`Session`].
@@ -85,6 +93,9 @@ pub enum SessionEvent {
         /// Time from sending the `Ping` to receiving the `Pong`.
         rtt: Duration,
     },
+    /// The peer ended the session with a `Goodbye`. It is the last event:
+    /// [`Session::next_event`] returns `Ok(None)` from then on.
+    Goodbye(PeerGoodbye),
 }
 
 /// Why a session failed or ended abnormally.
@@ -131,9 +142,40 @@ pub enum SessionError {
     /// Nothing arrived from the peer for this long.
     #[error("no message from the peer for {0:?}")]
     IdleTimeout(Duration),
+    /// This side tried to send a message the session sends by itself or
+    /// through a dedicated method, such as a `Goodbye` through
+    /// [`Session::send`] instead of [`Session::goodbye`].
+    #[error("{0} cannot be sent this way")]
+    NotAllowed(&'static str),
     /// The session has already ended.
     #[error("the session has ended")]
     Ended,
+}
+
+impl SessionError {
+    /// Whether the peer broke a protocol rule. The session then sends
+    /// `Goodbye` with `GOODBYE_REASON_PROTOCOL_ERROR` before it reports the
+    /// error.
+    #[must_use]
+    pub fn is_protocol_error(&self) -> bool {
+        match self {
+            Self::Frame(err) => !matches!(err, FrameError::Io(_) | FrameError::Encode(_)),
+            Self::ExpectedHello
+            | Self::InvalidHello(_)
+            | Self::OutOfOrder { .. }
+            | Self::UnexpectedHello => true,
+            _ => false,
+        }
+    }
+
+    /// What the desktop does after a session failed with this error.
+    #[must_use]
+    pub fn reconnect_policy(&self) -> ReconnectPolicy {
+        match self {
+            Self::VersionMismatch { .. } => ReconnectPolicy::WaitForUpdate,
+            _ => ReconnectPolicy::after_loss(),
+        }
+    }
 }
 
 /// An established session with a peer device.
@@ -163,8 +205,8 @@ pub struct Session<S> {
     events: VecDeque<SessionEvent>,
     /// Whether frames were queued since the last completed flush.
     unflushed: bool,
-    /// Whether the session is over: the peer closed the stream, or the
-    /// session failed.
+    /// Whether the session is over: a `Goodbye` went either way, the peer
+    /// closed the stream, or the session failed.
     ended: bool,
 }
 
@@ -219,13 +261,14 @@ where
         let (peer, version, last_peer_seq) = match result {
             Ok(accepted) => accepted,
             Err(err) => {
-                let SessionError::VersionMismatch { local, .. } = &err else {
-                    return Err(err);
+                let (reason, detail) = match &err {
+                    SessionError::VersionMismatch { local, .. } => (
+                        GoodbyeReason::VersionMismatch,
+                        format!("the sender speaks protocol version {local}"),
+                    ),
+                    _ if err.is_protocol_error() => (GoodbyeReason::ProtocolError, err.to_string()),
+                    _ => return Err(err),
                 };
-                let (reason, detail) = (
-                    GoodbyeReason::VersionMismatch,
-                    format!("the sender speaks protocol version {local}"),
-                );
                 let goodbye = Envelope {
                     seq: 2,
                     payload: Some(Payload::Goodbye(Goodbye {
@@ -302,8 +345,8 @@ where
         self.rtt
     }
 
-    /// Whether the session is over: the peer closed the stream, or the
-    /// session failed.
+    /// Whether the session is over: a `Goodbye` went either way, the peer
+    /// closed the stream, or the session failed.
     #[must_use]
     pub fn has_ended(&self) -> bool {
         self.ended
@@ -318,11 +361,14 @@ where
     /// # Errors
     ///
     /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, with
-    /// [`SessionError::Ended`] once the session is over, and on framing or
-    /// I/O errors.
+    /// [`SessionError::NotAllowed`] for a `Goodbye` (see
+    /// [`Session::goodbye`]), with [`SessionError::Ended`] once the session
+    /// is over, and on framing or I/O errors.
     pub async fn send(&mut self, payload: Payload) -> Result<u64, SessionError> {
-        if matches!(payload, Payload::Hello(_)) {
-            return Err(SessionError::UnexpectedHello);
+        match payload {
+            Payload::Hello(_) => return Err(SessionError::UnexpectedHello),
+            Payload::Goodbye(_) => return Err(SessionError::NotAllowed("Goodbye")),
+            _ => {}
         }
         if self.ended {
             return Err(SessionError::Ended);
@@ -350,7 +396,10 @@ where
 
     /// Waits for the next event, handling liveness on the way.
     ///
-    /// Returns `Ok(None)` once the peer has closed the stream.
+    /// Returns `Ok(None)` once the session is over: after the peer's
+    /// [`SessionEvent::Goodbye`], or when the peer closed the stream without
+    /// one, which counts as a lost connection
+    /// ([`ReconnectPolicy::after_loss`]).
     ///
     /// This method is cancel safe: dropping the returned future before it
     /// completes loses no incoming message, and frames queued for sending
@@ -361,7 +410,10 @@ where
     /// Fails with [`SessionError::IdleTimeout`] when the peer goes silent,
     /// on protocol violations ([`SessionError::OutOfOrder`],
     /// [`SessionError::UnexpectedHello`], undecodable frames), and on I/O
-    /// errors. The session is over after an error.
+    /// errors. On a protocol violation the session first queues a `Goodbye`
+    /// with `GOODBYE_REASON_PROTOCOL_ERROR` and writes it if it can do so
+    /// without waiting; [`Session::close`] flushes it. The session is over
+    /// after an error.
     pub async fn next_event(&mut self) -> Result<Option<SessionEvent>, SessionError> {
         loop {
             if let Some(event) = self.events.pop_front() {
@@ -374,7 +426,31 @@ where
         }
     }
 
-    /// Flushes queued frames and shuts the stream down.
+    /// Ends the session on purpose: sends `Goodbye` with `reason`, flushes
+    /// and shuts the stream down. `detail` is English text for the peer's
+    /// logs.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the final writes or the shutdown fail.
+    pub async fn goodbye(
+        mut self,
+        reason: GoodbyeReason,
+        detail: &str,
+    ) -> Result<(), SessionError> {
+        if !self.ended {
+            self.ended = true;
+            self.enqueue(Payload::Goodbye(Goodbye {
+                reason: reason.into(),
+                detail: detail.to_owned(),
+            }))?;
+        }
+        self.close().await
+    }
+
+    /// Flushes queued frames and shuts the stream down, without a
+    /// `Goodbye`. Use it once the session is over; to end a running session
+    /// on purpose, use [`Session::goodbye`].
     ///
     /// # Errors
     ///
@@ -439,6 +515,12 @@ where
                 }
                 _ => debug!(nonce, "ignoring a Pong for a superseded Ping"),
             },
+            Some(Payload::Goodbye(goodbye)) => {
+                let goodbye = PeerGoodbye::from(goodbye);
+                debug!(reason = ?goodbye.reason, goodbye.detail, "the peer ended the session");
+                self.ended = true;
+                self.events.push_back(SessionEvent::Goodbye(goodbye));
+            }
             // Everything else is for the layers above the session.
             Some(payload) => self.events.push_back(SessionEvent::Message {
                 seq: envelope.seq,
@@ -448,8 +530,19 @@ where
         Ok(())
     }
 
-    /// Ends the session after `err`.
+    /// Ends the session after `err`. For a protocol violation by the peer,
+    /// queues a `Goodbye` saying so and writes it if that needs no waiting.
     fn fail(&mut self, err: SessionError) -> SessionError {
+        if !self.ended && err.is_protocol_error() {
+            let goodbye = Payload::Goodbye(Goodbye {
+                reason: GoodbyeReason::ProtocolError.into(),
+                detail: err.to_string(),
+            });
+            if self.enqueue(goodbye).is_ok() {
+                let _ = poll_fn(|cx| poll_flush(&mut self.framed, &mut self.unflushed, cx))
+                    .now_or_never();
+            }
+        }
         self.ended = true;
         err
     }
