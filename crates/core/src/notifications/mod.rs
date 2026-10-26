@@ -8,10 +8,14 @@
 //! - [`mirror`]: the desktop's copy, kept in step with the phone's sync
 //!   batches and live events;
 //! - [`present`]: how the copy appears as desktop banners, and what the
-//!   user's answers to them ask of the phone.
+//!   user's answers to them ask of the phone;
+//! - [`images`]: the pictures notifications refer to, fetched once and
+//!   kept on disk by SHA-256.
 
+pub mod images;
 pub mod mirror;
 pub mod present;
 
+pub use images::{ImageCache, ImageError};
 pub use mirror::{Change, Mirror, MirrorError};
 pub use present::{Answer, answer, to_desktop, wants_banner};
