@@ -46,7 +46,7 @@ and keep an offline backup.
 2. Back up `link2linux-release.jks` and its password somewhere offline, such
    as a password manager plus an encrypted USB drive. Never commit it.
 
-3. Store it as repository secrets. The workflow reads only these four. Give
+3. Store it as repository secrets. The workflow reads only these. Give
    the keystore's full path: from any other directory `base64` finds no
    file, and the secret is set to an empty value.
 
@@ -54,8 +54,14 @@ and keep an offline backup.
    base64 -w0 ~/link2linux-release.jks | gh secret set ANDROID_KEYSTORE_BASE64
    gh secret set ANDROID_KEYSTORE_PASSWORD   # prompts for the value
    gh secret set ANDROID_KEY_ALIAS --body link2linux
-   gh secret set ANDROID_KEY_PASSWORD        # same as the keystore password unless you chose another
    ```
+
+   Don't set `ANDROID_KEY_PASSWORD` for a keystore made this way: keytool
+   makes PKCS12 keystores, whose key is protected by the keystore password,
+   and the workflow uses that password when the secret is unset. Set it only
+   for an older JKS keystore whose key has a password of its own. A wrong
+   key password fails signing with `Failed to obtain key with alias ...
+   Wrong password?`.
 
 Without these secrets the Android job stops with an error, and nothing is
 released. A build-only run (below) is the quickest way to check that they
