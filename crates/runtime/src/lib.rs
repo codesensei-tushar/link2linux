@@ -8,5 +8,6 @@
 
 pub mod candidates;
 pub mod dial;
+pub mod notify;
 pub mod paths;
 pub mod view;
