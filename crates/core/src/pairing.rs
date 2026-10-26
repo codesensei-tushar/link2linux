@@ -30,7 +30,8 @@ use std::time::SystemTime;
 
 pub use self::crypto::PairingSecret;
 pub use self::desktop::{
-    PairingBinding, PairingChannel, PairingPrompt, PairingTimeouts, SasDecision,
+    PairingBinding, PairingChannel, PairingPrompt, PairingSuccess, PairingTimeouts, SasDecision,
+    pair_by_qr, refuse,
 };
 pub use self::qr::{
     DEFAULT_BEACON_PORT, MAX_FAILED_PROOFS, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, OFFER_LIFETIME,

@@ -336,10 +336,6 @@ impl QrOffer {
     }
 
     /// Counts a failed proof and blocks the peer for the rest of the offer.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the QR pairing driver comes next")
-    )]
     pub(crate) fn record_failed_proof(&mut self, key: CertificateFingerprint, address: IpAddr) {
         self.failed_proofs = self.failed_proofs.saturating_add(1);
         self.blocked_keys.insert(key);
@@ -347,10 +343,6 @@ impl QrOffer {
     }
 
     /// Marks the offer as used by a successful pairing.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the QR pairing driver comes next")
-    )]
     pub(crate) fn mark_used(&mut self) {
         self.used = true;
     }
