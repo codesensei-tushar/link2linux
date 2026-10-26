@@ -8,6 +8,10 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
+Clipboard sharing and file transfer between the phone and the desktop.
+
 ### Added
 
 - Clipboard sharing. Text you copy on the computer lands on the phone's
@@ -178,7 +182,8 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/codesensei-tushar/link2linux/releases/tag/v0.1.0
