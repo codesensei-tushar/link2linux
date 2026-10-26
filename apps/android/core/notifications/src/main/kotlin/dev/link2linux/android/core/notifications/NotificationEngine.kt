@@ -1,6 +1,8 @@
 package dev.link2linux.android.core.notifications
 
+import com.google.protobuf.ByteString
 import dev.link2linux.protocol.v1.ErrorCode
+import dev.link2linux.protocol.v1.NotificationDismissRequest
 import dev.link2linux.protocol.v1.NotificationRemovalReason
 import dev.link2linux.protocol.v1.notificationPosted
 import dev.link2linux.protocol.v1.notificationRemoved
@@ -106,6 +108,8 @@ class NotificationEngine(
     private val candidates = LinkedHashMap<String, Candidate>()
     private val shared = HashMap<String, Shared>() // by protocol key
     private val sharedByPlatformKey = HashMap<String, String>()
+    private val desktopDismissals = HashSet<String>() // platform keys the desktop asked to cancel
+    private val remembered = RememberedRequests()
     private var collection = NotificationCollection(newEpoch())
     private var transport: NotificationTransport? = null
     private var subscribed = false
@@ -169,6 +173,9 @@ class NotificationEngine(
         refuse()?.let { return@withLock replies.send(it) }
         when (request) {
             is NotificationRequest.Sync -> handleSync(request, replies)
+            is NotificationRequest.Dismiss -> replies.send(
+                once(request.message.idempotencyKey, request.message.createdUnixMs) { dismiss(request.message) },
+            )
             else -> replies.send(failure(ErrorCode.ERROR_CODE_UNSUPPORTED))
         }
     }
@@ -180,12 +187,14 @@ class NotificationEngine(
             is Event.Connected -> {
                 resetCollection()
                 candidates.clear()
+                desktopDismissals.clear()
                 for (s in event.active) if (s.packageName != ownPackage) candidates[s.key] = Candidate(s)
                 refreshAvailability(transition = false)
                 reconcileAll(quiet = true)
             }
             Event.Disconnected -> {
                 candidates.clear()
+                desktopDismissals.clear()
                 resetCollection()
                 refreshAvailability(transition = false)
             }
@@ -198,7 +207,11 @@ class NotificationEngine(
             }
             is Event.Removed -> {
                 val old = candidates.remove(event.platformKey)
-                val reason = reasonOf(event.cause)
+                val reason = if (desktopDismissals.remove(event.platformKey)) {
+                    NotificationRemovalReason.NOTIFICATION_REMOVAL_REASON_DISMISSED_FROM_DESKTOP
+                } else {
+                    reasonOf(event.cause)
+                }
                 removeShared(event.platformKey, reason)
                 if (old != null) reconcileWithGroup(null, old.snapshot.packageName, old.snapshot.groupKey, quiet = false)
             }
@@ -348,6 +361,79 @@ class NotificationEngine(
         val (reset, changes) = collection.changesSince(since)
         for (batch in collection.batches(reset, changes)) replies.send(NotificationReply.Batch(batch))
         subscribed = true
+    }
+
+    /** Runs [block] once per idempotency key; a repeat gets the same answer back. */
+    private inline fun once(key: ByteString, createdMs: Long, block: () -> NotificationReply): NotificationReply {
+        if (key.size() != 16) return failure(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "idempotency_key must be 16 bytes")
+        val now = clock()
+        remembered.get(key, now)?.let { return it }
+        if (createdMs > 0 && now - createdMs > RememberedRequests.TTL_MS) {
+            return failure(ErrorCode.ERROR_CODE_EXPIRED, "request is older than 24 hours")
+        }
+        val reply = block()
+        if (reply.isFinal()) remembered.put(key, reply, now)
+        return reply
+    }
+
+    private fun NotificationReply.isFinal(): Boolean = when (this) {
+        is NotificationReply.Error -> when (code) {
+            ErrorCode.ERROR_CODE_UNAVAILABLE, ErrorCode.ERROR_CODE_INTERNAL, ErrorCode.ERROR_CODE_BUSY -> false
+            else -> true
+        }
+        else -> true
+    }
+
+    private fun dismiss(request: NotificationDismissRequest): NotificationReply {
+        val entry = shared[request.key] ?: return failure(ErrorCode.ERROR_CODE_NOT_FOUND, "no such notification")
+        val notification = collection[request.key]
+        if (notification == null || !notification.dismissible) {
+            return failure(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "notification is not dismissible")
+        }
+        if (!policy.dismissSync) return failure(ErrorCode.ERROR_CODE_DECLINED, "dismiss sync is turned off on the phone")
+        val platformKey = entry.mapped.platformKey
+        desktopDismissals += platformKey
+        val cancelled = try {
+            canceller.cancel(platformKey)
+        } catch (e: RuntimeException) {
+            onError(e)
+            false
+        }
+        if (!cancelled) {
+            desktopDismissals -= platformKey
+            return failure(ErrorCode.ERROR_CODE_UNAVAILABLE, "the platform did not cancel the notification")
+        }
+        return NotificationReply.Ack
+    }
+
+    /** Answers to Dismiss and Action requests, kept for 24 hours so a retry is not carried out twice. */
+    private class RememberedRequests {
+        private class Entry(val reply: NotificationReply, val at: Long)
+
+        private val entries = LinkedHashMap<ByteString, Entry>()
+
+        fun get(key: ByteString, now: Long): NotificationReply? {
+            val e = entries[key] ?: return null
+            if (now - e.at > TTL_MS) {
+                entries.remove(key)
+                return null
+            }
+            return e.reply
+        }
+
+        fun put(key: ByteString, reply: NotificationReply, now: Long) {
+            entries[key] = Entry(reply, now)
+            val it = entries.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                if (entries.size > MAX || now - e.value.at > TTL_MS) it.remove() else break
+            }
+        }
+
+        companion object {
+            const val TTL_MS = 24L * 60 * 60 * 1000
+            const val MAX = 2000
+        }
     }
 
     companion object {
