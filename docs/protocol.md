@@ -821,7 +821,10 @@ closes the connection on a frame that breaks them or does not decode,
 because the stream is out of sync.
 
 Senders SHOULD keep frames below 256 KiB, splitting large answers into
-batches, so that a `Ping` never waits long behind a bulk frame.
+batches, so that a `Ping` never waits long behind a bulk frame. Each side
+MUST keep reading frames while it writes: when both send bulk data, two
+sides that stop reading while they write block each other once the TCP
+buffers fill.
 
 ### Connecting and reconnecting
 

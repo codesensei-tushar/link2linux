@@ -71,9 +71,17 @@ class NotificationSessionHooks(
         }
         // Only a request is answered; a request message sent as a one-way event is ignored.
         if (!envelope.expectsReply) return true
-        // A session that already ended still gets its answer, but no live events.
-        val from = lock.withLock { attached[session] } ?: SessionTransport(session, scope)
-        engine.handle(request, RepliesTo(session, envelope.seq), from)
+        val replies = RepliesTo(session, envelope.seq)
+        val from = lock.withLock { attached[session] }
+        if (from != null) {
+            // The engine queues the answers for the session's own writer.
+            engine.handle(request, replies, from)
+        } else {
+            // A session that is not attached still gets its answer, but no live events. The engine
+            // then sends the answers itself, which must not happen here on the reader.
+            val transport = SessionTransport(session, scope)
+            scope.launch { engine.handle(request, replies, transport) }
+        }
         return true
     }
 

@@ -63,7 +63,8 @@ class ClipboardSessionHooks(
                 // Only a request is answered; a push sent as a one-way event is ignored.
                 if (envelope.expectsReply) {
                     val reply = engine.receive(desktop.device.id.value, envelope.clipboardPush)
-                    session.send {
+                    // Posted: the reader never waits for a write.
+                    session.post {
                         replyTo = envelope.seq
                         when (reply) {
                             ClipboardReply.Ack -> ack = Ack.getDefaultInstance()

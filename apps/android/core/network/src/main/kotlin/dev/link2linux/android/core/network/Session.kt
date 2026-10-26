@@ -7,9 +7,12 @@ import dev.link2linux.protocol.v1.Goodbye
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.Hello
 import dev.link2linux.protocol.v1.Pong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -18,14 +21,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One connection's worth of envelopes over an established [Transport].
@@ -39,10 +42,18 @@ import java.util.concurrent.atomic.AtomicBoolean
  * sends `Goodbye` with [GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR] and
  * closes.
  *
+ * Every frame goes out through one writer, in the order it was queued:
+ * [send] waits until its frame is written, [post] does not. The reader
+ * never waits for a write. It posts its `Pong`s, and features post the
+ * answers they give while reading: two sides that both stopped reading
+ * while writing bulk data would wait for each other once the network's
+ * buffers are full (docs/protocol.md, "Framing").
+ *
  * Liveness is the transport's: on the phone, a read that waits longer than
  * the idle timeout fails, and that ends the session. Writes have their own
  * deadline, [writeTimeoutMillis]: a peer that stops reading would otherwise
- * block every sender of this session.
+ * hold up every frame of this session. A write that fails ends the session,
+ * since a frame cut short leaves nothing readable after it.
  *
  * Until [markPaired] says the desktop is paired, frames are limited to
  * [FrameCodec.HANDSHAKE_MAX_FRAME_BYTES]: the Hello exchange and the
@@ -59,9 +70,26 @@ class Session(
     @Volatile
     private var frames = FrameCodec(minOf(codec.maxFrameBytes, FrameCodec.HANDSHAKE_MAX_FRAME_BYTES))
 
-    private val writeLock = Mutex()
-    private var nextSeq = 1L // guarded by writeLock
+    private var nextSeq = 1L // touched only by the writer
     private var lastPeerSeq = 0L // touched only by the single reader
+
+    /** One frame for the writer. */
+    private class Write(
+        val fill: Envelope.Builder.() -> Unit,
+        /** A request's answer: it waits from just before the frame goes out, so the answer cannot come first. */
+        val answer: CompletableDeferred<Envelope>? = null,
+        /** Gets the frame's seq once it is written; null for a posted frame, which nobody waits for. */
+        val written: CompletableDeferred<Long>? = null,
+        /** A posted frame's size, counted against [MAX_POSTED_BYTES] until the writer takes it. */
+        val postedBytes: Int = 0,
+    )
+
+    /** The frames waiting for the writer, in order. Closing the session fails them. */
+    private val writes = Channel<Write>(Channel.UNLIMITED) { it.written?.completeExceptionally(SessionException("The session ended")) }
+
+    // Posted frames the writer has not taken yet.
+    private val postedFrames = AtomicInteger()
+    private val postedBytes = AtomicLong()
 
     /** This side's requests that wait for their answer, by seq. */
     private val waiting = ConcurrentHashMap<Long, CompletableDeferred<Envelope>>()
@@ -80,6 +108,11 @@ class Session(
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Handshaking)
     val state: StateFlow<SessionState> = _state.asStateFlow()
+
+    init {
+        // Last, once everything the writer touches exists. It ends when the session closes.
+        CoroutineScope(ioDispatcher).launch { writeAll() }
+    }
 
     /**
      * Exchanges `Hello`s and returns the peer's. Closes the session on
@@ -116,8 +149,28 @@ class Session(
         frames = codec
     }
 
-    /** Sends one envelope and returns its sequence number. */
-    suspend fun send(fill: Envelope.Builder.() -> Unit): Long = write(fill) {}
+    /** Sends one envelope and returns its sequence number once it is written. */
+    suspend fun send(fill: Envelope.Builder.() -> Unit): Long = write(fill)
+
+    /**
+     * Queues one envelope and returns at once, without waiting for it to be
+     * written: for answers given while reading, since the reader must never
+     * wait for a write. [fill] runs at once, so the queue holds the answer
+     * alone and not what it was made from, such as the request. The envelope
+     * goes out in order behind those queued before it, within the same
+     * deadline, and a failed write ends the session. A peer that leaves more
+     * than [MAX_POSTED] posted frames, or [MAX_POSTED_BYTES], waiting has
+     * stopped reading, and is cut off.
+     */
+    fun post(fill: Envelope.Builder.() -> Unit) {
+        val answer = Envelope.newBuilder().apply(fill).build()
+        val size = answer.serializedSize
+        if (postedFrames.incrementAndGet() > MAX_POSTED || postedBytes.addAndGet(size.toLong()) > MAX_POSTED_BYTES) {
+            close()
+            return
+        }
+        writes.trySend(Write(fill = { mergeFrom(answer) }, postedBytes = size))
+    }
 
     /**
      * Sends a request (`expects_reply` set) and returns once it is written,
@@ -129,15 +182,11 @@ class Session(
      */
     suspend fun sendRequest(timeoutMillis: Long = REQUEST_TIMEOUT_MILLIS, fill: Envelope.Builder.() -> Unit): PendingRequest {
         val answer = CompletableDeferred<Envelope>()
-        var seq = 0L
-        try {
-            // Waiting before the frame goes out, so the answer cannot come first.
-            write({ fill(); expectsReply = true }) {
-                seq = it
-                waiting[it] = answer
-            }
+        val seq = try {
+            write({ fill(); expectsReply = true }, answer)
         } catch (e: Throwable) {
-            waiting.remove(seq)
+            // By value: a seq may since belong to another request.
+            waiting.values.remove(answer)
             throw e
         }
         // Closed meanwhile: close() may have missed this request.
@@ -159,16 +208,53 @@ class Session(
     fun isReadyOnPeer(feature: String): Boolean =
         peerFeatures.value[feature] == FeatureAvailability.FEATURE_AVAILABILITY_READY
 
-    private suspend fun write(fill: Envelope.Builder.() -> Unit, beforeWriting: (Long) -> Unit): Long = withContext(ioDispatcher) {
-        writeLock.withLock {
-            val seq = nextSeq++
-            val envelope = Envelope.newBuilder().apply(fill).setSeq(seq).build()
-            beforeWriting(seq)
-            closingAfter(writeTimeoutMillis, "Writing envelope $seq") {
-                frames.write(envelope, transport.output)
-                transport.output.flush()
+    private suspend fun write(fill: Envelope.Builder.() -> Unit, answer: CompletableDeferred<Envelope>? = null): Long {
+        val written = CompletableDeferred<Long>()
+        if (writes.trySend(Write(fill, answer, written)).isFailure) throw SessionException("The session ended")
+        return try {
+            written.await()
+        } catch (e: CancellationException) {
+            // A frame whose turn has not come yet is not written at all.
+            written.cancel()
+            throw e
+        }
+    }
+
+    /**
+     * The writer: writes the queued frames one at a time, each within
+     * [writeTimeoutMillis]. A frame that cannot be built, or is too large,
+     * fails before it takes a seq or registers as a request.
+     */
+    private suspend fun writeAll() {
+        for (write in writes) {
+            if (write.written == null) {
+                postedFrames.decrementAndGet()
+                postedBytes.addAndGet(-write.postedBytes.toLong())
             }
-            seq
+            if (write.written?.isCancelled == true) continue
+            val seq = nextSeq
+            val envelope = try {
+                Envelope.newBuilder().apply(write.fill).setSeq(seq).build().also(frames::checkSize)
+            } catch (e: Exception) {
+                write.written?.completeExceptionally(e)
+                continue
+            }
+            nextSeq++
+            try {
+                write.answer?.let { waiting[seq] = it }
+                closingAfter(writeTimeoutMillis, "Writing envelope $seq") {
+                    frames.write(envelope, transport.output)
+                    transport.output.flush()
+                }
+                // Its sender gave up while it went out, so nobody will take the answer.
+                if (write.written?.complete(seq) == false) write.answer?.let { waiting.remove(seq, it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                write.written?.completeExceptionally(e)
+                close()
+                return
+            }
         }
     }
 
@@ -181,7 +267,7 @@ class Session(
         while (true) {
             val envelope = receive() ?: return null
             when {
-                envelope.hasPing() -> send { setPong(Pong.newBuilder().setNonce(envelope.ping.nonce)) }
+                envelope.hasPing() -> post { setPong(Pong.newBuilder().setNonce(envelope.ping.nonce)) }
                 envelope.hasHello() -> protocolError("Second Hello")
                 envelope.replyTo != 0L && answered(envelope) -> Unit
                 else -> {
@@ -207,9 +293,16 @@ class Session(
         close()
     }
 
-    /** Sends `Goodbye` and closes the connection. The send is best effort. */
+    /**
+     * Sends `Goodbye` and closes the connection. The send is best effort: it
+     * waits at most [GOODBYE_GRACE_MILLIS] behind the frames queued before it.
+     */
     suspend fun goodbye(reason: GoodbyeReason, detail: String = "") {
-        runCatching { send { goodbye = Goodbye.newBuilder().setReason(reason).setDetail(detail).build() } }
+        runCatching {
+            withTimeoutOrNull(GOODBYE_GRACE_MILLIS) {
+                send { goodbye = Goodbye.newBuilder().setReason(reason).setDetail(detail).build() }
+            }
+        }
         close()
     }
 
@@ -222,7 +315,8 @@ class Session(
     override fun close() {
         _state.value = SessionState.Closed
         transport.close()
-        // Nothing answers them any more.
+        // Nothing more goes out, and nothing answers this side's requests any more.
+        writes.cancel()
         waiting.values.forEach { it.completeExceptionally(SessionException("The session ended")) }
     }
 
@@ -272,6 +366,15 @@ class Session(
 
         /** How long a request waits for its answer (docs/protocol.md, "Requests and replies"). */
         const val REQUEST_TIMEOUT_MILLIS: Long = 30_000
+
+        /** How long [goodbye] waits for its frame to go out before it closes anyway. */
+        const val GOODBYE_GRACE_MILLIS: Long = 2_000
+
+        /** Posted frames that may wait for the writer; more means the peer stopped reading. */
+        const val MAX_POSTED: Int = 1024
+
+        /** The bytes posted frames may hold while they wait. Answers are small; this is about a thousand of them. */
+        const val MAX_POSTED_BYTES: Long = 1024 * 1024
 
         private const val NANOS_PER_MILLI = 1_000_000L
 

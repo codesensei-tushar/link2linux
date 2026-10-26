@@ -55,6 +55,10 @@ interface SessionHooks {
     /**
      * A message the pairing layer does not handle. Returns whether a feature
      * took it; a request nobody took is answered with `ERROR_CODE_UNSUPPORTED`.
+     *
+     * This runs on the session's reader, which must never wait for a write:
+     * answer with [Session.post], not [Session.send], and hand longer work
+     * to another coroutine.
      */
     suspend fun onMessage(desktop: PairedDevice, session: Session, envelope: Envelope): Boolean = false
 
@@ -178,8 +182,9 @@ internal class PairedSession(
     private suspend fun sendStatus(session: Session, status: FeatureStatus): Boolean =
         runCatching { session.send { featureStatus = status } }.isSuccess
 
-    private suspend fun reply(session: Session, request: Envelope, fill: Envelope.Builder.() -> Unit) =
-        session.send {
+    // Posted: this runs on the reader, which never waits for a write.
+    private fun reply(session: Session, request: Envelope, fill: Envelope.Builder.() -> Unit) =
+        session.post {
             replyTo = request.seq
             fill()
         }
