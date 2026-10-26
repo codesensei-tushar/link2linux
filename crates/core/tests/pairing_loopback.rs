@@ -1,6 +1,6 @@
-//! The desktop's TLS client and QR code pairing against a stand-in phone
-//! over real TCP on the loopback interface: pairing end to end, the failure
-//! rules of a QR offer, and the key pins on both sides.
+//! The desktop's TLS client and pairing against a stand-in phone over real
+//! TCP on the loopback interface: QR code and SAS pairing end to end, the
+//! failure rules of a QR offer, and the key pins on both sides.
 
 mod support;
 
@@ -13,7 +13,7 @@ use link2linux_core::identity::{CertificateFingerprint, Identity};
 use link2linux_core::pairing::{
     MAX_FAILED_PROOFS, MemoryTrustStore, OFFER_LIFETIME, OfferStatus, PairedDevice, PairingBinding,
     PairingError, PairingSecret, PairingSuccess, PairingTimeouts, QrOffer, QrPayload, SasDecision,
-    TrustStore, pair_by_qr, records,
+    TrustStore, pair_by_qr, pair_by_sas, records,
 };
 use link2linux_core::transport::{Connection, PeerPin, TlsConnection, TlsDialer, TransportError};
 use link2linux_protocol::v1::{KeyRotation, PairingMethod, PairingOutcome};
@@ -114,6 +114,39 @@ async fn qr_attempt(
             .await
             .unwrap();
         let report = connection.pair_by_qr(phone, scanned).await;
+        connection.wire.finish().await;
+        report
+    };
+    tokio::join!(desktop_side, phone_side)
+}
+
+/// One SAS pairing attempt.
+async fn sas_attempt(
+    desktop: &Desktop,
+    phone: &TestPhone,
+    prompt: &mut ScriptedPrompt,
+    tamper: bool,
+    phone_decision: SasDecision,
+) -> (Result<PairingSuccess, PairingError>, PhoneReport) {
+    let desktop_side = async {
+        let (mut wire, binding, peer) =
+            desktop.dial_to_pair(phone.addr(), PairingMethod::Sas).await;
+        let timeouts = PairingTimeouts::default();
+        let result = pair_by_sas(
+            &mut wire,
+            &binding,
+            &peer,
+            &desktop.store,
+            prompt,
+            &timeouts,
+        )
+        .await;
+        wire.finish().await;
+        result
+    };
+    let phone_side = async {
+        let mut connection = phone.accept(PhoneTls::sas_mode()).await.unwrap();
+        let report = connection.pair_by_sas(phone, tamper, phone_decision).await;
         connection.wire.finish().await;
         report
     };
@@ -224,6 +257,67 @@ async fn qr_code_pairing_end_to_end_then_a_pinned_session() {
     };
     let (checked, ()) = tokio::join!(desktop_side, phone_side);
     assert_eq!(checked.unwrap().id, "phone-1");
+}
+
+#[tokio::test]
+async fn sas_pairing_shows_the_same_code_on_both_screens() {
+    let desktop = Desktop::new();
+    let phone = TestPhone::bind(LOCALHOST, "phone-sas").await;
+    let mut prompt = confirming();
+
+    let (result, report) =
+        sas_attempt(&desktop, &phone, &mut prompt, false, SasDecision::Confirmed).await;
+
+    let success = result.unwrap();
+    let phone_code = report.code.unwrap();
+    assert_eq!(prompt.codes(), std::slice::from_ref(&phone_code));
+    assert_eq!(phone_code.as_str().len(), 6);
+    assert_eq!(report.desktop_outcome, Some(PairingOutcome::Accepted));
+    assert_eq!(success.device.fingerprint, phone.fingerprint());
+    assert_eq!(desktop.records().len(), 1);
+}
+
+#[tokio::test]
+async fn sas_pairing_fails_on_a_broken_commitment_or_a_no() {
+    let desktop = Desktop::new();
+    let phone = TestPhone::bind(LOCALHOST, "phone-sas").await;
+
+    // The phone reveals another nonce than it committed to.
+    let mut prompt = confirming();
+    let (result, report) =
+        sas_attempt(&desktop, &phone, &mut prompt, true, SasDecision::Confirmed).await;
+    assert!(
+        matches!(result, Err(PairingError::VerificationFailed)),
+        "{result:?}"
+    );
+    assert_eq!(
+        report.desktop_outcome,
+        Some(PairingOutcome::VerificationFailed)
+    );
+    assert!(
+        prompt.codes().is_empty(),
+        "no code is shown for a broken commitment"
+    );
+
+    // The desktop's user says the codes differ.
+    let mut prompt = ScriptedPrompt::answering(SasDecision::Declined, true);
+    let (result, report) =
+        sas_attempt(&desktop, &phone, &mut prompt, false, SasDecision::Confirmed).await;
+    assert!(matches!(result, Err(PairingError::Declined)), "{result:?}");
+    assert_eq!(report.desktop_outcome, Some(PairingOutcome::Declined));
+
+    // The phone's user says so.
+    let mut prompt = confirming();
+    let (result, _) =
+        sas_attempt(&desktop, &phone, &mut prompt, false, SasDecision::Declined).await;
+    assert!(
+        matches!(
+            result,
+            Err(PairingError::Rejected(PairingOutcome::Declined))
+        ),
+        "{result:?}"
+    );
+    assert!(desktop.records().is_empty());
 }
 
 #[tokio::test]

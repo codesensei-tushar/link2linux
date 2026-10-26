@@ -1,6 +1,6 @@
 //! A stand-in phone for loopback tests: a rustls TLS server with the
 //! phone's certificate rules, the envelope stream on top of it, and the
-//! phone's side of QR code pairing.
+//! phone's side of both pairing methods.
 
 #![allow(dead_code, reason = "each test file uses part of the support code")]
 
@@ -17,7 +17,9 @@ use link2linux_core::pairing::{
     SasDecision,
 };
 use link2linux_core::transport::{ALPN_PROTOCOL, PeerPin, TransportError};
-use link2linux_protocol::v1::{PairingMethod, PairingOutcome, PairingProof, PairingResult};
+use link2linux_protocol::v1::{
+    PairingMethod, PairingOutcome, PairingProof, PairingResult, SasCommit, SasNonce,
+};
 use link2linux_protocol::{Envelope, EnvelopeCodec, FrameError, Hello, PROTOCOL_VERSION, Payload};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, UnixTime};
@@ -364,6 +366,57 @@ impl PhoneConnection {
             desktop_outcome,
             ekm,
             code: None,
+        }
+    }
+
+    /// The phone's side of SAS pairing. With `tamper`, it reveals another
+    /// nonce than the one it committed to. `decision` is its user's answer.
+    pub async fn pair_by_sas(
+        &mut self,
+        phone: &TestPhone,
+        tamper: bool,
+        decision: SasDecision,
+    ) -> PhoneReport {
+        let desktop_hello = self.wire.hello(phone.hello()).await.unwrap();
+        assert_eq!(desktop_hello.pairing_method(), PairingMethod::Sas);
+        let ekm = self.ekm_sas;
+
+        let phone_nonce = [0x5a; 32];
+        let commitment = crypto::sas_commitment(&ekm, &phone_nonce);
+        self.wire
+            .send_payload(Payload::SasCommit(SasCommit {
+                commitment: commitment.to_vec(),
+            }))
+            .await
+            .unwrap();
+        let desktop_nonce: [u8; 32] = match self.wire.recv_payload().await.unwrap() {
+            Some(Payload::SasNonce(nonce)) => nonce.nonce.try_into().unwrap(),
+            other => panic!("expected SasNonce, got {other:?}"),
+        };
+        let revealed = if tamper { [0xa5; 32] } else { phone_nonce };
+        self.wire
+            .send_payload(Payload::SasNonce(SasNonce {
+                nonce: revealed.to_vec(),
+            }))
+            .await
+            .unwrap();
+
+        let code = crypto::sas_code(&ekm, &desktop_nonce, &phone_nonce);
+        let desktop_outcome = if tamper {
+            self.read_result().await
+        } else {
+            let outcome = match decision {
+                SasDecision::Confirmed => PairingOutcome::Accepted,
+                SasDecision::Declined => PairingOutcome::Declined,
+            };
+            self.send_result(outcome).await;
+            self.read_result().await
+        };
+        PhoneReport {
+            desktop_hello,
+            desktop_outcome,
+            ekm,
+            code: Some(code),
         }
     }
 
