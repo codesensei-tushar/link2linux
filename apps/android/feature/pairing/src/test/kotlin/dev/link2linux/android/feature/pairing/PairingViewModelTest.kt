@@ -287,4 +287,18 @@ class PairingViewModelTest {
             pairedDevices.value = pairedDevices.value.filterNot { it.fingerprint == fingerprint }
         }
     }
+
+    @Test
+    fun startingAPairingTurnsTheConnectionOn() = runTest {
+        val vm = viewModel()
+        connection.setEnabled(false)
+        vm.startSasPairing()
+        assertEquals(true, connection.enabled.value)
+
+        vm.cancel()
+        connection.setEnabled(false)
+        vm.startScan()
+        vm.onQrScanned(validCode)
+        assertEquals(true, connection.enabled.value)
+    }
 }

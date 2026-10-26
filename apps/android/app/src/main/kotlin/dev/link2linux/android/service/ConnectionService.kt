@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -17,36 +18,42 @@ import dev.link2linux.android.MainActivity
 import dev.link2linux.android.R
 import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.DesktopListener
-import dev.link2linux.android.core.data.ListenerPolicy
+import dev.link2linux.android.core.data.ConnectionPolicy
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
 import dev.link2linux.android.core.data.connectedIn
+import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.android.ConnectivityLocalNetworks
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
  * The foreground service that keeps the phone findable and connected
- * (type `connectedDevice`). It runs while the phone has a pairing or a
- * pairing is under way, and it keeps running when the phone leaves Wi-Fi
+ * (type `connectedDevice`). It runs while the user's switch is on and the
+ * phone has a pairing or a pairing is under way ([ConnectionPolicy.shouldRun]),
+ * and stops itself otherwise. It keeps running when the phone leaves Wi-Fi
  * and Ethernet: Android lets an app start a foreground service from the
  * background only in a few cases, so the service never stops and restarts
  * with the network. The listener closes and discovery pauses while there is
  * no local network, and both resume when one returns.
  *
- * It is started when the app is opened, and from the background only by
- * the companion-device service ([DesktopPresenceService]). Running it on a
- * device is unverified.
+ * The app starts it while it is visible and the policy says so, and from
+ * the background only the companion-device service ([DesktopPresenceService])
+ * does. Running it on a device is unverified.
  */
 @AndroidEntryPoint
 class ConnectionService : Service() {
@@ -59,7 +66,11 @@ class ConnectionService : Service() {
     @Inject lateinit var pairing: PairingController
     @Inject lateinit var connections: DesktopConnections
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + loggingUncaught("the connection service"))
+
+    // Read and written on the main thread only, where the notification is posted too.
+    private var destroyed = false
+    private var connectedTo = emptyList<String>()
 
     override fun onCreate() {
         super.onCreate()
@@ -69,46 +80,79 @@ class ConnectionService : Service() {
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            notification(),
+            notification(connectedTo),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
         networks.start()
         discovery.start()
+        // Nothing paired and nothing under way, or the user turned it off: nothing to keep running.
+        scope.launch {
+            combine(pairedDevices.pairedDevices, pairing.state, connectionSwitch.enabled, ConnectionPolicy::shouldRun)
+                .distinctUntilChanged()
+                .collect { run -> if (!run) withContext(Dispatchers.Main) { stopSelf() } }
+        }
         // Listening while a desktop is paired lets it reconnect outside a pairing window.
         // Off a local network the listener closes, so nothing listens on mobile data.
         scope.launch {
             val onLocalNetwork = networks.networks.map { it.isNotEmpty() }
-            combine(pairedDevices.pairedDevices, pairing.state, connectionSwitch.enabled, onLocalNetwork, ListenerPolicy::shouldListen)
+            combine(pairedDevices.pairedDevices, pairing.state, connectionSwitch.enabled, onLocalNetwork, ConnectionPolicy::shouldListen)
                 .distinctUntilChanged()
-                .collect { listen -> if (listen) listener.start() else listener.stop() }
+                .collectLatest { listen -> if (listen) listen() else runCatching { listener.stop() } }
         }
         scope.launch {
             combine(pairedDevices.pairedDevices, connections.connected) { devices, connected ->
                 devices.connectedIn(connected).map { it.device.name }
             }.distinctUntilChanged().collect { names ->
-                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(names))
+                withContext(Dispatchers.Main) {
+                    connectedTo = names
+                    if (!destroyed) getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(names))
+                }
+            }
+        }
+        // A computer the phone was unpaired from must not keep waking it.
+        scope.launch { CompanionAssociations(this@ConnectionService).follow(pairedDevices.pairedDevices) }
+    }
+
+    /** Starts the listener, and tries again while it cannot, for example while its port is briefly taken. */
+    private suspend fun listen() {
+        while (true) {
+            try {
+                listener.start()
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start listening", e)
+                delay(LISTEN_RETRY_MILLIS)
             }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                // "Turn off" is the user's choice: it stays off until they turn it on in the app.
-                connectionSwitch.setEnabled(false)
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            ACTION_DESKTOP_NEARBY -> discovery.onDesktopNearby()
+        if (intent?.action == ACTION_STOP) {
+            // "Turn off" is the user's choice: it stays off until they turn it on in the app.
+            pairing.cancel()
+            connectionSwitch.setEnabled(false)
+            stopSelf()
+            return START_NOT_STICKY
         }
+        if (!connectionSwitch.enabled.value) {
+            // Turned off since this start was asked for, or a restart after the process died.
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_DESKTOP_NEARBY) discovery.onDesktopNearby()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        destroyed = true
         scope.cancel()
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
         networks.stop()
         runBlocking {
-            listener.stop()
+            runCatching { listener.stop() }
             discovery.stop()
         }
         super.onDestroy()
@@ -158,15 +202,21 @@ class ConnectionService : Service() {
     }
 
     companion object {
+        private const val TAG = "link2linux"
         private const val CHANNEL_ID = "connection"
         private const val NOTIFICATION_ID = 1
+        private const val LISTEN_RETRY_MILLIS = 10_000L
         const val ACTION_STOP = "dev.link2linux.android.action.STOP"
         const val ACTION_DESKTOP_NEARBY = "dev.link2linux.android.action.DESKTOP_NEARBY"
 
         private fun stopIntent(context: Context) =
             Intent(context, ConnectionService::class.java).setAction(ACTION_STOP)
 
-        /** Starts the service. Call it only where Android allows a foreground service start. */
+        /**
+         * Starts the service. Call it only where Android allows a foreground
+         * service start, and while [ConnectionPolicy.shouldRun] holds: it
+         * stops itself otherwise.
+         */
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, ConnectionService::class.java))
         }

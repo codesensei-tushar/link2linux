@@ -78,7 +78,11 @@ class DesktopInteropTest {
 
     private fun start(mode: String) = DesktopProcess(binary!!, mode).also { desktop = it }
 
-    private suspend fun port(): Int = service.listeningPort.filterNotNull().first()
+    // The connection service starts the listener while a pairing is under way.
+    private suspend fun port(): Int {
+        service.start()
+        return service.listeningPort.filterNotNull().first()
+    }
 
     private suspend fun awaitState(predicate: (PairingState) -> Boolean): PairingState =
         withTimeout(TIMEOUT_MILLIS) { service.state.first(predicate) }

@@ -3,11 +3,11 @@ package dev.link2linux.android.core.data
 import java.net.InetAddress
 
 /**
- * The phone's TCP listener, which every desktop connection arrives on. The
- * connection service runs it: started while the phone has a pairing (or a
- * pairing is under way) and is on a local network (Wi-Fi, Ethernet, or one
- * it hosts as a hotspot or by tethering), stopped when it leaves. Starting a
- * pairing through [PairingController] starts it too. It takes connections
+ * The phone's TCP listener, which every desktop connection arrives on. Only
+ * the connection service runs it, as [ConnectionPolicy.shouldListen] says:
+ * while the user's switch is on, the phone has a pairing (or a pairing is
+ * under way) and is on a local network (Wi-Fi, Ethernet, or one it hosts as
+ * a hotspot or by tethering); it is stopped otherwise. It takes connections
  * only from the hosts [ListenAddresses] allows.
  *
  * [DesktopConnections.listeningPort] reports the port it got.

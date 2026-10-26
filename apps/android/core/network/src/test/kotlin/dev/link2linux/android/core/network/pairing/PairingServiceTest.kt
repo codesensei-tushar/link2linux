@@ -105,7 +105,11 @@ class PairingServiceTest {
 
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
-    private suspend fun port(on: PairingService = service): Int = on.listeningPort.filterNotNull().first()
+    /** Starts the listener, as the connection service does while a desktop is paired or a pairing is under way. */
+    private suspend fun port(on: PairingService = service): Int {
+        on.start()
+        return on.listeningPort.filterNotNull().first()
+    }
 
     private suspend fun awaitState(predicate: (PairingState) -> Boolean): PairingState =
         withTimeout(10_000) { service.state.first(predicate) }
@@ -560,6 +564,29 @@ class PairingServiceTest {
         // B still connects as itself.
         dial(b, PairingMethod.PAIRING_METHOD_UNSPECIFIED, deviceId = "desktop-b").readSessionStart()
         assertEquals(b.fingerprint, devices.find(b.fingerprint!!)?.fingerprint)
+    }
+
+    @Test
+    fun aPairingAttemptLeavesTheListenerToTheConnectionService() = runBlocking {
+        // A paired desktop, and the listener closed: the user switched the connection off.
+        devices.save(
+            PairedDevice(
+                device = Device(DeviceId(DesktopPeer.DEVICE_ID), "Test desktop", DeviceKind.DESKTOP),
+                fingerprint = TestDesktop().fingerprint!!,
+                pairedAtEpochMillis = 0,
+                presenceKey = PresenceKey.of(ByteArray(32) { 9 }),
+            ),
+        )
+
+        service.startSasPairing()
+        delay(300)
+        assertNull(service.listeningPort.value)
+        service.cancel()
+        service.startQrPairing(offerFor(TestDesktop()))
+        delay(300)
+        service.cancel()
+
+        assertNull(service.listeningPort.value)
     }
 
     /** A repository whose reads of the list, or saves, fail once told to, as a store whose disk or key fails. */

@@ -141,6 +141,7 @@ class PairingViewModel internal constructor(
             is QrParseResult.Parsed -> {
                 scanError.value = null
                 scanning.value = false
+                connectForPairing()
                 controller.startQrPairing(result.offer)
             }
             QrParseResult.UpdateRequired -> scanError.value = ScanError.UPDATE_THE_APP
@@ -155,7 +156,17 @@ class PairingViewModel internal constructor(
     /** The user turned on "pair without camera". */
     fun startSasPairing() {
         scanning.value = false
+        connectForPairing()
         controller.startSasPairing()
+    }
+
+    /**
+     * Pairing needs the connection on: the connection service makes the
+     * phone findable and runs the listener the desktop dials. Pairing is
+     * asking to connect, so it turns the switch on.
+     */
+    private fun connectForPairing() {
+        if (!connection.enabled.value) connection.setEnabled(true)
     }
 
     fun confirmCode(matches: Boolean) = controller.confirmCode(matches)

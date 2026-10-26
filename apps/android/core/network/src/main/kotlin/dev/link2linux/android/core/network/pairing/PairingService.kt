@@ -130,18 +130,27 @@ class PairingService(
     }
 
     /**
-     * Starts listening, if it is not already. The connection service calls
-     * it while the phone has a pairing and is on a local network; starting
-     * a pairing calls it too.
+     * Starts listening, if it is not already. Only the connection service
+     * calls it, while the user's switch is on, the phone is on a local
+     * network, and a desktop is paired or a pairing is under way; starting a
+     * pairing does not, so the listener follows the switch. If it cannot
+     * listen, a pairing waiting for its desktop fails.
      */
     override suspend fun start() {
         listenerLock.withLock {
             if (listener != null) return
-            refreshKeys()
-            val socket = runInterruptible(Dispatchers.IO) { server.listen(port, bindAddress) }
-            listener = socket
-            _listeningPort.value = socket.localPort
-            scope.launch { acceptLoop(socket) }
+            try {
+                refreshKeys()
+                val socket = runInterruptible(Dispatchers.IO) { server.listen(port, bindAddress) }
+                listener = socket
+                _listeningPort.value = socket.localPort
+                scope.launch { acceptLoop(socket) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failWaiting()
+                throw e
+            }
         }
     }
 
@@ -164,12 +173,14 @@ class PairingService(
         val waiting = open()
         _state.value = waiting
         scheduleExpiry()
-        scope.launch {
-            runCatching { start() }.onFailure {
-                window.close()
-                _state.value = PairingState.Failed(PairingFailure.INTERNAL)
-            }
-        }
+    }
+
+    /** The listener could not open: a desktop the phone waits for could never connect. */
+    private fun failWaiting() {
+        if (_state.value !is PairingState.AwaitingDesktop) return
+        expiry?.cancel()
+        window.close()
+        _state.value = PairingState.Failed(PairingFailure.INTERNAL)
     }
 
     override fun confirmCode(matches: Boolean) {

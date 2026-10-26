@@ -8,17 +8,24 @@ import dev.link2linux.android.core.model.PairingState
 fun List<PairedDevice>.connectedIn(connected: Set<KeyFingerprint>): List<PairedDevice> =
     filter { desktop -> connected.any(desktop::accepts) }
 
-/** When the connection service keeps the phone's listener running. */
-object ListenerPolicy {
+/** When the connection service runs, and when it keeps the phone's listener running. */
+object ConnectionPolicy {
 
     /**
-     * The listener runs while the user's connection switch is on, the phone
-     * is on a local network, and either a desktop is paired, so it can
-     * reconnect, or a pairing is under way, so the desktop can reach the
-     * phone. Off a local network (on mobile data only) it is closed.
+     * The service runs while the user's connection switch is on and either a
+     * desktop is paired, so it can reconnect, or a pairing is under way, so
+     * the desktop can find the phone. A fresh install runs nothing until the
+     * first pairing starts.
+     */
+    fun shouldRun(paired: List<PairedDevice>, pairing: PairingState, switchOn: Boolean): Boolean =
+        switchOn && (paired.isNotEmpty() || pairing.isUnderWay)
+
+    /**
+     * The listener runs while the service should and the phone is on a local
+     * network. Off a local network (on mobile data only) it is closed.
      */
     fun shouldListen(paired: List<PairedDevice>, pairing: PairingState, switchOn: Boolean, onLocalNetwork: Boolean): Boolean =
-        switchOn && onLocalNetwork && (paired.isNotEmpty() || pairing.isUnderWay)
+        onLocalNetwork && shouldRun(paired, pairing, switchOn)
 
     private val PairingState.isUnderWay: Boolean
         get() = when (this) {
