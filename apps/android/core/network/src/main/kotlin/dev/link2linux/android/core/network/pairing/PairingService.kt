@@ -1,6 +1,7 @@
 package dev.link2linux.android.core.network.pairing
 
 import dev.link2linux.android.core.data.DesktopConnections
+import dev.link2linux.android.core.data.DesktopListener
 import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
@@ -51,7 +52,8 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * The phone's listener and everything that arrives on it: pairing
  * connections and sessions with paired desktops. Implements the
- * [PairingController] the pairing screens drive.
+ * [PairingController] the pairing screens drive, and [DesktopConnections]
+ * and [DesktopListener] for discovery and the connection service.
  *
  * Which desktops may complete TLS is decided by key alone: a paired
  * desktop's current or next key, the key from a scanned QR code, or any key
@@ -70,7 +72,7 @@ class PairingService(
     private val now: () -> Long = System::currentTimeMillis,
     private val port: Int = TlsServer.DEFAULT_PORT,
     private val bindAddress: InetAddress? = null,
-) : PairingController, DesktopConnections {
+) : PairingController, DesktopConnections, DesktopListener {
 
     private val window = PairingWindow(now)
     private val pairedKeys = MutableStateFlow<Set<KeyFingerprint>>(emptySet())
@@ -110,7 +112,7 @@ class PairingService(
      * it while the phone has a pairing and is on a local network; starting
      * a pairing calls it too.
      */
-    suspend fun start() {
+    override suspend fun start() {
         listenerLock.withLock {
             if (listener != null) return
             refreshKeys()
@@ -122,7 +124,7 @@ class PairingService(
     }
 
     /** Stops listening and ends every session, for example when the phone left the network. */
-    suspend fun stop() {
+    override suspend fun stop() {
         listenerLock.withLock {
             listener?.close()
             listener = null
