@@ -140,7 +140,7 @@ on the desktop instead.
 | `crates/platform` | Operating-system integration (notifications, clipboard, Bluetooth) behind traits, Linux first |
 | `proto/link2linux/v1` | The wire format shared by both apps. `proto/testdata` has the byte-level test vectors both apps check against |
 | `docs` | [Architecture](docs/architecture.md), the [protocol specification](docs/protocol.md), [decision records](docs/adr) and the [release process](docs/releasing.md) |
-| `scripts` | Developer scripts: `doctor.sh` checks your toolchain, `ci.sh` runs the checks |
+| `scripts` | Developer scripts: `doctor.sh` checks your toolchain, `ci.sh` runs the checks, `interop.sh` tests the desktop against the phone's TLS stack |
 
 Each feature has the same name everywhere: `src/features/<name>` on the
 desktop, `feature/<name>` on Android, and a module in `crates/core`. That way
@@ -162,6 +162,7 @@ make ci-changed   # only the checks for the parts you changed
 | `rust` | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, and a check that the generated TypeScript bindings are up to date |
 | `web` | ESLint, the TypeScript type check, Vitest and a production build of the desktop interface |
 | `android` | `assembleDebug`, unit tests and Android lint |
+| `interop` | `scripts/interop.sh`: the desktop core's TLS client and pairing (rustls) against the phone app's listener (Conscrypt on the JVM) over loopback, by QR code and by SAS |
 
 Other useful targets: `make test`, `make lint`, `make fmt`, `make android`.
 
