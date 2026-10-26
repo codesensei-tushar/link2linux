@@ -7,14 +7,16 @@
 pub mod backend;
 mod commands;
 mod events;
-pub mod qr;
 mod state;
 
 use std::sync::Arc;
 
 use tauri::Manager;
+
+use backend::Backend;
 use tauri_specta::{Builder, collect_commands, collect_events};
 
+pub use link2linux_runtime::qr;
 pub use state::AppState;
 
 /// The typed command set, shared by the runtime and the bindings export.
@@ -47,12 +49,24 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
-            // TODO(core): build the real backend from `crates/core` here. The
-            // fake one follows the script named by `L2L_FAKE_SCRIPT`.
             let sink = events::TauriSink::new(app.handle().clone());
-            let backend = backend::fake::FakeBackend::from_env(sink);
-            app.manage(AppState::new(Arc::new(backend)));
+            // `L2L_FAKE_SCRIPT` selects the scripted fake for development and
+            // tests; otherwise the real runtime pairs and connects phones.
+            let backend: Arc<dyn Backend> = if std::env::var_os("L2L_FAKE_SCRIPT").is_some() {
+                Arc::new(backend::fake::FakeBackend::from_env(sink))
+            } else {
+                Arc::new(backend::live::LiveBackend::start(sink)?)
+            };
+            app.manage(AppState::new(backend));
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // The window's focus sets how often sessions ping.
+            if let tauri::WindowEvent::Focused(focused) = event
+                && let Some(state) = window.app_handle().try_state::<AppState>()
+            {
+                state.backend().set_active(*focused);
+            }
         })
         .run(tauri::generate_context!())
         .expect("failed to start the link2linux desktop app");

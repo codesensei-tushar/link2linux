@@ -2153,8 +2153,8 @@ dependencies = [
 name = "link2linux-desktop"
 version = "0.1.0"
 dependencies = [
- "qrcode",
- "rqrr",
+ "link2linux-platform",
+ "link2linux-runtime",
  "serde",
  "serde_json",
  "specta",
@@ -2163,6 +2163,7 @@ dependencies = [
  "tauri-build",
  "tauri-specta",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
