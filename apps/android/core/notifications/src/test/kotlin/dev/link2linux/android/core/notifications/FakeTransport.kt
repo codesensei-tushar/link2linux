@@ -20,6 +20,7 @@ class FakePolicy : NotificationPolicy {
     override var enabled = true
     override var accessGranted = true
     override var dismissSync = true
+    override var hideOneTimeCodes = true
     val excluded = mutableSetOf<String>()
     val hidden = mutableSetOf<String>()
 

@@ -53,7 +53,9 @@ pub fn withheld_text(notification: &PhoneNotification) -> Option<&'static str> {
     match notification.content() {
         NotificationContent::RedactedBySystem => Some(WITHHELD_BY_SYSTEM),
         NotificationContent::RedactedAppLocked => Some(WITHHELD_APP_LOCKED),
-        NotificationContent::HiddenByUser => Some(HIDDEN_BY_USER),
+        NotificationContent::HiddenByUser | NotificationContent::OneTimeCode => {
+            Some(HIDDEN_BY_USER)
+        }
         NotificationContent::Unspecified | NotificationContent::Full => None,
     }
 }

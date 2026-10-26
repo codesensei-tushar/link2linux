@@ -84,6 +84,9 @@ interface NotificationPolicy {
     /** A dismissal on the desktop may cancel the notification on the phone. */
     val dismissSync: Boolean
 
+    /** Notifications that look like they hold a one-time code are shared without their content. */
+    val hideOneTimeCodes: Boolean
+
     /** The user excluded this app. */
     fun isExcluded(packageName: String): Boolean
 

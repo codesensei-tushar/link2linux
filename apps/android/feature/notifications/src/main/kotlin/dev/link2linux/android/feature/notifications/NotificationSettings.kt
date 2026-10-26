@@ -21,6 +21,8 @@ data class NotificationSettingsState(
     val enabled: Boolean = false,
     /** Dismissing on the computer also dismisses on the phone. On by default. */
     val dismissSync: Boolean = true,
+    /** Notifications that look like they hold a one-time code are shared without their content. On by default. */
+    val hideOneTimeCodes: Boolean = true,
     /** Apps whose notifications are not shared. */
     val excluded: Set<String> = emptySet(),
     /** Apps whose notifications are shared without their text. */
@@ -45,6 +47,11 @@ class NotificationSettings(private val store: SettingsStore, private val onChang
     fun setDismissSync(on: Boolean) {
         store.putBoolean(DISMISS_SYNC, on)
         update { copy(dismissSync = on) }
+    }
+
+    fun setHideOneTimeCodes(on: Boolean) {
+        store.putBoolean(HIDE_ONE_TIME_CODES, on)
+        update { copy(hideOneTimeCodes = on) }
     }
 
     fun setShared(packageName: String, shared: Boolean) {
@@ -75,6 +82,7 @@ class NotificationSettings(private val store: SettingsStore, private val onChang
     private fun load() = NotificationSettingsState(
         enabled = store.getBoolean(ENABLED, false),
         dismissSync = store.getBoolean(DISMISS_SYNC, true),
+        hideOneTimeCodes = store.getBoolean(HIDE_ONE_TIME_CODES, true),
         excluded = store.getStrings(EXCLUDED),
         contentHidden = store.getStrings(CONTENT_HIDDEN),
         knownApps = store.getStrings(KNOWN_APPS).mapNotNull {
@@ -86,6 +94,7 @@ class NotificationSettings(private val store: SettingsStore, private val onChang
     private companion object {
         const val ENABLED = "enabled"
         const val DISMISS_SYNC = "dismiss_sync"
+        const val HIDE_ONE_TIME_CODES = "hide_one_time_codes"
         const val EXCLUDED = "excluded"
         const val CONTENT_HIDDEN = "content_hidden"
         const val KNOWN_APPS = "known_apps"

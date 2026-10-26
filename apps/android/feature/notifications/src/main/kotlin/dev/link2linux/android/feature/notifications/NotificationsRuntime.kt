@@ -35,6 +35,7 @@ class NotificationsRuntime private constructor(context: Context) {
         override val enabled get() = runtime.settings.state.value.enabled
         override val accessGranted get() = runtime.connected
         override val dismissSync get() = runtime.settings.state.value.dismissSync
+        override val hideOneTimeCodes get() = runtime.settings.state.value.hideOneTimeCodes
 
         override fun isExcluded(packageName: String) = packageName in runtime.settings.state.value.excluded
 

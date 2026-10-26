@@ -16,6 +16,9 @@
     <string name="notifications_dismiss_sync_title">Dismiss on this phone too</string>
     <string name="notifications_dismiss_sync_summary">When you dismiss a notification on your computer, it is dismissed here as well.</string>
 
+    <string name="notifications_one_time_codes_title">Keep one-time codes on your phone</string>
+    <string name="notifications_one_time_codes_summary">Your computer shows that a code arrived, but not the code.</string>
+
     <string name="notifications_apps_title">Apps</string>
     <string name="notifications_apps_summary">Choose which apps share their notifications. Apps are listed after they post their first notification.</string>
     <string name="notifications_apps_empty">No apps yet.</string>
