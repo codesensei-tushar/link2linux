@@ -530,6 +530,12 @@ export type Settings = {
 	 *  default.
 	 */
 	sharePasswords?: boolean,
+	/**
+	 *  Files can be sent to the phones and received from them. On by
+	 *  default: each phone has its own switch, off until its user turns it
+	 *  on.
+	 */
+	shareFiles?: boolean,
 };
 
 /**  Why the app could not start, for the page shown instead of the app. */

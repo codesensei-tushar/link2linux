@@ -99,6 +99,17 @@ export function SettingsPage() {
             hint="Password managers mark the passwords you copy. With this off, they stay on this computer. Phones keep the mark, so their clipboard history and previews leave the passwords out."
           />
         </Card>
+        <Card>
+          <h2 className="settings__group">Files</h2>
+          <Toggle
+            label="Send and receive files"
+            checked={settings.shareFiles ?? true}
+            onChange={(checked) => {
+              update({ ...settings, shareFiles: checked });
+            }}
+            hint="Files your phones send are saved in your Downloads folder, and you can send files to them. Each phone also has its own switch in the link2linux app."
+          />
+        </Card>
       </>
     );
   } else if (loaded.status === "error") {
