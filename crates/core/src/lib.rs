@@ -12,7 +12,9 @@
 //!   then liveness, requests and their answers, and the flow of feature
 //!   messages, until a `Goodbye`;
 //! - [`sync`]: the cursor that follows a collection mirrored from the other
-//!   device.
+//!   device;
+//! - [`outbox`]: the durable queue of actions the user took here that have
+//!   to happen on the other device.
 //!
 //! Then one module per [`Feature`], named as in both apps:
 //! [`notifications`], [`messages`], [`calls`], [`photos`], [`files`],
@@ -28,6 +30,7 @@
 
 pub mod device;
 pub mod discovery;
+pub mod outbox;
 pub mod pairing;
 pub mod session;
 pub mod sync;
