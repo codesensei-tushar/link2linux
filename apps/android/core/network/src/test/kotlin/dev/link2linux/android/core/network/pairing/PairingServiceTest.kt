@@ -4,6 +4,7 @@ import com.google.protobuf.ByteString
 import dev.link2linux.android.core.data.InMemoryPairedDeviceRepository
 import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.LocalDeviceRepository
+import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
 import dev.link2linux.android.core.model.DeviceKind
@@ -36,6 +37,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
@@ -71,6 +73,7 @@ class PairingServiceTest {
     private fun newService(
         listenAddresses: ListenAddresses = ListenAddresses { it.isLoopbackAddress },
         hooks: SessionHooks = SessionHooks.None,
+        devices: PairedDeviceRepository = this.devices,
     ) = PairingService(
         identity = phone.asSource(),
         devices = devices,
@@ -236,12 +239,17 @@ class PairingServiceTest {
         assertTrue(io { runCatching { TestDesktop().connect(port).also { it.outputStream.write(0); it.inputStream.read() } } }.isFailure)
     }
 
-    private suspend fun pairedRecord(desktop: TestDesktop, id: String = DesktopPeer.DEVICE_ID, on: PairingService = service): PairedDevice {
+    private suspend fun pairedRecord(
+        desktop: TestDesktop,
+        id: String = DesktopPeer.DEVICE_ID,
+        on: PairingService = service,
+        presence: Byte = 9,
+    ): PairedDevice {
         val record = PairedDevice(
             device = Device(DeviceId(id), "Test desktop", DeviceKind.DESKTOP),
             fingerprint = desktop.fingerprint!!,
             pairedAtEpochMillis = 0,
-            presenceKey = PresenceKey.of(ByteArray(32) { 9 }),
+            presenceKey = PresenceKey.of(ByteArray(32) { presence }),
         )
         devices.save(record)
         on.start()
@@ -475,5 +483,78 @@ class PairingServiceTest {
         assertEquals(PairingOutcome.PAIRING_OUTCOME_ACCEPTED, peer.pairByQrCode())
         val paired = (awaitState { it is PairingState.Paired } as PairingState.Paired).device
         assertEquals("Desk" + "y".repeat(60), paired.device.name)
+    }
+
+    /** A repository whose forget() waits for [release], so a test can act while a record is being deleted. */
+    private class SlowForget(private val inner: InMemoryPairedDeviceRepository) : PairedDeviceRepository by inner {
+        val forgetting = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+
+        override suspend fun forget(fingerprint: KeyFingerprint) {
+            forgetting.complete(Unit)
+            release.await()
+            inner.forget(fingerprint)
+        }
+    }
+
+    @Test
+    fun aDesktopThatReconnectsWhileItIsBeingRemovedGetsNoSession() = runBlocking {
+        val slow = SlowForget(devices)
+        val phone = newService(devices = slow)
+        val desktop = TestDesktop()
+        val record = pairedRecord(desktop, on = phone)
+        val first = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED, on = phone)
+        first.readSessionStart()
+
+        val unpairing = async { phone.unpair(record.fingerprint) }
+        withTimeout(5_000) { slow.forgetting.await() }
+        // The desktop reconnects while the record is being deleted.
+        val second = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED, on = phone)
+        slow.release.complete(Unit)
+        withTimeout(5_000) { unpairing.await() }
+
+        assertEquals(GoodbyeReason.GOODBYE_REASON_UNPAIRED, io { first.read()!!.goodbye.reason })
+        // The second connection never became a session: it got no FeatureStatus and no presence key.
+        assertNull(io { second.read() })
+        assertTrue(phone.connected.value.isEmpty())
+    }
+
+    @Test
+    fun aSessionEndsWhenItsPairingIsRemovedAnotherWay() = runBlocking {
+        val desktop = TestDesktop()
+        val record = pairedRecord(desktop)
+        val peer = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED)
+        peer.readSessionStart()
+
+        // Not through unpair(): for example a new pairing replaced the record.
+        devices.forget(record.fingerprint)
+
+        assertEquals(GoodbyeReason.GOODBYE_REASON_UNPAIRED, io { peer.read()!!.goodbye.reason })
+    }
+
+    @Test
+    fun aDesktopCannotAnnounceAnotherDesktopsKeyOrThePhonesAsItsNext() = runBlocking {
+        val a = TestDesktop()
+        val b = TestDesktop()
+        pairedRecord(a)
+        pairedRecord(b, id = "desktop-b", presence = 8)
+        val peer = dial(a, PairingMethod.PAIRING_METHOD_UNSPECIFIED)
+        peer.readSessionStart()
+
+        for (claimed in listOf(b.fingerprint!!, peer.phoneKey)) {
+            val answer = io {
+                peer.send {
+                    expectsReply = true
+                    keyRotation = KeyRotation.newBuilder().setNextSpkiSha256(ByteString.copyFrom(claimed.toByteArray())).build()
+                }
+                peer.read()!!
+            }
+            assertEquals(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, answer.errorReply.code)
+        }
+
+        assertNull(devices.find(a.fingerprint!!)?.nextFingerprint)
+        // B still connects as itself.
+        dial(b, PairingMethod.PAIRING_METHOD_UNSPECIFIED, deviceId = "desktop-b").readSessionStart()
+        assertEquals(b.fingerprint, devices.find(b.fingerprint!!)?.fingerprint)
     }
 }

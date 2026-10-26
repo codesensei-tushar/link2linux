@@ -26,6 +26,7 @@ class SubnetsTest {
         assertEquals(ip("172.16.0.7"), Subnets.broadcastAddress(ip("172.16.0.5") as Inet4Address, 29))
         assertNull(Subnets.broadcastAddress(ip("10.0.0.1") as Inet4Address, 32))
         assertNull(Subnets.broadcastAddress(ip("10.0.0.1") as Inet4Address, 31))
+        assertNull(Subnets.broadcastAddress(ip("10.0.0.1") as Inet4Address, 4))
         assertEquals(listOf(ip("192.168.1.255")), Subnets.broadcastAddresses(network))
     }
 
@@ -36,6 +37,20 @@ class SubnetsTest {
         assertTrue(Subnets.isOnLink(network, ip("fd00::20")))
         assertFalse(Subnets.isOnLink(network, ip("fd00:0:0:1::20")))
         assertFalse(Subnets.isOnLink(network, ip("fe80::2"))) // link-local: interface unknown
+    }
+
+    @Test
+    fun aScannedPublicAddressGetsNoBeacons() {
+        val port = 27381
+        val public = listOf(InetSocketAddress(ip("203.0.113.9"), port), InetSocketAddress(ip("2001:db8::9"), 9))
+        val targets = Subnets.beaconTargets(network, public, port)
+        assertTrue(public.none { it in targets })
+
+        // Not even through an interface whose prefix spans half the internet.
+        val wide = LocalNetwork(2, listOf(NetworkAddress(ip("10.0.0.5"), 1), NetworkAddress(ip("2001:db8::5"), 16)))
+        assertFalse(Subnets.isOnLink(wide, ip("100.64.0.1")))
+        assertFalse(Subnets.isOnLink(wide, ip("2001:db8:ffff::1")))
+        assertTrue(Subnets.isOnLink(LocalNetwork(3, listOf(NetworkAddress(ip("10.0.0.5"), 8))), ip("10.200.0.1")))
     }
 
     @Test

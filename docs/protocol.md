@@ -108,7 +108,8 @@ addresses; a phone stores the presence key it made for the desktop, the
 desktop's Bluetooth LE address and its last known addresses.
 
 A device finds a peer's record by the `fp` the peer presented in TLS (its
-current or next `fp`), never by device id. When the peer's `Hello` arrives,
+current or next `fp`; a record whose current `fp` matches wins over one
+whose next `fp` does), never by device id. When the peer's `Hello` arrives,
 its `device_id` MUST equal the record's; on a mismatch the connection is a
 protocol error. The device id is self-asserted: it names the installation
 in the user interface and in logs, but it never decides trust and never
@@ -238,7 +239,11 @@ network (both the subnet's and 255.255.255.255, because some access points
 drop one of them) and, by unicast, to the addresses of the desktop the key
 belongs to: those in the QR code it scanned, or that desktop's last known
 addresses. Unicast gets through access points that filter broadcast, and is
-the only way beacons reach a desktop on a network without IPv4.
+the only way beacons reach a desktop on a network without IPv4. The phone
+sends unicast beacons only to addresses on-link for the network it sends
+on (in an IPv4 subnet of at least /8 or an IPv6 prefix of at least /48 of
+its own), so an address in a scanned code never sends beacons off the
+local network.
 
 The phone sends beacons in bursts, each starting with a fresh mDNS
 registration:
@@ -711,7 +716,11 @@ Either user can remove a pairing at any time.
 
 - If a session is up, the side that removes it sends `Goodbye` with
   `GOODBYE_REASON_UNPAIRED`, deletes its record and closes the connection.
-  The receiver deletes its record too.
+  The receiver deletes its record too. The phone deletes the record and
+  stops accepting its keys first, then ends every session either key
+  opened, so a desktop that reconnects at that moment gets no session. A
+  session whose record goes any other way (a pairing with another key
+  replaced it, or the store was lost) ends with the same `Goodbye`.
 - If no session is up, the side deletes its record. When the phone removed
   it, the desktop finds out on its next dial, which the phone rejects, and
   offers to remove its own record. When the desktop removed it, the phone
@@ -728,6 +737,11 @@ A device can replace its identity key without pairing again:
 
 1. During a session, it sends `KeyRotation` with the fingerprint of the
    next key. The peer stores it as the next `fp` and answers with `Ack`.
+   A device cannot claim a key it does not own: the peer refuses a next
+   `fp` that is its own or that another of its records accepts (the phone
+   answers `ERROR_CODE_INVALID_ARGUMENT`). Saving a pairing never deletes
+   a record that only names the saved key as its next `fp`; that record
+   loses the claim instead.
 2. On later connections, the device uses the new key. The peer accepts
    either the current or the next `fp`. After the first successful
    connection with the next key, it makes that key current and forgets the

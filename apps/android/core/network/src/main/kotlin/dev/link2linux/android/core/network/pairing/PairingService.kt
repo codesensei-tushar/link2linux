@@ -87,8 +87,13 @@ class PairingService(
     private val window = PairingWindow(now)
     private val pairedKeys = MutableStateFlow<Set<KeyFingerprint>>(emptySet())
     private val server = TlsServer(identity, PeerKeyPolicy { it in pairedKeys.value || window.acceptsKey(it) })
-    private val sessions = ConcurrentHashMap<KeyFingerprint, Session>()
+    private val sessions = ConcurrentHashMap<KeyFingerprint, Live>() // by the record's current key
     private val listenerLock = Mutex()
+
+    // Starting a paired session and removing a pairing take turns, so a
+    // session either starts before an unpair, which then ends it, or finds
+    // no record.
+    private val trust = Mutex()
     private val preAuth = PreAuthLimits(MAX_PRE_AUTH, MAX_PRE_AUTH_PER_SOURCE)
 
     // A view of the IO pool with threads of its own: blocked handshakes use these, never the app's IO threads.
@@ -143,7 +148,7 @@ class PairingService(
             listener?.close()
             listener = null
             _listeningPort.value = null
-            sessions.values.forEach { scope.launch { it.goodbye(GoodbyeReason.GOODBYE_REASON_SHUTDOWN) } }
+            sessions.values.forEach { scope.launch { it.session.goodbye(GoodbyeReason.GOODBYE_REASON_SHUTDOWN) } }
         }
     }
 
@@ -181,11 +186,23 @@ class PairingService(
         _state.update { if (it is PairingState.Paired || it is PairingState.Failed) PairingState.Idle else it }
     }
 
+    /**
+     * Revokes first: the record goes and the TLS policy drops its keys before
+     * anything is said, so no new connection with them gets in. Then every
+     * session either key opened ends with `Goodbye(UNPAIRED)`.
+     */
     override suspend fun unpair(fingerprint: KeyFingerprint) {
-        sessions.remove(fingerprint)?.goodbye(GoodbyeReason.GOODBYE_REASON_UNPAIRED)
-        _connected.value = sessions.keys.toSet()
-        devices.forget(fingerprint)
-        refreshKeys()
+        val ended = trust.withLock {
+            val record = devices.pairedDevices.first().firstOrNull { it.fingerprint == fingerprint }
+            devices.forget(fingerprint)
+            refreshKeys()
+            val keys = setOfNotNull(fingerprint, record?.nextFingerprint)
+            val ending = sessions.entries.filter { (current, live) -> current == fingerprint || live.peerKey in keys }
+            ending.forEach { sessions.remove(it.key, it.value) }
+            _connected.value = sessions.keys.toSet()
+            ending.map { it.value.session }
+        }
+        ended.forEach { it.goodbye(GoodbyeReason.GOODBYE_REASON_UNPAIRED) }
     }
 
     private fun abandonAttempt() {
@@ -270,7 +287,7 @@ class PairingService(
             )
         }
         refreshKeys()
-        runSession(transport.peerKey, session)
+        runSession(transport, session)
     }
 
     private suspend fun pairByQrCode(transport: TlsTransport, session: Session, peer: Hello) {
@@ -292,7 +309,7 @@ class PairingService(
             _state.value = waiting ?: PairingState.Failed(e.failure)
             return
         }
-        runSession(transport.peerKey, session)
+        runSession(transport, session)
     }
 
     private suspend fun pairBySas(transport: TlsTransport, session: Session, peer: Hello) {
@@ -311,7 +328,7 @@ class PairingService(
             _state.value = window.sasFailed(e.failure)
             return
         }
-        runSession(transport.peerKey, session)
+        runSession(transport, session)
     }
 
     /**
@@ -375,15 +392,21 @@ class PairingService(
         _state.value = PairingState.Paired(record)
     }
 
-    private suspend fun runSession(key: KeyFingerprint, session: Session) {
-        val record = devices.find(key) ?: return session.close()
-        // One session per desktop: a newer connection replaces an older one.
-        sessions.put(record.fingerprint, session)?.let(::replaced)
-        _connected.value = sessions.keys.toSet()
+    /** A connection from a paired desktop becomes its session, unless its pairing went meanwhile. */
+    private suspend fun runSession(transport: TlsTransport, session: Session) {
+        val key = transport.peerKey
+        val live = Live(session, key)
+        val record = trust.withLock {
+            val record = devices.find(key) ?: return session.close()
+            // One session per desktop: a newer connection replaces an older one.
+            sessions.put(record.fingerprint, live)?.let { replaced(it.session) }
+            _connected.value = sessions.keys.toSet()
+            record
+        }
         try {
-            pairedSession.run(key, session)
+            pairedSession.run(key, transport.localKey, session)
         } finally {
-            sessions.remove(record.fingerprint, session)
+            sessions.remove(record.fingerprint, live)
             _connected.value = sessions.keys.toSet()
         }
     }
@@ -425,6 +448,9 @@ class PairingService(
 
     private fun keysOf(list: List<PairedDevice>): Set<KeyFingerprint> =
         list.flatMapTo(mutableSetOf()) { listOfNotNull(it.fingerprint, it.nextFingerprint) }
+
+    /** A running session, with the key the desktop presented for it. */
+    private class Live(val session: Session, val peerKey: KeyFingerprint)
 
     companion object {
         /** Connections that may be in their TLS handshake or Hello exchange at once. */

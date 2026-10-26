@@ -21,18 +21,18 @@ interface PairedDeviceRepository {
     val pairedDevices: Flow<List<PairedDevice>>
 
     /**
-     * Saves a pairing, replacing a record that accepts the same key
+     * Saves a pairing, replacing the record with the same current key
      * (re-pairing). A record for another key is kept even when it has the
-     * same device id.
+     * same device id; if it named this key as its next one, it loses that
+     * claim, as the key now belongs to [device].
      */
     suspend fun save(device: PairedDevice)
 
     /** Forgets the desktop with this current key. Its next connection is refused. */
     suspend fun forget(fingerprint: KeyFingerprint)
 
-    /** The record whose current or next key is [key], or null. */
-    suspend fun find(key: KeyFingerprint): PairedDevice? =
-        pairedDevices.first().firstOrNull { it.accepts(key) }
+    /** The record whose current key is [key], else the one whose next key it is, or null. */
+    suspend fun find(key: KeyFingerprint): PairedDevice? = pairedDevices.first().findByKey(key)
 
     /** Replaces the record whose current key is [fingerprint] with [change] of it, if there is one. */
     suspend fun update(fingerprint: KeyFingerprint, change: (PairedDevice) -> PairedDevice) {
@@ -43,6 +43,22 @@ interface PairedDeviceRepository {
     }
 }
 
+/** The record whose current key is [key], else the one whose next key it is. A current key always wins. */
+fun List<PairedDevice>.findByKey(key: KeyFingerprint): PairedDevice? =
+    firstOrNull { it.fingerprint == key } ?: firstOrNull { it.nextFingerprint == key }
+
+/**
+ * These records with [device] saved: the record with the same current key
+ * is replaced and [device] goes last. A record that only names the key as
+ * its next one is kept, without that claim, since the key is [device]'s now.
+ */
+fun List<PairedDevice>.saving(device: PairedDevice): List<PairedDevice> =
+    filter { it.fingerprint != device.fingerprint }.withoutNextKey(device.fingerprint) + device
+
+/** These records with [key] taken out of their next keys. */
+private fun List<PairedDevice>.withoutNextKey(key: KeyFingerprint): List<PairedDevice> =
+    map { if (it.nextFingerprint == key) it.copy(nextFingerprint = null) else it }
+
 /** Keeps pairings in memory. For tests and previews; the app stores them on disk. */
 @Singleton
 class InMemoryPairedDeviceRepository @Inject constructor() : PairedDeviceRepository {
@@ -51,9 +67,7 @@ class InMemoryPairedDeviceRepository @Inject constructor() : PairedDeviceReposit
 
     override val pairedDevices: StateFlow<List<PairedDevice>> = devices.asStateFlow()
 
-    override suspend fun save(device: PairedDevice) = devices.update { current ->
-        current.filterNot { it.accepts(device.fingerprint) } + device
-    }
+    override suspend fun save(device: PairedDevice) = devices.update { current -> current.saving(device) }
 
     override suspend fun forget(fingerprint: KeyFingerprint) = devices.update { current ->
         current.filterNot { it.fingerprint == fingerprint }

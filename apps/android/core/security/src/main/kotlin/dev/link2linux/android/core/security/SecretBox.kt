@@ -4,6 +4,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.security.GeneralSecurityException
 import java.security.KeyStore
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -17,7 +18,11 @@ import javax.crypto.spec.GCMParameterSpec
 interface SecretBox {
     fun seal(plaintext: ByteArray, associatedData: ByteArray): ByteArray
 
-    /** @throws GeneralSecurityException if the data was changed or sealed with another key. */
+    /**
+     * @throws javax.crypto.AEADBadTagException if the data was changed or
+     *   sealed with another key; another [GeneralSecurityException] if the
+     *   key could not be used this time.
+     */
     fun open(sealed: ByteArray, associatedData: ByteArray): ByteArray
 }
 
@@ -37,7 +42,8 @@ open class AesGcmSecretBox(private val key: () -> SecretKey) : SecretBox {
     }
 
     override fun open(sealed: ByteArray, associatedData: ByteArray): ByteArray {
-        if (sealed.size < IV_SIZE + TAG_BITS / 8) throw GeneralSecurityException("Sealed data is too short")
+        // As for a failed tag: these bytes can never be opened.
+        if (sealed.size < IV_SIZE + TAG_BITS / 8) throw AEADBadTagException("Sealed data is too short")
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BITS, sealed, 0, IV_SIZE))
         cipher.updateAAD(associatedData)

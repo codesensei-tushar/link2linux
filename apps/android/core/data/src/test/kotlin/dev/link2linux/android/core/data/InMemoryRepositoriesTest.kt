@@ -62,6 +62,23 @@ class InMemoryRepositoriesTest {
     }
 
     @Test
+    fun aCurrentKeyWinsOverAnEarlierRecordsNextKey() {
+        val first = paired("first", key(1), next = key(2))
+        val second = paired("second", key(2))
+        assertEquals(second, listOf(first, second).findByKey(key(2)))
+        assertEquals(first, listOf(first, second).findByKey(key(1)))
+    }
+
+    @Test
+    fun savingAKeyTakesItFromAnotherRecordsNextKeyWithoutDroppingThatRecord() = runBlocking {
+        val repository = InMemoryPairedDeviceRepository()
+        repository.save(paired("first", key(1), next = key(2)))
+        repository.save(paired("second", key(2)))
+
+        assertEquals(listOf(paired("first", key(1)), paired("second", key(2))), repository.pairedDevices.first())
+    }
+
+    @Test
     fun updateCanPromoteTheNextKey() = runBlocking {
         val repository = InMemoryPairedDeviceRepository()
         repository.save(paired("desk", key(1), next = key(3)))
