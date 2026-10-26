@@ -1392,6 +1392,27 @@ that fail the key check.
 - Removing a pairing on the remaining device is enough. The lost device
   does not need to take part.
 
+### Other programs on the desktop
+
+A Linux desktop does not keep a user's programs apart the way Android
+keeps apps apart. A program the user runs outside a sandbox can read the
+user's files, ask the Secret Service for secrets, watch the session bus
+and, where the kernel allows it, read other processes' memory. Only
+sandboxing such programs, for example with Flatpak or Snap, keeps them away
+from the desktop app's data. The desktop app narrows what it leaves open:
+
+- Its private key is in the keyring, which encrypts it on disk. Most
+  keyrings still hand it to any unsandboxed program of the user that asks.
+- Mirrored notifications live in the app's memory. Their pictures stay in
+  the user's runtime directory (`$XDG_RUNTIME_DIR`, usually in memory and
+  emptied at logout), or only in the app's memory without one, and are
+  deleted when the phone is unpaired.
+- Its banners name only the app unless the user turns their text on (see
+  [Showing notifications](#showing-notifications)).
+- Its main process is not dumpable, so other programs of the user cannot
+  attach a debugger to it or read its memory. The webview that draws the
+  window runs in separate processes, which this does not cover.
+
 ### Privacy
 
 - Nothing leaves the local network. There is no server that could see
