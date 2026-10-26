@@ -63,7 +63,7 @@ and keep an offline backup.
    key password fails signing with `Failed to obtain key with alias ...
    Wrong password?`.
 
-Without these secrets the Android job stops with an error, and nothing is
+Without these secrets the APK signing job stops with an error, and nothing is
 released. A build-only run (below) is the quickest way to check that they
 are right: it signs the APK the same way.
 

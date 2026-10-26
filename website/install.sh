@@ -34,6 +34,8 @@ for arg in "$@"; do
 done
 
 command -v curl >/dev/null || die "curl is required"
+# HTTPS only, redirects included, so nothing is fetched in the clear.
+fetch() { curl --proto '=https' --proto-redir '=https' --tlsv1.2 "$@"; }
 [ "$(uname -s)" = Linux ] || die "the desktop app runs on Linux only"
 
 case "$(uname -m)" in
@@ -59,11 +61,12 @@ tag="${L2L_VERSION:-}"
 if [ -z "$tag" ]; then
   # The newest release, pre-releases included. The API pretty-prints its
   # JSON, so the first "tag_name" line belongs to the newest release.
-  releases=$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=1") ||
+  releases=$(fetch -fsSL "https://api.github.com/repos/$repo/releases?per_page=1") ||
     die "could not reach GitHub to find the newest release"
   tag=$(printf '%s\n' "$releases" | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$tag" ] || die "there is no release yet. See https://github.com/$repo/releases"
 fi
+printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+[.][0-9]+[.][0-9]+' || die "not a release tag: $tag"
 base="https://github.com/$repo/releases/download/$tag"
 
 sudo=""
@@ -79,9 +82,9 @@ file="$tmp/$asset"
 if $dry_run; then
   say "would download: $base/$asset and SHA256SUMS, and check the checksum"
 else
-  curl -fL --progress-bar -o "$file" "$base/$asset" ||
+  fetch -fL --progress-bar -o "$file" "$base/$asset" ||
     die "release $tag has no $asset; see https://codesensei-tushar.github.io/link2linux/#download"
-  curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
+  fetch -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "download failed: $base/SHA256SUMS"
   asset_re=$(printf '%s' "$asset" | sed 's/[.]/\\./g')
   (cd "$tmp" && grep -E "^[0-9a-f]{64} [ *]$asset_re\$" SHA256SUMS | sha256sum -c - >/dev/null) ||
     die "the checksum of $asset does not match SHA256SUMS; nothing was installed"
