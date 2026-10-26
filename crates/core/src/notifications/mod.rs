@@ -10,12 +10,16 @@
 //! - [`present`]: how the copy appears as desktop banners, and what the
 //!   user's answers to them ask of the phone;
 //! - [`images`]: the pictures notifications refer to, fetched once and
-//!   kept on disk by SHA-256.
+//!   kept on disk by SHA-256;
+//! - [`service`]: [`NotificationService`], which runs all of the above
+//!   over a session.
 
 pub mod images;
 pub mod mirror;
 pub mod present;
+pub mod service;
 
 pub use images::{ImageCache, ImageError};
 pub use mirror::{Change, Mirror, MirrorError};
 pub use present::{Answer, answer, to_desktop, wants_banner};
+pub use service::{NotificationService, NotificationSettings, ServiceError};
