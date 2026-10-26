@@ -1,22 +1,29 @@
-//! The one-time trust step between a desktop and a phone.
+//! The one-time trust step between a desktop and a phone, and the records
+//! it leaves behind.
 //!
 //! The desktop shows a QR code with its key's fingerprint and a one-time
 //! secret. The phone scans it, and inside the TLS connection each side
 //! proves that it knows the secret. A phone without a camera pairs with a
 //! six-digit [`PairingCode`] instead, derived with commit-then-reveal and
-//! confirmed by the user on both screens. Each side then stores the other's
-//! [`CertificateFingerprint`] in its [`TrustStore`]. From then on the
-//! transport only accepts peers whose key matches a stored fingerprint.
-//! `docs/protocol.md` ("Pairing") gives the exact rules.
+//! confirmed by the user on both screens. Each side then stores a
+//! [`PairedDevice`] record in its [`TrustStore`], keyed by the peer's
+//! [`CertificateFingerprint`]. From then on the transport only accepts peers
+//! whose key matches a record, and the functions in [`records`] keep the
+//! records current: confirmation, key rotation and unpairing.
+//! `docs/protocol.md` ("Pairing") gives the exact rules, and [`crypto`] the
+//! exact bytes.
 //!
-//! Stub: the types, the [`TrustStore`] trait and an in-memory store are in
-//! place, and the messages are in `pairing.proto`; the handshake comes next.
+//! Records are found by fingerprint, never by the device id a peer claims
+//! in its `Hello`; the id is only checked against the record
+//! ([`records::check_peer`]).
 
 pub mod crypto;
 mod qr;
+pub mod records;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::net::SocketAddr;
 use std::time::SystemTime;
 
 pub use self::crypto::PairingSecret;
@@ -26,6 +33,8 @@ pub use self::qr::{
 };
 use crate::device::DeviceKind;
 pub use crate::identity::CertificateFingerprint;
+use crate::transport::PeerPin;
+pub use link2linux_protocol::v1::PairingOutcome;
 
 /// The six-digit code both screens show while pairing without a QR code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,82 +76,237 @@ impl fmt::Display for PairingCode {
     }
 }
 
+/// The 32-byte key behind a phone's rotating presence tags, which it gives
+/// to the desktop in `PresenceUpdate`. `Debug` never prints it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PresenceKey(pub [u8; 32]);
+
+impl PresenceKey {
+    /// The key from the bytes of a `PresenceUpdate`, if there are 32.
+    #[must_use]
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        bytes.try_into().ok().map(Self)
+    }
+}
+
+impl fmt::Debug for PresenceKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PresenceKey(..)")
+    }
+}
+
 /// A device this one trusts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairedDevice {
-    /// The device's stable identifier.
+    /// The device id from its `Hello` at pairing time. Checked against
+    /// every later `Hello`, never used to find the record.
     pub id: String,
     /// Its name at pairing time, until a `Hello` brings a newer one.
     pub name: String,
     /// Desktop or phone.
     pub kind: DeviceKind,
-    /// The key it must present on every connection.
+    /// The key it presents; the record is stored under it.
     pub fingerprint: CertificateFingerprint,
-    /// When the user confirmed the pairing.
+    /// The key it announced with `KeyRotation`, accepted as well until a
+    /// connection with it succeeds.
+    pub next_fingerprint: Option<CertificateFingerprint>,
+    /// When the pairing was stored.
     pub paired_at: SystemTime,
+    /// Whether the peer confirmed that it stored the pairing too: set by its
+    /// first `FeatureStatus`.
+    pub confirmed: bool,
+    /// The phone's presence key, once its `PresenceUpdate` arrived.
+    pub presence_key: Option<PresenceKey>,
+    /// Where the peer was reached last, most recent first.
+    pub last_addresses: Vec<SocketAddr>,
+}
+
+impl PairedDevice {
+    /// A new, unconfirmed record with no next key, presence key or
+    /// addresses.
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        kind: DeviceKind,
+        fingerprint: CertificateFingerprint,
+        paired_at: SystemTime,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            kind,
+            fingerprint,
+            next_fingerprint: None,
+            paired_at,
+            confirmed: false,
+            presence_key: None,
+            last_addresses: Vec::new(),
+        }
+    }
+
+    /// Whether the device may present `fingerprint`: its current or its
+    /// next key.
+    #[must_use]
+    pub fn accepts(&self, fingerprint: &CertificateFingerprint) -> bool {
+        self.fingerprint == *fingerprint || self.next_fingerprint.as_ref() == Some(fingerprint)
+    }
+
+    /// The keys to accept when dialing this device.
+    #[must_use]
+    pub fn pin(&self) -> PeerPin {
+        PeerPin::Paired {
+            current: self.fingerprint,
+            next: self.next_fingerprint,
+        }
+    }
 }
 
 /// Why pairing, or storing its result, failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PairingError {
-    /// The user declined on one of the two devices.
+    /// The user declined on this device.
     #[error("pairing was declined")]
     Declined,
-    /// The user did not confirm in time.
+    /// The user, or the peer, did not go on in time.
     #[error("pairing timed out")]
     TimedOut,
+    /// The peer ended the pairing with this outcome.
+    #[error("the phone ended pairing: {}", .0.as_str_name())]
+    Rejected(PairingOutcome),
+    /// The peer's `PairingProof` or `SasCommit` did not verify.
+    #[error("the phone's proof did not verify")]
+    VerificationFailed,
+    /// The peer broke the pairing protocol.
+    #[error("pairing protocol error: {0}")]
+    Protocol(String),
+    /// The peer closed the connection.
+    #[error("the connection closed during pairing")]
+    Closed,
+    /// Sending or receiving failed.
+    #[error("connection error during pairing: {0}")]
+    Connection(String),
+    /// The TLS keying material exporter failed; pairing without it is not
+    /// allowed.
+    #[error("cannot bind pairing to the connection: {0}")]
+    Exporter(String),
+    /// No record exists for the peer's key.
+    #[error("no pairing record for {0}")]
+    NotPaired(CertificateFingerprint),
     /// The trust store could not be read or written.
     #[error("trust store error: {0}")]
     Store(String),
 }
 
-/// Persistent storage for paired devices, keyed by device id.
+/// Persistent storage for paired devices, keyed by fingerprint.
+///
+/// Each record is stored under its current fingerprint. Lookups also match
+/// a record's next fingerprint, so a peer that rotated its key is found
+/// either way. The functions in [`records`] build the pairing life cycle on
+/// these primitives.
 pub trait TrustStore: Send + Sync {
-    /// The paired device with this id, if any.
-    fn get(&self, id: &str) -> Option<PairedDevice>;
-
-    /// Every paired device, ordered by id.
+    /// Every paired device, ordered by fingerprint.
     fn list(&self) -> Vec<PairedDevice>;
 
-    /// Stores `device`, replacing an earlier record with the same id.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the store cannot be written.
-    fn insert(&mut self, device: PairedDevice) -> Result<(), PairingError>;
+    /// The device that may present `fingerprint`: the record stored under
+    /// it, or else a record whose next fingerprint it is.
+    fn get(&self, fingerprint: &CertificateFingerprint) -> Option<PairedDevice> {
+        let devices = self.list();
+        let current = devices
+            .iter()
+            .position(|device| device.fingerprint == *fingerprint);
+        let index = current.or_else(|| {
+            devices
+                .iter()
+                .position(|device| device.next_fingerprint.as_ref() == Some(fingerprint))
+        })?;
+        devices.into_iter().nth(index)
+    }
 
-    /// Forgets a device. Returns whether it was paired.
+    /// In one step, removes the record found by `old` (if any) and stores
+    /// `device` under its current fingerprint, replacing a record stored
+    /// there.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be written; nothing changes then.
+    fn replace(
+        &mut self,
+        old: &CertificateFingerprint,
+        device: PairedDevice,
+    ) -> Result<(), PairingError>;
+
+    /// Stores `device` under its current fingerprint, replacing a record
+    /// stored there.
     ///
     /// # Errors
     ///
     /// Fails when the store cannot be written.
-    fn remove(&mut self, id: &str) -> Result<bool, PairingError>;
+    fn insert(&mut self, device: PairedDevice) -> Result<(), PairingError> {
+        let key = device.fingerprint;
+        self.replace(&key, device)
+    }
+
+    /// Forgets the device found by `fingerprint`, and returns its record.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be written.
+    fn remove(
+        &mut self,
+        fingerprint: &CertificateFingerprint,
+    ) -> Result<Option<PairedDevice>, PairingError>;
 }
 
 /// A [`TrustStore`] that lives in memory only, for tests and for running
 /// before persistent storage is wired up.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryTrustStore {
-    devices: BTreeMap<String, PairedDevice>,
+    devices: BTreeMap<CertificateFingerprint, PairedDevice>,
+}
+
+impl MemoryTrustStore {
+    /// The key a lookup by `fingerprint` finds, as for [`TrustStore::get`].
+    fn key_of(&self, fingerprint: &CertificateFingerprint) -> Option<CertificateFingerprint> {
+        if self.devices.contains_key(fingerprint) {
+            return Some(*fingerprint);
+        }
+        self.devices
+            .values()
+            .find(|device| device.next_fingerprint.as_ref() == Some(fingerprint))
+            .map(|device| device.fingerprint)
+    }
 }
 
 impl TrustStore for MemoryTrustStore {
-    fn get(&self, id: &str) -> Option<PairedDevice> {
-        self.devices.get(id).map(ToOwned::to_owned)
-    }
-
     fn list(&self) -> Vec<PairedDevice> {
-        self.devices.values().map(ToOwned::to_owned).collect()
+        self.devices.values().cloned().collect()
     }
 
-    fn insert(&mut self, device: PairedDevice) -> Result<(), PairingError> {
-        self.devices.insert(device.id.clone(), device);
+    fn get(&self, fingerprint: &CertificateFingerprint) -> Option<PairedDevice> {
+        self.key_of(fingerprint)
+            .and_then(|key| self.devices.get(&key).cloned())
+    }
+
+    fn replace(
+        &mut self,
+        old: &CertificateFingerprint,
+        device: PairedDevice,
+    ) -> Result<(), PairingError> {
+        if let Some(key) = self.key_of(old) {
+            self.devices.remove(&key);
+        }
+        self.devices.insert(device.fingerprint, device);
         Ok(())
     }
 
-    fn remove(&mut self, id: &str) -> Result<bool, PairingError> {
-        Ok(self.devices.remove(id).is_some())
+    fn remove(
+        &mut self,
+        fingerprint: &CertificateFingerprint,
+    ) -> Result<Option<PairedDevice>, PairingError> {
+        Ok(self
+            .key_of(fingerprint)
+            .and_then(|key| self.devices.remove(&key)))
     }
 }
 
@@ -150,29 +314,78 @@ impl TrustStore for MemoryTrustStore {
 mod tests {
     use super::*;
 
-    fn phone(id: &str, fingerprint_byte: u8) -> PairedDevice {
-        PairedDevice {
-            id: id.into(),
-            name: "Pixel".into(),
-            kind: DeviceKind::Phone,
-            fingerprint: CertificateFingerprint([fingerprint_byte; 32]),
-            paired_at: SystemTime::UNIX_EPOCH,
-        }
+    pub(crate) fn phone(id: &str, fingerprint_byte: u8) -> PairedDevice {
+        PairedDevice::new(
+            id,
+            "Pixel",
+            DeviceKind::Phone,
+            CertificateFingerprint([fingerprint_byte; 32]),
+            SystemTime::UNIX_EPOCH,
+        )
     }
 
     #[test]
-    fn memory_store_keeps_one_record_per_device() {
+    fn memory_store_keys_records_by_fingerprint() {
         let mut store = MemoryTrustStore::default();
         store.insert(phone("b", 1)).unwrap();
         store.insert(phone("a", 2)).unwrap();
+        // Same key again: replaces the record.
+        let mut renamed = phone("b", 1);
+        renamed.name = "Renamed".into();
+        store.insert(renamed).unwrap();
+        // Same id, other key: a separate record.
         store.insert(phone("b", 3)).unwrap();
 
-        let ids: Vec<_> = store.list().into_iter().map(|device| device.id).collect();
-        assert_eq!(ids, ["a", "b"]);
-        assert_eq!(store.get("b").unwrap().fingerprint.0, [3; 32]);
-        assert!(store.remove("a").unwrap());
-        assert!(!store.remove("a").unwrap());
-        assert_eq!(store.get("a"), None);
+        let keys: Vec<_> = store.list().iter().map(|d| d.fingerprint.0[0]).collect();
+        assert_eq!(keys, [1, 2, 3]);
+        let first = store.get(&CertificateFingerprint([1; 32])).unwrap();
+        assert_eq!(first.name, "Renamed");
+
+        let removed = store.remove(&CertificateFingerprint([2; 32])).unwrap();
+        assert_eq!(removed.unwrap().id, "a");
+        assert_eq!(
+            store.remove(&CertificateFingerprint([2; 32])).unwrap(),
+            None
+        );
+        assert_eq!(store.get(&CertificateFingerprint([2; 32])), None);
+    }
+
+    #[test]
+    fn lookups_match_the_next_key_and_prefer_the_current_one() {
+        let mut store = MemoryTrustStore::default();
+        let mut rotating = phone("a", 1);
+        rotating.next_fingerprint = Some(CertificateFingerprint([2; 32]));
+        store.insert(rotating).unwrap();
+        assert_eq!(store.get(&CertificateFingerprint([2; 32])).unwrap().id, "a");
+
+        store.insert(phone("b", 2)).unwrap();
+        assert_eq!(store.get(&CertificateFingerprint([2; 32])).unwrap().id, "b");
+
+        // The provided default lookup agrees with the store's own.
+        struct ListOnly(MemoryTrustStore);
+        impl TrustStore for ListOnly {
+            fn list(&self) -> Vec<PairedDevice> {
+                self.0.list()
+            }
+            fn replace(
+                &mut self,
+                _: &CertificateFingerprint,
+                _: PairedDevice,
+            ) -> Result<(), PairingError> {
+                unreachable!()
+            }
+            fn remove(
+                &mut self,
+                _: &CertificateFingerprint,
+            ) -> Result<Option<PairedDevice>, PairingError> {
+                unreachable!()
+            }
+        }
+        let list_only = ListOnly(store.clone());
+        for byte in 0..4 {
+            let fingerprint = CertificateFingerprint([byte; 32]);
+            assert_eq!(list_only.get(&fingerprint), store.get(&fingerprint));
+        }
     }
 
     #[test]
