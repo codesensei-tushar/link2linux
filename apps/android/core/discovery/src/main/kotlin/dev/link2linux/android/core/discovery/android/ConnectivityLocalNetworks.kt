@@ -79,9 +79,15 @@ class ConnectivityLocalNetworks(context: Context) : LocalNetworks {
         callback = cb
         connectivity.registerNetworkCallback(request, cb)
 
+        val poller = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        scope = poller
+
         // System broadcasts: not-exported receivers get them. Neither needs a permission.
         val tetheringChanged = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) = rescan()
+            // Off the main thread: a rescan asks the system about every network.
+            override fun onReceive(context: Context, intent: Intent) {
+                poller.launch { rescan() }
+            }
         }
         val filter = IntentFilter().apply {
             addAction(ACTION_TETHER_STATE_CHANGED)
@@ -90,14 +96,12 @@ class ConnectivityLocalNetworks(context: Context) : LocalNetworks {
         ContextCompat.registerReceiver(appContext, tetheringChanged, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiver = tetheringChanged
 
-        val poller = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         poller.launch {
             while (isActive) {
                 rescan()
                 delay(POLL_MILLIS)
             }
         }
-        scope = poller
     }
 
     @Synchronized

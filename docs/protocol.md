@@ -302,8 +302,8 @@ interface counts as a tethered network when it is up, is not loopback, has a
 private IPv4 address (10/8, 172.16/12 or 192.168/16, with the interface's
 prefix length), does not belong to a network Android reports, and is not a
 mobile-data, VPN, 464XLAT or Wi-Fi Direct interface (names starting `lo`,
-`rmnet`, `r_rmnet`, `ccmni`, `tun`, `tap`, `ipsec`, `clat`, `v4-`, `dummy`,
-`p2p`). No interface name says "hotspot": the names differ by maker (`wlan1`,
+`rmnet`, `r_rmnet`, `ccmni`, `ccinet`, `seth`, `sipa`, `epdg`, `tun`, `tap`,
+`ipsec`, `clat`, `v4-`, `dummy`, `p2p`). No interface name says "hotspot": the names differ by maker (`wlan1`,
 `ap0`, `swlan0`, `softap0`; `rndis0`, `ncm0`, `usb0` for USB; `bt-pan` for
 Bluetooth), so the phone excludes known non-tethering names instead of
 listing known tethering ones.

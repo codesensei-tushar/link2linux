@@ -25,7 +25,10 @@ data class InterfaceSnapshot(
 object TetheredNetworks {
 
     /** Interface name prefixes that are never tethering: loopback, mobile data, VPNs, 464XLAT and Wi-Fi Direct. */
-    private val NEVER = listOf("lo", "rmnet", "r_rmnet", "ccmni", "tun", "tap", "ipsec", "clat", "v4-", "dummy", "p2p")
+    private val NEVER = listOf(
+        "lo", "rmnet", "r_rmnet", "ccmni", "ccinet", "seth", "sipa", "epdg",
+        "tun", "tap", "ipsec", "clat", "v4-", "dummy", "p2p",
+    )
 
     /**
      * The tethered networks among [interfaces], one per interface, ordered by id.

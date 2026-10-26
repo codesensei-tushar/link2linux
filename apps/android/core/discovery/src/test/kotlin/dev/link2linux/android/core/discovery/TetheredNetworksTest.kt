@@ -46,7 +46,7 @@ class TetheredNetworksTest {
 
     @Test
     fun mobileDataVpnAndTranslationInterfacesAreNeverTethering() {
-        val never = listOf("rmnet_data1", "ccmni0", "tun0", "ipsec0", "clat4", "v4-rmnet_data1", "dummy0", "lo", "p2p-wlan0-0")
+        val never = listOf("rmnet_data1", "ccmni0", "seth_lte0", "sipa_eth0", "tun0", "ipsec0", "clat4", "v4-rmnet_data1", "dummy0", "lo", "p2p-wlan0-0")
         assertEquals(emptyList<String>(), names(never.map { nic(it, "10.0.0.2") }))
     }
 
