@@ -118,6 +118,10 @@ pub trait PairingPrompt: Send {
         phone: &DeviceInfo,
         replaces: &[PairedDevice],
     ) -> impl Future<Output = bool> + Send;
+
+    /// The phone's QR proof verified: it knows the code's secret. Nothing
+    /// is asked; the default does nothing.
+    fn proof_verified(&mut self) {}
 }
 
 /// Time limits of a pairing.
@@ -308,7 +312,15 @@ where
     let mut proof_verified = false;
     let result = async {
         check_start(binding, phone, PairingMethod::QrCode)?;
-        exchange_proofs(channel, binding, &secret, timeouts, &mut proof_verified).await?;
+        exchange_proofs(
+            channel,
+            binding,
+            &secret,
+            prompt,
+            timeouts,
+            &mut proof_verified,
+        )
+        .await?;
 
         let replaces = conflicting_records(store, binding, phone)?;
         ask_to_replace(channel, prompt, phone, &replaces, timeouts).await?;
@@ -344,11 +356,13 @@ where
 }
 
 /// Sends the desktop's proof, then waits for the phone's and for its
-/// verdict. `proof_verified` tells how far it got.
-async fn exchange_proofs<C: PairingChannel>(
+/// verdict. `proof_verified` tells how far it got; `prompt` hears of it as
+/// soon as the phone's proof verifies.
+async fn exchange_proofs<C: PairingChannel, P: PairingPrompt>(
     channel: &mut C,
     binding: &PairingBinding,
     secret: &PairingSecret,
+    prompt: &mut P,
     timeouts: &PairingTimeouts,
     proof_verified: &mut bool,
 ) -> Result<(), PairingError> {
@@ -383,6 +397,7 @@ async fn exchange_proofs<C: PairingChannel>(
                     return Err(abort(channel, PairingOutcome::VerificationFailed, error).await);
                 }
                 *proof_verified = true;
+                prompt.proof_verified();
             }
             Payload::PairingResult(result) if result.outcome() != PairingOutcome::Accepted => {
                 return Err(PairingError::Rejected(result.outcome()));

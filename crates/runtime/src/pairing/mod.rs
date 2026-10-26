@@ -8,6 +8,8 @@
 
 mod run;
 mod state;
+#[cfg(test)]
+mod tests;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -26,7 +28,7 @@ use crate::view::{
 };
 
 use state::{Code, MAX_OFFERS, OFFER_REFRESH_BEFORE, Phase, SAS_MAX_ATTEMPTS};
-pub(crate) use state::{PairingCtl, PhoneList, parse_address};
+pub(crate) use state::{Lead, PairingCtl, PhoneList, parse_address};
 
 /// The state the UI shows now.
 pub(crate) fn state(core: &Core) -> PairingState {
@@ -74,7 +76,7 @@ pub(crate) fn start(core: &Arc<Core>, method: PairingMethod) -> Result<(), Backe
 /// Dials the phone the user picked or typed.
 pub(crate) fn pair_with(core: &Arc<Core>, target: PhoneTarget) -> Result<(), BackendError> {
     let mut ctl = lock(&core.pairing);
-    if !ctl.dialing.is_empty() {
+    if !ctl.attempts.is_empty() {
         return Err(BackendError::WrongState);
     }
     let (method, plan, name) = match (&ctl.phase, target) {
@@ -104,7 +106,7 @@ pub(crate) fn pair_with(core: &Arc<Core>, target: PhoneTarget) -> Result<(), Bac
         }
         _ => return Err(BackendError::WrongState),
     };
-    begin_connection(core, &mut ctl, method, plan, name, true);
+    begin_connection(core, &mut ctl, method, plan, name, Lead::Asked);
     Ok(())
 }
 
@@ -141,19 +143,19 @@ pub(crate) fn cancel(core: &Core) {
 }
 
 /// Discovery found a phone that shows the pairing tag of the QR offer, at
-/// these addresses.
+/// these addresses, by `lead`.
 ///
 /// Anyone can copy the tag, so addresses get their own connections even
 /// while others run: one that stalls must not keep the phone that scanned
-/// the code from being dialed.
-pub(crate) fn offer_seen(core: &Arc<Core>, addresses: &[SocketAddr]) {
+/// the code from being dialed. Up to [`state::MAX_CONNECTIONS`] run at once.
+pub(crate) fn offer_seen(core: &Arc<Core>, lead: Lead, addresses: &[SocketAddr]) {
     let mut ctl = lock(&core.pairing);
     let usable = ctl.offer_targets(addresses, &core.locals());
     let plan = dial_plan(None, &usable, &[]);
-    if plan.is_empty() {
+    if plan.is_empty() || !ctl.make_room(lead) {
         return;
     }
-    begin_connection(core, &mut ctl, PairingMethod::QrCode, plan, None, false);
+    begin_connection(core, &mut ctl, PairingMethod::QrCode, plan, None, lead);
 }
 
 /// Discovery found, or lost, a phone in pairing mode.
@@ -174,15 +176,15 @@ pub(crate) fn phone_listed(core: &Core, instance: &str, addresses: Option<Vec<So
     }
 }
 
-/// Opens a pairing connection to the addresses of `plan`. `asked` says the
-/// user picked or typed the phone, rather than discovery finding it.
+/// Opens a pairing connection to the addresses of `plan`, which `lead`
+/// led to.
 fn begin_connection(
     core: &Arc<Core>,
     ctl: &mut PairingCtl,
     method: PairingMethod,
     plan: crate::candidates::Plan,
     phone: Option<String>,
-    asked: bool,
+    lead: Lead,
 ) {
     if plan.is_empty() {
         // Nothing to dial: the phone is not where it announced.
@@ -197,8 +199,8 @@ fn begin_connection(
         emit(core, ctl);
         return;
     }
-    ctl.dialing
-        .extend(plan.iter().map(|(address, _)| address.ip()));
+    let (id, cancel) =
+        ctl.add_attempt(lead, plan.iter().map(|(address, _)| address.ip()).collect());
     // A connection that starts while another runs leaves the screen to it.
     if !matches!(
         ctl.phase,
@@ -214,12 +216,13 @@ fn begin_connection(
     core.handle.spawn(run::pair(
         core.clone(),
         run::Job {
+            id,
             generation: ctl.generation,
-            token: ctl.token.clone(),
+            cancel,
             method,
             plan,
             offer,
-            asked,
+            lead,
         },
     ));
 }
@@ -230,8 +233,9 @@ fn begin_connection(
 /// any other failure says nothing about the phone that scanned the code.
 fn connection_failed(core: &Core, job: &run::Job, reason: PairingFailure, proven: bool) {
     finish_with(core, job.generation, |ctl| {
-        for (address, _) in &job.plan {
-            ctl.dialing.remove(&address.ip());
+        if ctl.finished(job.id).is_none() {
+            // Closed to make room for another.
+            return;
         }
         match job.method {
             PairingMethod::Sas => ctl.back_to_search(reason),
@@ -252,9 +256,9 @@ fn connection_failed(core: &Core, job: &run::Job, reason: PairingFailure, proven
                     ctl.phase,
                     Phase::Connecting { .. } | Phase::Verifying { .. }
                 );
-                if connecting && ctl.dialing.is_empty() {
+                if connecting && ctl.attempts.is_empty() {
                     ctl.phase = Phase::Qr {
-                        last_failure: job.asked.then_some(reason),
+                        last_failure: (job.lead == Lead::Asked).then_some(reason),
                     };
                 }
             }
@@ -291,7 +295,7 @@ fn show_offer(core: &Core, ctl: &mut PairingCtl, number: u8) {
         number,
     });
     // While connections run, the screen goes on showing them.
-    if ctl.dialing.is_empty() {
+    if ctl.attempts.is_empty() {
         ctl.phase = Phase::Qr { last_failure: None };
     }
     core.publish_keys();

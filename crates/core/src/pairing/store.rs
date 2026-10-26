@@ -1,5 +1,6 @@
 //! A [`TrustStore`] kept in a JSON file that only the user can read.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -28,17 +29,27 @@ const FORMAT_VERSION: u32 = 1;
 /// 0600, before it takes effect in memory: a failed write changes nothing.
 /// The presence keys in it are sealed with a [`StoreKey`] from the keyring
 /// when there is one, so the file, which home backups include, does not
-/// hold them; without a keyring they are in the file in clear.
+/// hold them; without a keyring they are in the file in clear. Once the
+/// file was sealed it never goes back to clear: without the key at hand,
+/// the sealed keys are written back as they are, and new ones stay in
+/// memory until [`use_key`](Self::use_key) brings the key.
 #[derive(Debug)]
 pub struct FileTrustStore {
     path: PathBuf,
     records: MemoryTrustStore,
     key: Option<StoreKey>,
+    /// The file holds its presence keys sealed.
+    sealed: bool,
+    /// Sealed presence keys from the file that did not open, by record.
+    /// They are written back unchanged until the record's presence key is
+    /// sealed again.
+    unopened: BTreeMap<CertificateFingerprint, String>,
 }
 
 impl FileTrustStore {
-    /// Opens the store at `path`, with presence keys in clear. A missing
-    /// file is an empty store; the file is created on the first change.
+    /// Opens the store at `path` without a store key: presence keys are in
+    /// clear, unless the file was sealed. A missing file is an empty store;
+    /// the file is created on the first change.
     ///
     /// # Errors
     ///
@@ -51,8 +62,8 @@ impl FileTrustStore {
     /// Opens the store at `path` like [`open`](Self::open), sealing the
     /// presence keys in the file with `key` when there is one. Keys the file
     /// holds in clear are sealed at once. A key sealed under another store
-    /// key, or with none at hand, is dropped: each phone gives its presence
-    /// key again at the start of every session.
+    /// key, or with none at hand, is not known in memory, where each phone
+    /// gives it again at the start of every session, but stays in the file.
     ///
     /// # Errors
     ///
@@ -64,6 +75,8 @@ impl FileTrustStore {
         let path = path.into();
         let mut records = MemoryTrustStore::default();
         let mut in_clear = false;
+        let mut sealed = false;
+        let mut unopened = BTreeMap::new();
         if let Some(bytes) = secure_file::read(&path).map_err(store_error)? {
             let file: StoreFile = serde_json::from_slice(&bytes).map_err(store_error)?;
             if file.version > FORMAT_VERSION {
@@ -73,25 +86,83 @@ impl FileTrustStore {
                     file.version
                 )));
             }
+            sealed = file.sealed;
             for stored in file.devices {
                 in_clear |= stored.presence_key.is_some();
-                records.insert(stored.into_device(key.as_ref())?)?;
+                sealed |= stored.sealed_presence_key.is_some();
+                let (device, closed) = stored.into_device(key.as_ref())?;
+                if let Some(closed) = closed {
+                    unopened.insert(device.fingerprint, closed);
+                }
+                records.insert(device)?;
             }
         }
-        let mut store = Self { path, records, key };
+        if sealed && key.is_none() {
+            warn!(
+                "the pairing file is sealed but its key is not at hand: new presence keys stay out of it"
+            );
+        }
+        let mut store = Self {
+            path,
+            records,
+            key,
+            sealed,
+            unopened,
+        };
         if in_clear
-            && store.key.is_some()
+            && (store.key.is_some() || store.sealed)
             && let Err(error) = store.write_with(|_| Ok(()))
         {
-            warn!(%error, "could not seal the presence keys in the file");
+            warn!(%error, "could not take the presence keys out of the file");
         }
         Ok(store)
+    }
+
+    /// Starts sealing with `key`, the store key that was not at hand when
+    /// the store opened. The presence keys sealed under it open, unless a
+    /// phone gave a newer one since, and the file is written again with all
+    /// of them sealed. Does nothing when the store has a key.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be written; the store seals with `key`
+    /// from its next write on.
+    pub fn use_key(&mut self, key: StoreKey) -> Result<(), PairingError> {
+        if self.key.is_some() {
+            return Ok(());
+        }
+        let opened: Vec<_> = self
+            .unopened
+            .iter()
+            .filter_map(|(fingerprint, sealed)| {
+                Some((*fingerprint, key.open(fingerprint, sealed)?))
+            })
+            .collect();
+        self.key = Some(key);
+        self.write_with(|records| {
+            for (fingerprint, presence) in opened {
+                if let Some(mut device) = records.get(&fingerprint)
+                    && device.presence_key.is_none()
+                {
+                    device.presence_key = Some(presence);
+                    records.replace(&fingerprint, device)?;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Where the store lives.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Whether the file is sealed but its key is not at hand, so presence
+    /// keys the phones give stay in memory only.
+    #[must_use]
+    pub fn needs_key(&self) -> bool {
+        self.sealed && self.key.is_none()
     }
 
     /// Applies `change` to a copy of the records, writes the copy, and keeps
@@ -102,17 +173,25 @@ impl FileTrustStore {
     ) -> Result<T, PairingError> {
         let mut records = self.records.clone();
         let result = change(&mut records)?;
+        let sealed = self.sealed || self.key.is_some();
         let file = StoreFile {
             version: FORMAT_VERSION,
+            sealed,
             devices: records
                 .list()
                 .iter()
-                .map(|device| StoredDevice::from_device(device, self.key.as_ref()))
+                .map(|device| {
+                    let unopened = self.unopened.get(&device.fingerprint);
+                    StoredDevice::from_device(device, self.key.as_ref(), sealed, unopened)
+                })
                 .collect(),
         };
         let json = serde_json::to_vec_pretty(&file).map_err(store_error)?;
         secure_file::write(&self.path, &json).map_err(store_error)?;
+        self.unopened
+            .retain(|fingerprint, _| records.get(fingerprint).is_some());
         self.records = records;
+        self.sealed = sealed;
         Ok(result)
     }
 }
@@ -219,6 +298,9 @@ impl fmt::Debug for StoreKey {
 #[derive(Serialize, Deserialize)]
 struct StoreFile {
     version: u32,
+    /// Presence keys are sealed, and never written in clear again.
+    #[serde(default)]
+    sealed: bool,
     devices: Vec<StoredDevice>,
 }
 
@@ -236,7 +318,7 @@ struct StoredDevice {
     paired_at_unix_ms: u64,
     #[serde(default)]
     confirmed: bool,
-    /// Lowercase hex, when the store has no [`StoreKey`].
+    /// Lowercase hex, in a file that was never sealed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     presence_key: Option<String>,
     /// From [`StoreKey::seal`].
@@ -247,7 +329,14 @@ struct StoredDevice {
 }
 
 impl StoredDevice {
-    fn from_device(device: &PairedDevice, key: Option<&StoreKey>) -> Self {
+    /// `device` for a file that is `sealed` with `key`. Without the key, a
+    /// sealed file keeps the sealed key it held, `unopened`.
+    fn from_device(
+        device: &PairedDevice,
+        key: Option<&StoreKey>,
+        sealed: bool,
+        unopened: Option<&String>,
+    ) -> Self {
         let paired_at = device
             .paired_at
             .duration_since(UNIX_EPOCH)
@@ -263,23 +352,35 @@ impl StoredDevice {
             presence_key: device
                 .presence_key
                 .as_ref()
-                .filter(|_| key.is_none())
+                .filter(|_| !sealed)
                 .map(|presence| hex(&presence.0)),
             sealed_presence_key: key
                 .zip(device.presence_key.as_ref())
-                .map(|(key, presence)| key.seal(&device.fingerprint, presence)),
+                .map(|(key, presence)| key.seal(&device.fingerprint, presence))
+                .or_else(|| unopened.cloned()),
             last_addresses: device.last_addresses.clone(),
         }
     }
 
-    fn into_device(self, key: Option<&StoreKey>) -> Result<PairedDevice, PairingError> {
+    /// The record, and its sealed presence key if that did not open.
+    fn into_device(
+        self,
+        key: Option<&StoreKey>,
+    ) -> Result<(PairedDevice, Option<String>), PairingError> {
         let fingerprint = |text: &str| {
             text.parse::<CertificateFingerprint>()
                 .map_err(|_| PairingError::Store(format!("malformed fingerprint {text:?}")))
         };
         let current = fingerprint(&self.fingerprint)?;
+        let mut unopened = None;
         let presence_key = match (self.sealed_presence_key, self.presence_key) {
-            (Some(sealed), _) => key.and_then(|key| key.open(&current, &sealed)),
+            (Some(sealed), _) => {
+                let opened = key.and_then(|key| key.open(&current, &sealed));
+                if opened.is_none() {
+                    unopened = Some(sealed);
+                }
+                opened
+            }
             (None, clear) => clear
                 .map(|text| {
                     decode_hex(&text)
@@ -289,7 +390,7 @@ impl StoredDevice {
                 })
                 .transpose()?,
         };
-        Ok(PairedDevice {
+        let device = PairedDevice {
             kind: DeviceKind::from_str_name(&self.kind).unwrap_or(DeviceKind::Unspecified),
             fingerprint: current,
             next_fingerprint: self
@@ -303,7 +404,8 @@ impl StoredDevice {
             last_addresses: self.last_addresses,
             id: self.id,
             name: self.name,
-        })
+        };
+        Ok((device, unopened))
     }
 }
 
@@ -391,6 +493,8 @@ mod tests {
             path,
             records: MemoryTrustStore::default(),
             key: None,
+            sealed: false,
+            unopened: BTreeMap::new(),
         };
         assert!(store.insert(phone("a", 1)).is_err());
         assert!(store.list().is_empty());
@@ -432,6 +536,106 @@ mod tests {
         assert_eq!(other.get(&device.fingerprint), Some(lost.clone()));
         let without = FileTrustStore::open(&path).unwrap();
         assert_eq!(without.get(&device.fingerprint), Some(lost));
+    }
+
+    /// The sealed presence key of the first record in the file at `path`.
+    fn sealed_in(path: &Path) -> Option<String> {
+        let file: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        file["devices"][0]["sealed_presence_key"]
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn a_start_without_the_store_key_keeps_the_sealed_keys_and_writes_none_in_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paired.json");
+        let key = StoreKey::generate();
+        let copy = || StoreKey::from_slice(key.as_bytes());
+        let mut device = phone("phone-1", 1);
+        device.presence_key = Some(PresenceKey([0xc0; 32]));
+        let fingerprint = device.fingerprint;
+        let file = || fs::read_to_string(&path).unwrap();
+        let in_clear = |byte: &str| file().contains(&byte.repeat(32));
+        FileTrustStore::open_sealed(&path, copy())
+            .unwrap()
+            .insert(device)
+            .unwrap();
+        let sealed = sealed_in(&path).unwrap();
+
+        // One start where the keyring did not answer, so the store opens
+        // without its key.
+        let mut degraded = FileTrustStore::open_sealed(&path, None).unwrap();
+        assert!(degraded.needs_key());
+        assert_eq!(degraded.get(&fingerprint).unwrap().presence_key, None);
+        // A write, such as the address noted on every connect, keeps the
+        // sealed key as it is.
+        records::note_connected(
+            &mut degraded,
+            &fingerprint,
+            "192.168.1.9:27380".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sealed_in(&path).as_ref(), Some(&sealed));
+        // The phone gives its presence key again: it stays out of the file.
+        records::set_presence_key(&mut degraded, &fingerprint, &[0xd1; 32]).unwrap();
+        let newer = Some(PresenceKey([0xd1; 32]));
+        assert_eq!(degraded.get(&fingerprint).unwrap().presence_key, newer);
+        assert!(!in_clear("d1") && !in_clear("c0"), "{}", file());
+        assert_eq!(sealed_in(&path).as_ref(), Some(&sealed));
+        assert!(FileTrustStore::open(&path).unwrap().needs_key());
+        let next_start = FileTrustStore::open_sealed(&path, copy()).unwrap();
+        assert_eq!(
+            next_start.get(&fingerprint).unwrap().presence_key,
+            Some(PresenceKey([0xc0; 32]))
+        );
+
+        // Once the key comes, the newer presence key is sealed with it.
+        degraded.use_key(copy().unwrap()).unwrap();
+        assert!(!degraded.needs_key());
+        assert_ne!(sealed_in(&path).as_ref(), Some(&sealed));
+        assert!(!in_clear("d1"));
+        let reopened = FileTrustStore::open_sealed(&path, copy()).unwrap();
+        assert_eq!(reopened.get(&fingerprint).unwrap().presence_key, newer);
+    }
+
+    #[test]
+    fn a_sealed_file_stays_sealed_and_its_keys_open_once_the_key_comes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paired.json");
+        let key = StoreKey::generate();
+        let copy = || StoreKey::from_slice(key.as_bytes());
+        let mut with_key = phone("phone-1", 1);
+        with_key.presence_key = Some(PresenceKey([0xc0; 32]));
+        // A phone that has not given its presence key yet.
+        let without = phone("phone-2", 3);
+        let mut store = FileTrustStore::open_sealed(&path, copy()).unwrap();
+        store.insert(with_key.clone()).unwrap();
+        store.insert(without.clone()).unwrap();
+
+        let mut degraded = FileTrustStore::open_sealed(&path, None).unwrap();
+        records::set_presence_key(&mut degraded, &without.fingerprint, &[0xd1; 32]).unwrap();
+        let file = fs::read_to_string(&path).unwrap();
+        assert!(!file.contains(&"d1".repeat(32)), "{file}");
+
+        // The key comes later: the sealed presence key opens, without the
+        // phone giving it again.
+        degraded.use_key(copy().unwrap()).unwrap();
+        assert_eq!(degraded.get(&with_key.fingerprint), Some(with_key));
+        let reopened = FileTrustStore::open_sealed(&path, copy()).unwrap();
+        assert_eq!(reopened.list(), degraded.list());
+
+        // A store key the keyring made anew opens nothing, and the old
+        // sealed keys stay in the file.
+        let sealed = sealed_in(&path);
+        let mut other = FileTrustStore::open_sealed(&path, Some(StoreKey::generate())).unwrap();
+        records::note_connected(
+            &mut other,
+            &without.fingerprint,
+            "192.168.1.9:27380".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sealed_in(&path), sealed);
     }
 
     #[test]

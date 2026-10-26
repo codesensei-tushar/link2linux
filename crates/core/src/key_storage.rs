@@ -150,9 +150,11 @@ impl KeyStorage {
 
 /// The key that seals the presence keys in the pairing file, from the
 /// keyring under `name`, or a new one kept there. `None` without a keyring
-/// that takes it: the presence keys then stay in the file in clear. Losing
-/// the key loses only the presence keys, which each phone gives again at
-/// the start of its next session.
+/// that takes it, or when the keyring fails: a pairing file that was never
+/// sealed then keeps the presence keys in clear, and a sealed one keeps new
+/// ones only in memory. A key the keyring holds is never replaced after a
+/// failed read. Losing the key loses only the presence keys, which each
+/// phone gives again at the start of its next session.
 pub async fn load_store_key<S: SecretStore>(
     keyring: &S,
     name: &str,
@@ -281,7 +283,7 @@ mod tests {
         let again = load_store_key(&keyring, "store-key", label).await.unwrap();
         assert_eq!(first.as_bytes(), again.as_bytes());
 
-        // Without a keyring that keeps it, presence keys stay in clear.
+        // Without a keyring that keeps it, there is no key.
         let none = FakeKeyring::unavailable();
         assert!(load_store_key(&none, "store-key", label).await.is_none());
         let forgetful = FakeKeyring {
@@ -293,6 +295,17 @@ mod tests {
                 .await
                 .is_none()
         );
+
+        // A keyring that does not answer keeps the key it holds, for the
+        // next time it does.
+        let failing = FakeKeyring::unavailable();
+        failing
+            .items
+            .lock()
+            .unwrap()
+            .insert("store-key".to_owned(), first.as_bytes().to_vec());
+        assert!(load_store_key(&failing, "store-key", label).await.is_none());
+        assert_eq!(failing.items.lock().unwrap()["store-key"], first.as_bytes());
     }
 
     fn storage(dir: &Path) -> KeyStorage {

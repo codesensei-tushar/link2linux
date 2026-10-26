@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::state::{Phase, SAS_LIFETIME, failure_of};
+use super::state::{Lead, Phase, SAS_LIFETIME, failure_of};
 use super::{clear_offer_secret, connection_failed, finish_with};
 use crate::candidates::Plan;
 use crate::device::Established;
@@ -30,13 +30,15 @@ use crate::view::{PairingFailure, PairingMethod};
 
 /// What a pairing connection is for.
 pub(super) struct Job {
+    /// Its id among the activation's connections.
+    pub id: u64,
     pub generation: u64,
-    pub token: CancellationToken,
+    /// Ends it: with the activation, or to make room for another.
+    pub cancel: CancellationToken,
     pub method: PairingMethod,
     pub plan: Plan,
     pub offer: Option<Arc<Mutex<QrOffer>>>,
-    /// The user picked or typed the phone, rather than discovery finding it.
-    pub asked: bool,
+    pub lead: Lead,
 }
 
 /// A pairing that succeeded, with the connection it ran on.
@@ -53,19 +55,26 @@ enum Outcome {
     /// The connection ended before its peer proved it knows the QR code's
     /// secret.
     Unproven(PairingFailure),
+    /// Another connection had reached the same phone first. This one closed
+    /// before its `Hello`, so the phone never saw it.
+    Duplicate,
 }
 
 /// Runs one pairing connection to its end and reports the result.
 pub(super) async fn pair(core: Arc<Core>, job: Job) {
     let outcome = tokio::select! {
-        // The activation was cancelled: the connection is dropped.
-        () = job.token.cancelled() => return,
+        // The activation was cancelled, or this connection closed to make
+        // room for another: it is dropped.
+        () = job.cancel.cancelled() => return,
         outcome = connect_and_pair(&core, &job) => outcome,
     };
     match outcome {
         Outcome::Paired(done) => complete(&core, job.generation, *done),
         Outcome::Failed(reason) => connection_failed(&core, &job, reason, true),
         Outcome::Unproven(reason) => connection_failed(&core, &job, reason, false),
+        Outcome::Duplicate => {
+            connection_failed(&core, &job, PairingFailure::ConnectionLost, false);
+        }
     }
 }
 
@@ -83,6 +92,15 @@ async fn connect_and_pair(core: &Arc<Core>, job: &Job) -> Outcome {
         }
     };
     let peer = connection.peer_fingerprint();
+    // One connection per phone, and the addresses it did not reach are
+    // free for others (`PairingCtl::connected`).
+    let first = {
+        let mut ctl = lock(&core.pairing);
+        ctl.generation == job.generation && ctl.connected(job.id, address.ip(), peer)
+    };
+    if !first {
+        return Outcome::Duplicate;
+    }
     // Before the pairing exchange the peer has proven nothing: a failure
     // counts against its key and address for the rest of the QR offer.
     let unproven = |reason| {
@@ -137,6 +155,7 @@ async fn connect_and_pair(core: &Arc<Core>, job: &Job) -> Outcome {
     let mut prompt = Prompt {
         core: core.clone(),
         generation: job.generation,
+        attempt: job.id,
     };
     let result = match method {
         PairingMethod::QrCode => {
@@ -247,6 +266,8 @@ fn complete(core: &Arc<Core>, generation: u64, done: Done) {
 struct Prompt {
     core: Arc<Core>,
     generation: u64,
+    /// The connection it asks for.
+    attempt: u64,
 }
 
 impl PairingPrompt for Prompt {
@@ -283,5 +304,12 @@ impl PairingPrompt for Prompt {
         // remove the old one first.
         tracing::info!(phone = %phone.name, "declined to replace a pairing record without asking");
         false
+    }
+
+    fn proof_verified(&mut self) {
+        let mut ctl = lock(&self.core.pairing);
+        if ctl.generation == self.generation {
+            ctl.proven(self.attempt);
+        }
     }
 }

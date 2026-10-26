@@ -22,3 +22,8 @@ pub mod view;
 
 pub use runtime::Runtime;
 pub use shared::{RuntimeConfig, RuntimeError, Shell};
+
+/// The stand-in phone of the loopback tests, for tests inside the crate.
+#[cfg(test)]
+#[path = "../../core/tests/support/mod.rs"]
+mod test_phone;

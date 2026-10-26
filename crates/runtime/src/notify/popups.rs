@@ -35,9 +35,9 @@ pub struct PrivatePopups {
     inner: Arc<dyn Presenter>,
     show_text: AtomicBool,
     locked: AtomicBool,
-    /// The pop-ups on screen with their text, each with the form it takes
-    /// once the screen locks: without the text, or `None` to go.
-    with_text: Mutex<HashMap<NotificationId, Option<DesktopNotification>>>,
+    /// The pop-ups on screen that change once the screen locks, each with
+    /// the form it takes then: without the text, or `None` to go.
+    until_locked: Mutex<HashMap<NotificationId, Option<DesktopNotification>>>,
     open_window: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -55,7 +55,7 @@ impl PrivatePopups {
             inner,
             show_text: AtomicBool::new(show_text),
             locked: AtomicBool::new(true),
-            with_text: Mutex::default(),
+            until_locked: Mutex::default(),
             open_window: Box::new(open_window),
         }
     }
@@ -83,9 +83,14 @@ impl PrivatePopups {
     /// down when it has none.
     async fn hide_text(&self, id: NotificationId, when_locked: Option<DesktopNotification>) {
         // Replacing keeps the id: the notification service answers a
-        // replacement with the id it replaced.
+        // replacement with the id it replaced. Another id is a new pop-up,
+        // as for an id the service no longer shows after it restarted, and
+        // nothing would ever take that one down.
         let hidden = match when_locked {
-            Some(popup) => self.inner.show(&popup, Some(id)).await.map(drop),
+            Some(popup) => match self.inner.show(&popup, Some(id)).await {
+                Ok(shown) if shown != id => self.inner.close(shown).await,
+                shown => shown.map(drop),
+            },
             None => self.inner.close(id).await,
         };
         if let Err(error) = hidden {
@@ -96,7 +101,7 @@ impl PrivatePopups {
     fn on_screen(
         &self,
     ) -> std::sync::MutexGuard<'_, HashMap<NotificationId, Option<DesktopNotification>>> {
-        self.with_text
+        self.until_locked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -158,9 +163,10 @@ impl Presenter for PrivatePopups {
             match self.popup(notification) {
                 Some((popup, with_text)) => {
                     let id = self.inner.show(&popup, replaces).await?;
-                    if with_text {
-                        let when_locked = (notification.visibility != Visibility::Secret)
-                            .then(|| neutral(notification));
+                    let when_locked = (notification.visibility != Visibility::Secret)
+                        .then(|| neutral(notification));
+                    // Without the text and not secret, it stays as it is.
+                    if with_text || when_locked.is_none() {
                         self.on_screen().insert(id, when_locked.clone());
                         // The screen may have locked while this was shown.
                         if self.locked.load(Ordering::Relaxed)
@@ -211,6 +217,7 @@ impl Presenter for PrivatePopups {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
 
@@ -224,7 +231,17 @@ mod tests {
     struct Desktop {
         shown: Mutex<Vec<(DesktopNotification, Option<NotificationId>)>>,
         closed: Mutex<Vec<NotificationId>>,
+        /// The pop-ups on screen. Replacing one keeps its id; replacing
+        /// one that is not on screen shows a new one.
+        screen: Mutex<HashSet<NotificationId>>,
         responses: tokio::sync::Mutex<mpsc::UnboundedReceiver<NotificationResponse>>,
+    }
+
+    impl Desktop {
+        /// The notification service restarted: its pop-ups are gone.
+        fn restart(&self) {
+            self.screen.lock().unwrap().clear();
+        }
     }
 
     impl NotificationSink for Desktop {
@@ -235,11 +252,17 @@ mod tests {
         ) -> Result<NotificationId, PlatformError> {
             let mut shown = self.shown.lock().unwrap();
             shown.push((notification.clone(), replaces));
-            Ok(NotificationId(u32::try_from(shown.len()).unwrap()))
+            let mut screen = self.screen.lock().unwrap();
+            let id = replaces
+                .filter(|id| screen.contains(id))
+                .unwrap_or(NotificationId(u32::try_from(shown.len()).unwrap()));
+            screen.insert(id);
+            Ok(id)
         }
 
         async fn close(&self, id: NotificationId) -> Result<(), PlatformError> {
             self.closed.lock().unwrap().push(id);
+            self.screen.lock().unwrap().remove(&id);
             Ok(())
         }
 
@@ -265,6 +288,7 @@ mod tests {
         let desktop = Arc::new(Desktop {
             shown: Mutex::default(),
             closed: Mutex::default(),
+            screen: Mutex::default(),
             responses: tokio::sync::Mutex::new(responses),
         });
         let opened = Arc::new(AtomicUsize::new(0));
@@ -450,6 +474,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rig.desktop.shown.lock().unwrap().last().unwrap().1, None);
+    }
+
+    #[tokio::test]
+    async fn locking_takes_down_a_secret_popup_shown_without_its_text() {
+        // The default setting: pop-ups never show the text.
+        let rig = rig(false);
+        rig.popups.set_locked(false).await;
+        let private = rig
+            .popups
+            .show(&message(Visibility::Private), None)
+            .await
+            .unwrap();
+        let secret = rig
+            .popups
+            .show(&message(Visibility::Secret), None)
+            .await
+            .unwrap();
+        assert_ne!(secret, NOT_SHOWN);
+        assert_eq!(rig.last_shown().body, NEUTRAL_TEXT);
+
+        rig.popups.set_locked(true).await;
+        assert_eq!(*rig.desktop.closed.lock().unwrap(), [secret]);
+        // The other one names only the app already, so it stays.
+        assert_eq!(rig.desktop.shown.lock().unwrap().len(), 2);
+        assert_eq!(
+            *rig.desktop.screen.lock().unwrap(),
+            HashSet::from([private])
+        );
+    }
+
+    #[tokio::test]
+    async fn locking_after_the_service_restarted_leaves_no_popup_behind() {
+        let rig = rig(true);
+        rig.popups.set_locked(false).await;
+        rig.popups
+            .show(&message(Visibility::Private), None)
+            .await
+            .unwrap();
+        // The pop-up went with the old service, which never said so.
+        rig.desktop.restart();
+
+        rig.popups.set_locked(true).await;
+        assert!(
+            rig.desktop.screen.lock().unwrap().is_empty(),
+            "{:?}",
+            rig.desktop.shown.lock().unwrap()
+        );
     }
 
     #[tokio::test]
