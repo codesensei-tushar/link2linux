@@ -14,6 +14,7 @@ workspace = true
 link2linux-core.workspace = true
 link2linux-platform.workspace = true
 link2linux-protocol.workspace = true
+qrcode = { version = "0.14.1", default-features = false }
 serde.workspace = true
 specta = { version = "=2.0.0-rc.26", features = ["derive"] }
 specta-typescript = "0.0.13"
@@ -23,6 +24,8 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Decodes the generated QR image in tests.
+rqrr = { version = "0.10", default-features = false }
 futures-util.workspace = true
 rustls.workspace = true
 tempfile.workspace = true
