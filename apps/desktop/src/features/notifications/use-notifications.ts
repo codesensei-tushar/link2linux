@@ -4,7 +4,7 @@ import { useDesktopApi } from "@/lib/api";
 import { errorMessage } from "@/lib/utils";
 
 import { applyEvent } from "./list";
-import type { MirroredNotification, NotificationEvent } from "./types";
+import type { MirroredNotification, NotificationActionInfo, NotificationEvent } from "./types";
 
 export type NotificationsState =
   | { status: "loading" }
@@ -28,6 +28,7 @@ export function useNotifications(deviceId: string) {
   const [state, setState] = useState<NotificationsState>({ status: "loading" });
   const [live, setLive] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -73,5 +74,53 @@ export function useNotifications(deviceId: string) {
     setAttempt((n) => n + 1);
   }, []);
 
-  return { state, announcement: live, reload };
+  /** Removes the notification at once, and puts it back with an error if the phone refuses. */
+  const dismiss = useCallback(
+    (notification: MirroredNotification) => {
+      setState((s) =>
+        s.status === "ready"
+          ? {
+              status: "ready",
+              notifications: applyEvent(s.notifications, {
+                type: "removed",
+                key: notification.key,
+              }),
+            }
+          : s,
+      );
+      api.dismissNotification(deviceId, notification.key).catch((cause: unknown) => {
+        setState((s) =>
+          s.status === "ready"
+            ? {
+                status: "ready",
+                notifications: applyEvent(s.notifications, {
+                  type: "posted",
+                  notification,
+                  alert: false,
+                }),
+              }
+            : s,
+        );
+        setError(`Couldn't dismiss the notification: ${errorMessage(cause)}`);
+      });
+    },
+    [api, deviceId],
+  );
+
+  const runAction = useCallback(
+    (notification: MirroredNotification, action: NotificationActionInfo, replyText?: string) => {
+      api
+        .runNotificationAction(deviceId, notification.key, action.id, replyText)
+        .catch((cause: unknown) => {
+          setError(`Couldn't run "${action.label}": ${errorMessage(cause)}`);
+        });
+    },
+    [api, deviceId],
+  );
+
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
+  return { state, announcement: live, error, clearError, dismiss, runAction, reload };
 }

@@ -7,7 +7,7 @@ import { DevicesProvider } from "@/features/pairing/DevicesProvider";
 import { createFakeApi, testDevice, testNotification, type FakeApi } from "@/test/fake-api";
 
 import { NotificationsPage } from "./NotificationsPage";
-import type { MirroredNotification } from "./types";
+import type { MirroredNotification, NotificationActionInfo } from "./types";
 
 function renderPage(
   notifications: MirroredNotification[] = [],
@@ -172,5 +172,120 @@ describe("NotificationsPage list", () => {
     expect(api.notificationSubscribers()).toBe(1);
     api.view.unmount();
     expect(api.notificationSubscribers()).toBe(0);
+  });
+});
+
+const replyAction: NotificationActionInfo = {
+  id: "reply",
+  label: "Reply",
+  kind: "reply",
+  acceptsReply: true,
+  replyChoices: ["Yes", "No"],
+  requiresUnlock: false,
+};
+
+const archiveAction: NotificationActionInfo = {
+  id: "archive",
+  label: "Archive",
+  kind: "archive",
+  acceptsReply: false,
+  replyChoices: [],
+  requiresUnlock: false,
+};
+
+describe("NotificationsPage dismiss", () => {
+  it("removes the notification at once and tells the phone", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([testNotification({ key: "a", title: "Ada" })]);
+
+    await user.click(await screen.findByRole("button", { name: "Dismiss Ada" }));
+
+    expect(api.dismissNotification).toHaveBeenCalledWith("phone-1", "a");
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "No notifications" })).toBeVisible();
+  });
+
+  it("puts the notification back with an error when dismissing fails", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.dismissNotification.mockRejectedValue(new Error("Phone unreachable"));
+    renderPage([testNotification({ key: "a", title: "Ada" })], api);
+
+    await user.click(await screen.findByRole("button", { name: "Dismiss Ada" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Phone unreachable");
+    expect(screen.getByRole("article", { name: "Chat: Ada" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("offers no dismiss button on a notification that cannot be dismissed", async () => {
+    renderPage([testNotification({ title: "Now playing", ongoing: true, dismissible: false })]);
+
+    await screen.findByRole("article", { name: "Chat: Now playing" });
+    expect(screen.queryByRole("button", { name: /Dismiss/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("NotificationsPage actions", () => {
+  it("runs a plain action", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([testNotification({ key: "a", actions: [archiveAction] })]);
+
+    await user.click(await screen.findByRole("button", { name: "Archive" }));
+
+    expect(api.runNotificationAction).toHaveBeenCalledWith("phone-1", "a", "archive", undefined);
+  });
+
+  it("reports an action that fails", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.runNotificationAction.mockRejectedValue("Notification not found");
+    renderPage([testNotification({ actions: [archiveAction] })], api);
+
+    await user.click(await screen.findByRole("button", { name: "Archive" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Notification not found");
+  });
+
+  it("opens an inline reply with focus, and sends it on Enter", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([testNotification({ key: "a", actions: [replyAction] })]);
+
+    await user.click(await screen.findByRole("button", { name: "Reply" }));
+    const field = screen.getByRole("textbox", { name: "Reply text" });
+    expect(field).toHaveFocus();
+
+    await user.type(field, "On my way{Enter}");
+
+    expect(api.runNotificationAction).toHaveBeenCalledWith("phone-1", "a", "reply", "On my way");
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reply" })).toHaveFocus();
+  });
+
+  it("sends a quick reply chip", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([testNotification({ key: "a", actions: [replyAction] })]);
+
+    await user.click(await screen.findByRole("button", { name: "Reply" }));
+    const chips = screen.getByRole("group", { name: "Quick replies" });
+    await user.click(within(chips).getByRole("button", { name: "Yes" }));
+
+    expect(api.runNotificationAction).toHaveBeenCalledWith("phone-1", "a", "reply", "Yes");
+  });
+
+  it("cancels the reply on Escape and does not send empty text", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([testNotification({ actions: [replyAction] })]);
+
+    await user.click(await screen.findByRole("button", { name: "Reply" }));
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await user.keyboard("{Enter}");
+    expect(api.runNotificationAction).not.toHaveBeenCalled();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reply" })).toHaveFocus();
   });
 });

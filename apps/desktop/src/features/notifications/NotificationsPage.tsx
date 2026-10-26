@@ -1,12 +1,13 @@
 import { Bell, RefreshCw, Smartphone, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { Button, EmptyState, PageHeader, Spinner } from "@/components/ui";
+import { Button, Callout, EmptyState, PageHeader, Spinner } from "@/components/ui";
 import { useDevices } from "@/features/pairing/devices-context";
 
 import { groupNotifications } from "./list";
 import { NotificationCard } from "./NotificationCard";
 import { notificationsMeta } from "./meta";
+import type { MirroredNotification } from "./types";
 import { useNotifications } from "./use-notifications";
 import "./notifications.css";
 
@@ -25,8 +26,15 @@ function useNow(): number {
 }
 
 function NotificationList({ deviceId }: { deviceId: string }) {
-  const { state, announcement, reload } = useNotifications(deviceId);
+  const { state, announcement, error, clearError, dismiss, runAction, reload } =
+    useNotifications(deviceId);
   const now = useNow();
+  const listRef = useRef<HTMLDivElement>(null);
+  const handleDismiss = (notification: MirroredNotification) => {
+    dismiss(notification);
+    // The dismissed item is gone, so keep keyboard users in the list.
+    listRef.current?.focus();
+  };
   const groups = useMemo(
     () => (state.status === "ready" ? groupNotifications(state.notifications) : []),
     [state],
@@ -62,14 +70,27 @@ function NotificationList({ deviceId }: { deviceId: string }) {
         {groups.map((group) => (
           <li key={group.id}>
             {group.items.length === 1 ? (
-              <NotificationCard deviceId={deviceId} notification={group.first} now={now} />
+              <NotificationCard
+                deviceId={deviceId}
+                notification={group.first}
+                now={now}
+                onDismiss={handleDismiss}
+                onRunAction={runAction}
+              />
             ) : (
               <section
                 className="notification-group"
                 aria-label={`${group.first.appName}, ${group.items.length} notifications`}
               >
                 {group.items.map((n) => (
-                  <NotificationCard key={n.key} deviceId={deviceId} notification={n} now={now} />
+                  <NotificationCard
+                    key={n.key}
+                    deviceId={deviceId}
+                    notification={n}
+                    now={now}
+                    onDismiss={handleDismiss}
+                    onRunAction={runAction}
+                  />
                 ))}
               </section>
             )}
@@ -84,7 +105,17 @@ function NotificationList({ deviceId }: { deviceId: string }) {
       <div role="status" aria-live="polite" className="sr-only">
         {announcement}
       </div>
-      {body}
+      {error && (
+        <Callout tone="warning" role="alert" className="notification-toast">
+          <span>{error}</span>
+          <Button size="sm" variant="ghost" onClick={clearError}>
+            Close
+          </Button>
+        </Callout>
+      )}
+      <div ref={listRef} tabIndex={-1} className="notification-list-wrap">
+        {body}
+      </div>
     </>
   );
 }
