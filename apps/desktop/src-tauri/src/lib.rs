@@ -4,7 +4,9 @@
 //! and starts the window. Discovery, pairing, transport and feature logic
 //! belong in the workspace crates, not here.
 
+pub mod backend;
 mod commands;
+pub mod qr;
 mod state;
 
 use tauri_specta::{Builder, collect_commands};
