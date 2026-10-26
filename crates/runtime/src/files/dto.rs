@@ -4,7 +4,9 @@
 //! transfer and its position, and the runtime looks the path up when the
 //! user opens it.
 
-use link2linux_core::files::{Direction, Failure, Transfer, TransferEvent, TransferState};
+use link2linux_core::files::{
+    Direction, Failure, Transfer, TransferEvent, TransferState, shown_name,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -142,7 +144,8 @@ pub fn transfer(transfer: &Transfer) -> FileTransfer {
             .files
             .iter()
             .map(|file| TransferFileInfo {
-                name: file.name.clone(),
+                // A received name is safe already; a local one may not be.
+                name: shown_name(&file.name),
                 size: file.size,
                 mime_type: file.mime_type.clone(),
                 saved: transfer.direction == Direction::Incoming && file.path.is_some(),
@@ -248,6 +251,9 @@ mod tests {
         let mut sent = received(TransferState::Completed);
         sent.direction = Direction::Outgoing;
         assert!(transfer(&sent).files.iter().all(|f| !f.saved));
+        // A local name shows without its reordering marks.
+        sent.files[1].name = "report\u{202E}fdp.exe".into();
+        assert_eq!(transfer(&sent).files[1].name, "report_fdp.exe");
     }
 
     #[test]

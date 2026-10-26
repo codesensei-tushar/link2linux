@@ -106,14 +106,24 @@ pub(crate) fn mime_type(name: &str) -> &'static str {
     }
 }
 
+/// `name` as it can be shown: a local file's name too can hold control
+/// characters and the marks that reorder text.
+pub(crate) fn shown(name: &str) -> String {
+    name.chars()
+        .map(|c| if misleads(c) { '_' } else { c })
+        .collect()
+}
+
 /// Whether `c` cannot be stored in a name (`/`, NUL), is a separator on
-/// other systems, or would change how the name looks: control characters
-/// and the marks that reorder text, which can make `exe.jpg` show as
-/// `gpj.exe`.
+/// other systems, or [`misleads`].
 fn is_unsafe(c: char) -> bool {
-    c == '/'
-        || c == '\\'
-        || c.is_control()
+    c == '/' || c == '\\' || misleads(c)
+}
+
+/// Whether `c` would change how a name looks: control characters and the
+/// marks that reorder text, which can make `exe.jpg` show as `gpj.exe`.
+fn misleads(c: char) -> bool {
+    c.is_control()
         || matches!(
             c,
             '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
@@ -200,6 +210,13 @@ mod tests {
         assert_eq!(numbered("archive.tar.gz", 2), "archive.tar (2).gz");
         assert_eq!(numbered("README", 3), "README (3)");
         assert_eq!(numbered("trailing.", 1), "trailing. (1)");
+    }
+
+    #[test]
+    fn shown_names_lose_only_what_misleads() {
+        assert_eq!(shown("photo\u{202E}gpj.exe"), "photo_gpj.exe");
+        assert_eq!(shown("tab\there"), "tab_here");
+        assert_eq!(shown(".hidden \\ dir"), ".hidden \\ dir");
     }
 
     #[test]

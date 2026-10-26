@@ -132,15 +132,7 @@ fn file_drag(app: &tauri::AppHandle, drag: &DragDropEvent) {
             if paths.is_empty() {
                 return;
             }
-            let names = paths
-                .iter()
-                .map(|path| {
-                    path.file_name().map_or_else(
-                        || path.display().to_string(),
-                        |name| name.to_string_lossy().into_owned(),
-                    )
-                })
-                .collect();
+            let names = dropped_names(paths);
             let drop_id = state.keep_drop(paths.clone());
             let _ = events::FilesDropped { drop_id, names }.emit(app);
         }
@@ -149,6 +141,20 @@ fn file_drag(app: &tauri::AppHandle, drag: &DragDropEvent) {
         }
         _ => {}
     }
+}
+
+/// The names of dropped files as the page shows them.
+fn dropped_names(paths: &[std::path::PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            link2linux_runtime::files::shown_name(&name)
+        })
+        .collect()
 }
 
 /// Brings the main window to the front, for a click on a pop-up.
@@ -162,6 +168,15 @@ fn show_window(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dropped_names_show_without_reordering_marks() {
+        let paths = [
+            std::path::PathBuf::from("/home/ana/photo\u{202E}gpj.exe"),
+            std::path::PathBuf::from("/"),
+        ];
+        assert_eq!(super::dropped_names(&paths), ["photo_gpj.exe", "/"]);
+    }
+
     /// Writes `src/lib/bindings.ts`. Run it with `pnpm bindings` after
     /// changing a command or one of its types, and commit the result.
     #[test]

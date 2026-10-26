@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub use link2linux_core::files::shown_name;
 use link2linux_core::files::{FileService, SendError, Transfer, TransferId, check_sendable};
 use link2linux_core::session::Availability;
 use link2linux_platform::{FileStore, PlatformError};
