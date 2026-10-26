@@ -443,6 +443,42 @@ async fn rejects_repeated_sequence_numbers() {
 }
 
 #[tokio::test]
+async fn rejects_skipped_sequence_numbers() {
+    let (mut session, mut peer) = connected(SessionConfig::default()).await;
+    peer.send(&envelope(3, Payload::Ping(Ping { nonce: 1 })))
+        .await
+        .unwrap();
+    let err = session.next_event().await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SessionError::OutOfOrder {
+                previous: 1,
+                received: 3
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn refuses_a_hello_with_sequence_number_two() {
+    let err = handshake_against(envelope(2, Payload::Hello(phone_hello())))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SessionError::OutOfOrder {
+                previous: 0,
+                received: 2
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
 async fn hello_is_only_allowed_in_the_handshake() {
     let (mut session, mut peer) = connected(SessionConfig::default()).await;
     let err = session
