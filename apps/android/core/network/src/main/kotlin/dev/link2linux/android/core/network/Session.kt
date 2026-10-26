@@ -1,5 +1,6 @@
 package dev.link2linux.android.core.network
 
+import com.google.protobuf.InvalidProtocolBufferException
 import dev.link2linux.protocol.v1.Envelope
 import dev.link2linux.protocol.v1.Goodbye
 import dev.link2linux.protocol.v1.GoodbyeReason
@@ -35,6 +36,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the idle timeout fails, and that ends the session. Writes have their own
  * deadline, [writeTimeoutMillis]: a peer that stops reading would otherwise
  * block every sender of this session.
+ *
+ * Until [markPaired] says the desktop is paired, frames are limited to
+ * [FrameCodec.HANDSHAKE_MAX_FRAME_BYTES]: the Hello exchange and the
+ * pairing messages need far less, and the peer may be anyone.
  */
 class Session(
     private val transport: Transport,
@@ -43,6 +48,9 @@ class Session(
     /** How long writing one envelope may take before the connection is closed. */
     private val writeTimeoutMillis: Long = WRITE_TIMEOUT_MILLIS,
 ) : Closeable {
+
+    @Volatile
+    private var frames = FrameCodec(minOf(codec.maxFrameBytes, FrameCodec.HANDSHAKE_MAX_FRAME_BYTES))
 
     private val writeLock = Mutex()
     private var nextSeq = 1L // guarded by writeLock
@@ -76,13 +84,22 @@ class Session(
         throw e
     }
 
+    /**
+     * Starts the session proper once the desktop is known to be paired:
+     * after the Hello exchange on a reconnect, or once a new pairing is
+     * stored. Lifts the frame limit of the handshake.
+     */
+    fun markPaired() {
+        frames = codec
+    }
+
     /** Sends one envelope and returns its sequence number. */
     suspend fun send(fill: Envelope.Builder.() -> Unit): Long = withContext(ioDispatcher) {
         writeLock.withLock {
             val seq = nextSeq++
             val envelope = Envelope.newBuilder().apply(fill).setSeq(seq).build()
             closingAfter(writeTimeoutMillis, "Writing envelope $seq") {
-                codec.write(envelope, transport.output)
+                frames.write(envelope, transport.output)
                 transport.output.flush()
             }
             seq
@@ -150,7 +167,13 @@ class Session(
     }
 
     private suspend fun receive(): Envelope? {
-        val envelope = withContext(ioDispatcher) { codec.read(transport.input) } ?: return null
+        val envelope = try {
+            withContext(ioDispatcher) { frames.read(transport.input) }
+        } catch (e: FrameLimitException) {
+            protocolError(e.message.orEmpty())
+        } catch (e: InvalidProtocolBufferException) {
+            protocolError(e.message.orEmpty())
+        } ?: return null
         if (envelope.seq != lastPeerSeq + 1) protocolError("Peer sent seq ${envelope.seq} after $lastPeerSeq")
         lastPeerSeq = envelope.seq
         return envelope

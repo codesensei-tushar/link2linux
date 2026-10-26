@@ -430,8 +430,9 @@ class PairingServiceTest {
 
             override suspend fun onEstablished(desktop: PairedDevice, session: Session) {
                 if (sessions++ > 0) return
-                // The phone writes far more than the desktop (which never reads) and the socket buffers take.
-                val big = Hello.newBuilder().setDeviceName("x".repeat(1_000_000)).build()
+                // The phone writes far more than the desktop (which never reads) and the socket buffers take,
+                // in frames under the 512 KiB limit for frames without an image.
+                val big = Hello.newBuilder().setDeviceName("x".repeat(400_000)).build()
                 scope.launch {
                     runCatching { repeat(256) { session.send { hello = big } } }
                 }

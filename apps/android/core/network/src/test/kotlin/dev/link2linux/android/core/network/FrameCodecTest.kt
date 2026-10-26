@@ -1,16 +1,23 @@
 package dev.link2linux.android.core.network
 
+import com.google.protobuf.ByteString
 import dev.link2linux.protocol.v1.Envelope
+import dev.link2linux.protocol.v1.PhoneNotification
 import dev.link2linux.protocol.v1.envelope
+import dev.link2linux.protocol.v1.imageData
+import dev.link2linux.protocol.v1.notificationSyncBatch
 import dev.link2linux.protocol.v1.ping
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
+import java.io.IOException
+import java.io.InputStream
 
 class FrameCodecTest {
 
@@ -103,5 +110,73 @@ class FrameCodecTest {
         val envelope = SharedVectors.envelopes[1]
         val exact = FrameCodec(maxFrameBytes = envelope.serializedSize)
         assertEquals(listOf(envelope), decodeAll(encode(envelope, codec = exact), codec = exact))
+    }
+
+    @Test
+    fun aLengthWithTheTopBitSetIsTooLarge() {
+        // 2^64 - 1 and 2^63 + 16: negative as a Long.
+        for (prefix in listOf("ff ff ff ff ff ff ff ff ff 01", "90 80 80 80 80 80 80 80 80 01")) {
+            val error = runCatching { codec.read(ByteArrayInputStream(hex(prefix))) }.exceptionOrNull()
+            assertTrue("$prefix: got $error", error is FrameTooLargeException)
+        }
+    }
+
+    @Test
+    fun aLengthOverflowing64BitsIsRefused() {
+        val error = runCatching { codec.read(ByteArrayInputStream(hex("ff ff ff ff ff ff ff ff ff 02"))) }.exceptionOrNull()
+        assertEquals(IOException::class, error?.let { it::class })
+    }
+
+    @Test(expected = EOFException::class)
+    fun aPrefixAloneIsNotABody() {
+        // Announces 1 MiB, then the stream ends.
+        codec.read(ByteArrayInputStream(hex("80 80 40 08 01")))
+    }
+
+    @Test
+    fun aBodyArrivingInPiecesIsReadWhole() {
+        val big = envelope {
+            seq = 1
+            imageData = imageData { data = ByteString.copyFrom(ByteArray(300_000) { it.toByte() }) }
+        }
+        val trickle = object : InputStream() {
+            val bytes = ByteArrayInputStream(encode(big))
+            override fun read() = bytes.read()
+            override fun read(b: ByteArray, off: Int, len: Int) = bytes.read(b, off, minOf(len, 777))
+        }
+        assertEquals(big, codec.read(trickle))
+    }
+
+    @Test
+    fun onlyAnImageMayExceedTheMessageLimit() {
+        val image = envelope {
+            seq = 1
+            imageData = imageData { data = ByteString.copyFrom(ByteArray(1024 * 1024)) }
+        }
+        assertEquals(listOf(image), decodeAll(encode(image)))
+
+        val batch = envelope {
+            seq = 1
+            notificationSyncBatch = notificationSyncBatch { removedKeys += "k".repeat(FrameCodec.MAX_MESSAGE_FRAME_BYTES) }
+        }
+        val written = runCatching { encode(batch) }.exceptionOrNull()
+        assertEquals(FrameCodec.MAX_MESSAGE_FRAME_BYTES, (written as FrameTooLargeException).limit)
+        val bytes = ByteArrayOutputStream().also { batch.writeDelimitedTo(it) }.toByteArray()
+        val read = runCatching { decodeAll(bytes) }.exceptionOrNull()
+        assertEquals(FrameCodec.MAX_MESSAGE_FRAME_BYTES, (read as FrameTooLargeException).limit)
+    }
+
+    @Test
+    fun repeatedFieldsAreCountedBeforeParsing() {
+        fun batch(count: Int) = envelope {
+            seq = 1
+            notificationSyncBatch = notificationSyncBatch { notifications += List(count) { PhoneNotification.getDefaultInstance() } }
+        }
+        assertEquals(listOf(batch(100)), decodeAll(encode(batch(100))))
+        // 600,000 empty notifications: within the frame limit, and around
+        // 150 MiB once parsed.
+        val bomb = ByteArrayOutputStream().also { batch(600_000).writeDelimitedTo(it) }.toByteArray()
+        val error = runCatching { decodeAll(bomb) }.exceptionOrNull()
+        assertEquals("PhoneNotification", (error as TooManyEntriesException).field)
     }
 }

@@ -64,13 +64,14 @@ message Envelope {
 message Hello {
   // Highest protocol major version the sender speaks.
   uint32 protocol_version = 1;
-  // Stable identifier of the installation: a random UUID in lowercase
-  // hyphenated form. The receiver finds the pairing record by the peer's key
-  // fingerprint, then checks that this field equals the record's device id,
-  // and closes the connection on a mismatch. It never uses this field to
-  // find, update or replace a record.
+  // Stable identifier of the installation: 1 to 64 ASCII letters, digits
+  // and hyphens, such as a random UUID in lowercase hyphenated form. The
+  // receiver refuses a Hello with another form. It finds the pairing record
+  // by the peer's key fingerprint, then checks that this field equals the
+  // record's device id, and closes the connection on a mismatch. It never
+  // uses this field to find, update or replace a record.
   string device_id = 2;
-  // Human-readable name, as the user set it.
+  // Human-readable name, as the user set it: at most 64 bytes.
   string device_name = 3;
   DeviceKind kind = 4;
   // Capability tokens the sender's build supports: a feature name such as

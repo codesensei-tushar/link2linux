@@ -65,7 +65,8 @@ use link2linux_protocol::v1::{
     Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason, PairingMethod, PresenceUpdate,
 };
 use link2linux_protocol::{
-    DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
+    DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, HANDSHAKE_MAX_FRAME_LEN, Hello,
+    Payload, Ping, Pong,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{self, Instant};
@@ -109,7 +110,10 @@ pub struct SessionConfig {
     /// How long a request waits for an answer, and for each further answer
     /// of a request answered by several messages.
     pub request_timeout: Duration,
-    /// Largest frame body accepted or sent, in bytes.
+    /// Largest frame body accepted or sent once the session has started,
+    /// in bytes. Until then, during the `Hello` exchange and on a pairing
+    /// connection until [`Session::finish_pairing`], frames are limited to
+    /// [`HANDSHAKE_MAX_FRAME_LEN`], or this if it is smaller.
     pub max_frame_len: usize,
 }
 
@@ -384,6 +388,9 @@ pub struct Session<S> {
     pairing: bool,
     /// The protocol major version both sides use.
     version: u32,
+    /// [`SessionConfig::max_frame_len`], the frame limit once the session
+    /// has started.
+    max_frame_len: usize,
     liveness: Liveness,
     request_timeout: Duration,
     /// This side's requests that wait for an answer, by sequence number.
@@ -447,7 +454,10 @@ where
             pairing,
             expected_peer_id,
         } = start.into();
-        let codec = EnvelopeCodec::with_max_frame_len(config.max_frame_len);
+        // The peer may not be paired yet, so its frames stay small until the
+        // session starts.
+        let codec =
+            EnvelopeCodec::with_max_frame_len(config.max_frame_len.min(HANDSHAKE_MAX_FRAME_LEN));
         let mut framed = Framed::new(io, codec);
         let mut hello = hello_from(&local);
         if let Some(method) = pairing {
@@ -523,6 +533,7 @@ where
             pairing_method,
             pairing: pairing_method.is_some(),
             version,
+            max_frame_len: config.max_frame_len,
             liveness,
             request_timeout: config.request_timeout,
             pending: BTreeMap::new(),
@@ -537,7 +548,7 @@ where
             ended: false,
         };
         if !session.pairing {
-            session.announce()?;
+            session.start()?;
         }
         time::timeout(config.handshake_timeout, session.flush())
             .await
@@ -587,7 +598,7 @@ where
             return Ok(());
         }
         self.pairing = false;
-        self.announce()?;
+        self.start()?;
         self.flush().await
     }
 
@@ -827,6 +838,12 @@ where
             }
             if !self.pending.contains_key(&request) {
                 return Err(RequestError::UnknownRequest(request));
+            }
+            if self.events.len() >= MAX_WAITING_EVENTS {
+                let detail = format!(
+                    "more than {MAX_WAITING_EVENTS} messages arrived while waiting for an answer"
+                );
+                return Err(self.fail(SessionError::Protocol(detail)).into());
             }
             self.step().await?;
         }
@@ -1336,9 +1353,11 @@ where
         Ok(seq)
     }
 
-    /// Queues this side's `FeatureStatus` and `PresenceUpdate`, which start
-    /// the session proper.
-    fn announce(&mut self) -> Result<(), SessionError> {
+    /// Starts the session proper: lifts the small frame limit of the
+    /// handshake, now that the peer is paired, and queues this side's
+    /// `FeatureStatus` and `PresenceUpdate`.
+    fn start(&mut self) -> Result<(), SessionError> {
+        *self.framed.codec_mut() = EnvelopeCodec::with_max_frame_len(self.max_frame_len);
         let status = status::status_for(&self.local.features, &self.availability);
         self.enqueue(Payload::FeatureStatus(status))?;
         self.enqueue(Payload::PresenceUpdate(self.presence.clone()))?;
@@ -1360,6 +1379,16 @@ where
         Ok(())
     }
 }
+
+/// How much this side queues for the peer before it stops reading from it,
+/// in bytes. The answers the session sends by itself, such as a `Pong` or
+/// an `ErrorReply` to an unknown request, then wait for the peer to read,
+/// instead of piling up behind a peer that sends but never reads.
+const MAX_QUEUED_LEN: usize = 1024 * 1024;
+
+/// How many events [`Session::next_reply`] keeps for
+/// [`Session::next_event`] while it waits for an answer.
+const MAX_WAITING_EVENTS: usize = 1024;
 
 /// Sleeps until `deadline`, or forever without one.
 async fn sleep_until(deadline: Option<Instant>) {
@@ -1386,7 +1415,8 @@ enum Io {
 }
 
 /// Writes queued frames while waiting for the next incoming one, so a slow
-/// write never stops the session from reading.
+/// write never stops the session from reading, unless more than
+/// [`MAX_QUEUED_LEN`] bytes wait to be written.
 fn poll_io<S>(
     framed: &mut Framed<S, EnvelopeCodec>,
     unflushed: &mut bool,
@@ -1397,6 +1427,10 @@ where
 {
     if let Poll::Ready(Err(err)) = poll_flush(framed, unflushed, cx) {
         return Poll::Ready(Io::WriteFailed(err));
+    }
+    // The flush is pending, so it wakes this task once the peer reads.
+    if framed.write_buffer().len() > MAX_QUEUED_LEN {
+        return Poll::Pending;
     }
     Pin::new(framed).poll_next(cx).map(|frame| match frame {
         Some(Ok(envelope)) => Io::Frame(envelope),
@@ -1477,8 +1511,20 @@ fn accept_hello(
 /// Validates the peer's `Hello`, apart from its versions, and turns it into
 /// a [`DeviceInfo`].
 fn peer_from(hello: Hello) -> Result<DeviceInfo, SessionError> {
-    if hello.device_id.is_empty() {
-        return Err(SessionError::InvalidHello("empty device_id"));
+    if !is_device_id(&hello.device_id) {
+        return Err(SessionError::InvalidHello(
+            "device_id is not 1 to 64 ASCII letters, digits or hyphens",
+        ));
+    }
+    // The frame's limits already allow at most 64 of them.
+    if hello
+        .features
+        .iter()
+        .any(|name| name.len() > MAX_FEATURE_LEN)
+    {
+        return Err(SessionError::InvalidHello(
+            "a feature token is longer than 32 bytes",
+        ));
     }
     // Device kinds and features added by newer versions read as unknown.
     let kind = hello.kind();
@@ -1493,10 +1539,50 @@ fn peer_from(hello: Hello) -> Result<DeviceInfo, SessionError> {
     }
     Ok(DeviceInfo {
         id: hello.device_id,
-        name: hello.device_name,
+        name: clean_name(&hello.device_name),
         kind,
         features,
     })
+}
+
+/// The longest device id, in bytes.
+const MAX_DEVICE_ID_LEN: usize = 64;
+/// The longest device name, in bytes.
+const MAX_DEVICE_NAME_LEN: usize = 64;
+/// The longest capability token, in bytes.
+const MAX_FEATURE_LEN: usize = 32;
+
+/// Whether `id` can be a device id: 1 to 64 ASCII letters, digits and
+/// hyphens. That takes in a UUID, and the `desktop-` ids of the desktop app
+/// up to 0.1.1.
+fn is_device_id(id: &str) -> bool {
+    (1..=MAX_DEVICE_ID_LEN).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// `name` without control and bidirectional formatting characters, cut to
+/// [`MAX_DEVICE_NAME_LEN`] bytes at a character boundary.
+fn clean_name(name: &str) -> String {
+    let mut clean = String::new();
+    for c in name.chars().filter(|&c| !is_hidden(c)) {
+        if clean.len() + c.len_utf8() > MAX_DEVICE_NAME_LEN {
+            break;
+        }
+        clean.push(c);
+    }
+    clean
+}
+
+/// Whether `c` is a control character or a formatting character that
+/// changes the direction of text.
+fn is_hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
 }
 
 /// The longest `ErrorReply.detail` the protocol allows, in bytes.

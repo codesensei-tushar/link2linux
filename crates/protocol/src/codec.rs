@@ -7,18 +7,33 @@
 //!
 //! [`EnvelopeCodec`] plugs into `tokio_util::codec::Framed` (or `FramedRead`
 //! / `FramedWrite`) to turn any byte stream into a stream of envelopes.
+//!
+//! Before it decodes a frame, the codec checks the limits of
+//! `docs/protocol.md`, "Framing": the frame's size, which depends on whether
+//! it carries an image, and how many entries its repeated fields hold.
 
 use bytes::{Buf, BytesMut};
 use prost::Message;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::Envelope;
+use crate::{Envelope, Payload, limits};
 
-/// Default limit on the size of one frame body: 4 MiB.
+/// Default limit on the size of one frame body: 1.25 MiB, enough for an
+/// `ImageData` with an image of 1 MiB, the largest the protocol allows.
 ///
 /// Bulk data (photos, files, screen) is split into chunks well below this,
 /// so a bigger frame means a broken or hostile peer.
-pub const DEFAULT_MAX_FRAME_LEN: usize = 4 * 1024 * 1024;
+pub const DEFAULT_MAX_FRAME_LEN: usize = 1280 * 1024;
+
+/// Limit on the size of a frame body that carries no image: 512 KiB. Senders
+/// keep such frames below 256 KiB.
+pub const MAX_MESSAGE_FRAME_LEN: usize = 512 * 1024;
+
+/// Limit on the size of a frame body until the session starts, that is
+/// during the `Hello` exchange and, on a pairing connection, the pairing
+/// exchange: 16 KiB. Those messages take well under 1 KiB, and the peer is
+/// not known to be paired yet.
+pub const HANDSHAKE_MAX_FRAME_LEN: usize = 16 * 1024;
 
 /// A varint never needs more than ten bytes (64 bits, 7 per byte).
 const MAX_VARINT_LEN: usize = 10;
@@ -42,6 +57,19 @@ pub enum FrameError {
     /// overflowing 64 bits).
     #[error("malformed frame length prefix")]
     InvalidLength,
+    /// A repeated field of the frame holds more entries than the protocol
+    /// allows, counted over the whole frame.
+    #[error("frame holds more than {max} entries of {field}")]
+    TooManyEntries {
+        /// The field, such as `PhoneNotification.actions`.
+        field: &'static str,
+        /// The most entries allowed.
+        max: usize,
+    },
+    /// The frame body is not well-formed protobuf, as far as the limit
+    /// checks read it.
+    #[error("frame body is not a well-formed message")]
+    Malformed,
     /// The frame body is not a valid `Envelope`.
     #[error("frame does not hold a valid Envelope: {0}")]
     Decode(#[from] prost::DecodeError),
@@ -88,7 +116,8 @@ impl EnvelopeCodec {
     }
 
     /// A codec that rejects frame bodies longer than `max_frame_len` bytes,
-    /// in both directions.
+    /// in both directions, and bodies without an image longer than
+    /// [`MAX_MESSAGE_FRAME_LEN`] or `max_frame_len`, whichever is smaller.
     #[must_use]
     pub const fn with_max_frame_len(max_frame_len: usize) -> Self {
         Self { max_frame_len }
@@ -98,6 +127,15 @@ impl EnvelopeCodec {
     #[must_use]
     pub const fn max_frame_len(&self) -> usize {
         self.max_frame_len
+    }
+
+    /// The largest frame body without an image this codec accepts.
+    const fn max_message_len(&self) -> usize {
+        if self.max_frame_len < MAX_MESSAGE_FRAME_LEN {
+            self.max_frame_len
+        } else {
+            MAX_MESSAGE_FRAME_LEN
+        }
     }
 }
 
@@ -132,6 +170,7 @@ impl Decoder for EnvelopeCodec {
 
         src.advance(prefix_len);
         let body = src.split_to(body_len);
+        limits::check(&body, self.max_message_len())?;
         Ok(Some(Envelope::decode(body)?))
     }
 }
@@ -141,10 +180,14 @@ impl Encoder<&Envelope> for EnvelopeCodec {
 
     fn encode(&mut self, item: &Envelope, dst: &mut BytesMut) -> Result<(), FrameError> {
         let len = item.encoded_len();
-        if len > self.max_frame_len {
+        let max = match item.payload {
+            Some(Payload::ImageData(_)) => self.max_frame_len,
+            _ => self.max_message_len(),
+        };
+        if len > max {
             return Err(FrameError::TooLarge {
                 len: len as u64,
-                max: self.max_frame_len,
+                max,
             });
         }
         dst.reserve(prost::length_delimiter_len(len) + len);
@@ -157,7 +200,7 @@ impl Encoder<&Envelope> for EnvelopeCodec {
 ///
 /// Returns the value and the number of bytes it occupies, or `None` when
 /// `buf` ends before the varint does.
-fn peek_varint(buf: &[u8]) -> Result<Option<(u64, usize)>, FrameError> {
+pub(crate) fn peek_varint(buf: &[u8]) -> Result<Option<(u64, usize)>, FrameError> {
     let mut value = 0u64;
     for (index, &byte) in buf.iter().take(MAX_VARINT_LEN).enumerate() {
         // The tenth byte may only contribute the 64th bit.
