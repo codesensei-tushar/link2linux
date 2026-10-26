@@ -6,6 +6,7 @@ plugins {
 dependencies {
     api(projects.core.data)
     implementation(projects.core.clipboard)
+    implementation(projects.core.files)
     implementation(projects.core.notifications)
     api(projects.core.protocol)
     api(projects.core.security)

@@ -9,7 +9,7 @@ import dev.link2linux.protocol.v1.FileCancel
 import dev.link2linux.protocol.v1.FileChunk
 import dev.link2linux.protocol.v1.FileOffer
 import dev.link2linux.protocol.v1.errorReply
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 import java.io.IOException
 import java.security.SecureRandom
 
@@ -63,8 +63,11 @@ sealed interface FileAnswer {
 interface FileLink {
     val peer: FilePeer
 
-    /** Whether the desktop's `FeatureStatus` says files are `READY` there. Offers go out only while it does. */
-    val peerReady: StateFlow<Boolean>
+    /**
+     * Whether the desktop's latest `FeatureStatus` says files are `READY`
+     * there, its current value first. Offers go out only while it does.
+     */
+    val peerReady: Flow<Boolean>
 
     /**
      * Writes [request] and returns once it is written, with a handle that

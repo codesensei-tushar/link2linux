@@ -6,8 +6,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -41,6 +45,14 @@ class FileEngine(
 
     /** Whether the feature can be used now, for `FeatureStatus`. */
     val availability: StateFlow<FileAvailability> = _availability.asStateFlow()
+
+    private val _availabilityChanges = MutableSharedFlow<FileAvailability>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
+    /** Every change of [availability], in order, from the moment a collector subscribes. */
+    val availabilityChanges: SharedFlow<FileAvailability> = _availabilityChanges.asSharedFlow()
 
     private val board = TransferBoard()
 
@@ -116,7 +128,10 @@ class FileEngine(
     /** The user's choices changed. Turning the feature off stops every transfer. */
     fun onPolicyChanged() {
         val now = current()
-        _availability.value = now
+        if (_availability.value != now) {
+            _availability.value = now
+            _availabilityChanges.tryEmit(now)
+        }
         if (now != FileAvailability.READY) {
             scope.launch {
                 receiver.cancelAll()
