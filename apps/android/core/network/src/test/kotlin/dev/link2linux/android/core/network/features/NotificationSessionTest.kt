@@ -14,6 +14,7 @@ import dev.link2linux.android.core.network.pairing.PairingService
 import dev.link2linux.android.core.network.tls.TestDesktop
 import dev.link2linux.android.core.network.tls.asSource
 import dev.link2linux.android.core.notifications.AndroidValues
+import dev.link2linux.android.core.notifications.HmacNotificationKeys
 import dev.link2linux.android.core.notifications.ImageStore
 import dev.link2linux.android.core.notifications.NotificationCanceller
 import dev.link2linux.android.core.notifications.NotificationEngine
@@ -59,6 +60,7 @@ class NotificationSessionTest {
         @Volatile override var accessGranted = true
         override val dismissSync = true
         override val hideOneTimeCodes = true
+        override val actWhileLocked = false
 
         override fun isExcluded(packageName: String) = false
 
@@ -69,6 +71,11 @@ class NotificationSessionTest {
     private val cancelled = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val images = ImageStore()
+
+    // What the desktop sees instead of the platform's keys.
+    private val wireKeys = HmacNotificationKeys(ByteArray(32) { 5 })
+
+    private fun wire(platformKey: String) = wireKeys.key(platformKey)
     private val engine = NotificationEngine(
         scope = scope,
         policy = policy,
@@ -76,7 +83,7 @@ class NotificationSessionTest {
             override val isLocked = false
             override val canStartActivitiesFromBackground = false
         },
-        mapper = NotificationMapper(images),
+        mapper = NotificationMapper(images, keys = wireKeys),
         images = images,
         canceller = NotificationCanceller { key ->
             cancelled += key
@@ -175,7 +182,7 @@ class NotificationSessionTest {
     private suspend fun DesktopPeer.syncUntil(expected: List<String>): List<Envelope> {
         var batches = sync()
         withTimeout(5_000) {
-            while (keys(batches) != expected) {
+            while (keys(batches) != expected.map(::wire)) {
                 delay(20)
                 batches = sync()
             }
@@ -214,14 +221,14 @@ class NotificationSessionTest {
         val event = io { peer.read()!! }
 
         assertEquals(PayloadCase.NOTIFICATION_POSTED, event.payloadCase)
-        assertEquals("live", event.notificationPosted.notification.key)
+        assertEquals(wire("live"), event.notificationPosted.notification.key)
         assertEquals(0L, event.replyTo)
         assertFalse(event.expectsReply)
 
         engine.onRemoved("live", RemovalCause.USER_DISMISSED)
         val removed = io { peer.read()!! }
         assertEquals(PayloadCase.NOTIFICATION_REMOVED, removed.payloadCase)
-        assertEquals("live", removed.notificationRemoved.key)
+        assertEquals(wire("live"), removed.notificationRemoved.key)
     }
 
     @Test
@@ -237,7 +244,7 @@ class NotificationSessionTest {
                 notificationDismissRequest = notificationDismissRequest {
                     idempotencyKey = ByteString.copyFrom(ByteArray(16) { 3 })
                     createdUnixMs = System.currentTimeMillis()
-                    key = "n1"
+                    key = wire("n1")
                 }
             }
         }
@@ -298,7 +305,7 @@ class NotificationSessionTest {
         // The old session ending must not detach the new one.
         replacement.syncUntil(emptyList())
         engine.onPosted(snap("after"))
-        assertEquals("after", io { replacement.read()!! }.notificationPosted.notification.key)
+        assertEquals(wire("after"), io { replacement.read()!! }.notificationPosted.notification.key)
         assertEquals(1, service.connected.value.size)
     }
 
@@ -313,14 +320,14 @@ class NotificationSessionTest {
         second.syncUntil(emptyList())
 
         engine.onPosted(snap("both"))
-        assertEquals("both", io { first.read()!! }.notificationPosted.notification.key)
-        assertEquals("both", io { second.read()!! }.notificationPosted.notification.key)
+        assertEquals(wire("both"), io { first.read()!! }.notificationPosted.notification.key)
+        assertEquals(wire("both"), io { second.read()!! }.notificationPosted.notification.key)
 
         // One leaving does not take the other's events with it.
         io { first.send { goodbye = Goodbye.newBuilder().setReason(GoodbyeReason.GOODBYE_REASON_SHUTDOWN).build() } }
         withTimeout(5_000) { service.connected.first { it.size == 1 } }
         engine.onPosted(snap("after"))
-        assertEquals("after", io { second.read()!! }.notificationPosted.notification.key)
+        assertEquals(wire("after"), io { second.read()!! }.notificationPosted.notification.key)
     }
 
     @Test

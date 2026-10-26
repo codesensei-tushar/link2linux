@@ -14,7 +14,8 @@ import org.junit.Test
 
 class NotificationMapperTest {
     private val images = ImageStore()
-    private val mapper = NotificationMapper(images, RedactionDetector(appLocked = setOf("App is locked")))
+    private val keys = HmacNotificationKeys(ByteArray(32) { 7 })
+    private val mapper = NotificationMapper(images, RedactionDetector(appLocked = setOf("App is locked")), keys = keys)
 
     private fun action(
         label: String,
@@ -60,7 +61,7 @@ class NotificationMapperTest {
                 appIcon = png(1),
             ),
         ).notification
-        assertEquals("0|org.chat|1|null|10001", m.key)
+        assertEquals(keys.key("0|org.chat|1|null|10001"), m.key)
         assertEquals("org.chat", m.appId)
         assertEquals("Chat", m.appName)
         assertEquals("Ann", m.title)
@@ -77,6 +78,15 @@ class NotificationMapperTest {
     }
 
     @Test
+    fun `the user's lock-screen setting for the channel wins when it is stricter`() {
+        fun visibility(app: Int, user: Int) = mapper.map(base.copy(visibility = app, visibilityOverride = user)).notification.visibility
+        assertEquals(NotificationVisibility.NOTIFICATION_VISIBILITY_SECRET, visibility(AndroidValues.VISIBILITY_PUBLIC, AndroidValues.VISIBILITY_SECRET))
+        assertEquals(NotificationVisibility.NOTIFICATION_VISIBILITY_PRIVATE, visibility(AndroidValues.VISIBILITY_PUBLIC, AndroidValues.VISIBILITY_PRIVATE))
+        assertEquals(NotificationVisibility.NOTIFICATION_VISIBILITY_PRIVATE, visibility(AndroidValues.VISIBILITY_PRIVATE, AndroidValues.VISIBILITY_PUBLIC))
+        assertEquals(NotificationVisibility.NOTIFICATION_VISIBILITY_PUBLIC, visibility(AndroidValues.VISIBILITY_PUBLIC, AndroidValues.VISIBILITY_NO_OVERRIDE))
+    }
+
+    @Test
     fun `the post time is used when the app set no event time`() {
         assertEquals(1_000L, mapper.map(base).notification.whenUnixMs)
     }
@@ -89,10 +99,20 @@ class NotificationMapperTest {
     }
 
     @Test
-    fun `long keys and groups are hashed`() {
-        val m = mapper.map(base.copy(key = "k".repeat(400), groupKey = "g".repeat(400))).notification
-        assertTrue(m.key.startsWith("h:"))
-        assertTrue(m.group.startsWith("h:"))
+    fun `keys and groups are opaque, also for withheld content, and stay the same while the secret does`() {
+        // Apps put conversation partners into their tags and groups.
+        val chat = base.copy(key = "0|org.chat|1|+15551234567@s.example|10123", groupKey = "0|org.chat|g:+15551234567")
+        for (s in listOf(chat, chat.copy(text = "Your code is 482913"))) {
+            val m = mapper.map(s, contentHidden = s === chat).notification
+            assertFalse("15551234567" in m.key || "15551234567" in m.group)
+            assertTrue(m.key.startsWith("k:") && m.key.length == 24)
+            assertTrue(m.group.startsWith("g:") && m.group.length == 24)
+        }
+        val again = NotificationMapper(ImageStore(), keys = HmacNotificationKeys(ByteArray(32) { 7 })).map(chat).notification
+        assertEquals(mapper.map(chat).notification.key, again.key)
+        assertNotEquals(again.key, NotificationMapper(ImageStore()).map(chat).notification.key)
+        // A notification and a group never get the same name.
+        assertNotEquals(keys.key("x"), keys.group("x").replaceFirst("g:", "k:"))
     }
 
     @Test

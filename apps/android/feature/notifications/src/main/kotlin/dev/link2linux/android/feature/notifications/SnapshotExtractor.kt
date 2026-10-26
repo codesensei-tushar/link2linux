@@ -76,6 +76,7 @@ internal class SnapshotExtractor(private val context: Context) {
             onlyAlertOnce = n.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
             interruptionSuppressed = ranking != null && !ranking.matchesInterruptionFilter(),
             visibility = n.visibility,
+            visibilityOverride = lockScreenSetting(ranking),
             progress = if (extras.containsKey(Notification.EXTRA_PROGRESS_MAX) && (progressMax > 0 || indeterminate)) {
                 ProgressSnapshot(extras.getInt(Notification.EXTRA_PROGRESS, 0), progressMax, indeterminate)
             } else {
@@ -92,6 +93,13 @@ internal class SnapshotExtractor(private val context: Context) {
             largeIcon = n.getLargeIcon()?.let { IconImageSource(context, it) },
             picture = picture(extras),
         )
+    }
+
+    /** What the user chose for the channel on the lock screen: the ranking says so from Android 12, the channel before. */
+    private fun lockScreenSetting(ranking: NotificationListenerService.Ranking?): Int = when {
+        ranking == null -> AndroidValues.VISIBILITY_NO_OVERRIDE
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> ranking.lockscreenVisibilityOverride
+        else -> ranking.channel?.lockscreenVisibility ?: AndroidValues.VISIBILITY_NO_OVERRIDE
     }
 
     /** The application info Android attaches to the notification, since package visibility can hide the app from a lookup. */
@@ -146,6 +154,7 @@ internal class SnapshotExtractor(private val context: Context) {
             },
             requiresUnlock = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && a.isAuthenticationRequired,
             opensActivity = opensActivity(intent),
+            mayOpenActivity = mayOpenActivity(intent),
             invoker = PendingIntentInvoker(context, intent, input),
         )
     }
@@ -157,6 +166,10 @@ internal class SnapshotExtractor(private val context: Context) {
     private fun opensActivity(intent: PendingIntent): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && intent.isActivity
 
+    /** Whether it might open an activity; before Android 12 that is unknown, so any might. */
+    private fun mayOpenActivity(intent: PendingIntent): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S || intent.isActivity
+
     /** Answer, decline and hang-up of a call style notification, which Android keeps outside the action list. */
     private fun callActions(extras: Bundle): List<ActionSnapshot> {
         if (!extras.containsKey(EXTRA_CALL_TYPE)) return emptyList()
@@ -166,6 +179,7 @@ internal class SnapshotExtractor(private val context: Context) {
                 label = "",
                 callRole = role,
                 opensActivity = opensActivity(intent),
+                mayOpenActivity = mayOpenActivity(intent),
                 invoker = PendingIntentInvoker(context, intent, null),
             )
         }

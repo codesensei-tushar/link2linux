@@ -52,13 +52,16 @@ enum class RemovalCause {
  * once and are applied one at a time in call order. Each session with a
  * desktop wires it with [attach], [handle] and [detach]; several can be
  * attached at once, and each gets live events once its desktop has synced.
- * All state lives behind one lock, so a live event never interleaves with
- * the batches of a sync answer.
+ * All state lives behind one lock. What an attached session gets, answers
+ * and live events alike, goes through its own outbox in order and is
+ * written outside the lock, so a live event never interleaves with the
+ * batches of a sync answer, and a desktop that stops reading holds up no
+ * other.
  *
  * @param ownPackage notifications of this package are never shared.
  */
 class NotificationEngine(
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val policy: NotificationPolicy,
     private val environment: NotificationEnvironment,
     private val mapper: NotificationMapper,
@@ -68,6 +71,8 @@ class NotificationEngine(
     private val clock: () -> Long = System::currentTimeMillis,
     private val newEpoch: () -> Long = ::randomEpoch,
     private val onError: (Throwable) -> Unit = {},
+    /** Writes queued for one session before it counts as not reading, and is ended. */
+    private val outboxCapacity: Int = OUTBOX_CAPACITY,
 ) {
     private sealed interface Event {
         data class Connected(val active: List<NotificationSnapshot>) : Event
@@ -79,6 +84,9 @@ class NotificationEngine(
         data class Removed(val platformKey: String, val cause: RemovalCause) : Event
 
         data object PolicyChanged : Event
+
+        /** An image a mapping had to leave out has finished rendering. */
+        data object ImagesReady : Event
     }
 
     private class Candidate(val snapshot: NotificationSnapshot) {
@@ -89,9 +97,41 @@ class NotificationEngine(
 
     private class Shared(val protoKey: String, val mapped: MappedNotification)
 
-    /** An attached session, which gets live events once its desktop synced since the last reset. */
-    private class Subscriber(val transport: NotificationTransport) {
-        var synced = false
+    /**
+     * An attached session, which gets live events once its desktop synced
+     * since the last reset. A coroutine of its own writes what is queued for
+     * it, outside the engine's lock.
+     */
+    private inner class Subscriber(val transport: NotificationTransport) {
+        var synced = false // guarded by lock
+        private val outbox = Channel<suspend () -> Unit>(outboxCapacity)
+        private val writer = scope.launch {
+            for (write in outbox) {
+                try {
+                    write()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // The connection is going away. Stop sending to it, so its desktop never sees events
+                    // with gaps before it syncs again.
+                    lock.withLock { synced = false }
+                    onError(e)
+                }
+            }
+        }
+
+        /** Queues [write]. When the desktop has fallen [outboxCapacity] writes behind, its session is ended instead. */
+        fun offer(write: suspend () -> Unit): Boolean {
+            if (outbox.trySend(write).isSuccess) return true
+            synced = false
+            runCatching { transport.abandon() }.onFailure(onError)
+            return false
+        }
+
+        fun close() {
+            outbox.close()
+            writer.cancel()
+        }
     }
 
     private val queue = Channel<Event>(Channel.UNLIMITED)
@@ -124,6 +164,7 @@ class NotificationEngine(
 
     init {
         _availability.value = currentAvailability()
+        images.onRendered = { queue.trySend(Event.ImagesReady) }
         scope.launch {
             for (event in queue) {
                 try {
@@ -131,6 +172,9 @@ class NotificationEngine(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    onError(e)
+                } catch (e: OutOfMemoryError) {
+                    // One notification too big to handle must not stop the others.
                     onError(e)
                 }
             }
@@ -178,16 +222,31 @@ class NotificationEngine(
 
     /** The session behind [transport] ended. The other sessions keep their live events. */
     suspend fun detach(transport: NotificationTransport) {
-        lock.withLock { subscribers.removeAll { it.transport === transport } }
+        lock.withLock {
+            subscribers.filter { it.transport === transport }.forEach(Subscriber::close)
+            subscribers.removeAll { it.transport === transport }
+        }
     }
 
     /**
      * Carries out one request from the desktop of the session behind [from]
-     * and sends its answers to [replies]. A sync subscribes [from] to live
-     * events, if it is attached.
+     * and sends its answers to [replies]: through the session's outbox when
+     * it is attached, after any live event queued before, else directly. A
+     * sync subscribes [from] to live events, if it is attached.
      */
-    suspend fun handle(request: NotificationRequest, replies: ReplySink, from: NotificationTransport) = lock.withLock {
-        refuse()?.let { return@withLock replies.send(it) }
+    suspend fun handle(request: NotificationRequest, replies: ReplySink, from: NotificationTransport) {
+        val direct = lock.withLock {
+            val answers = ArrayList<NotificationReply>()
+            answer(request, { answers += it }, from)
+            val subscriber = subscribers.firstOrNull { it.transport === from } ?: return@withLock answers
+            for (reply in answers) if (!subscriber.offer { replies.send(reply) }) break
+            emptyList()
+        }
+        for (reply in direct) replies.send(reply)
+    }
+
+    private fun answer(request: NotificationRequest, replies: (NotificationReply) -> Unit, from: NotificationTransport) {
+        refuse()?.let { return replies(it) }
         when (request) {
             is NotificationRequest.Sync -> handleSync(request, replies, from)
             is NotificationRequest.Image -> {
@@ -198,12 +257,12 @@ class NotificationEngine(
                     images.get(hash)?.let { NotificationReply.Image(it) }
                         ?: failure(ErrorCode.ERROR_CODE_NOT_FOUND, "no such image")
                 }
-                replies.send(reply)
+                replies(reply)
             }
-            is NotificationRequest.Dismiss -> replies.send(
+            is NotificationRequest.Dismiss -> replies(
                 once(request.message.idempotencyKey, request.message.createdUnixMs) { dismiss(request.message) },
             )
-            is NotificationRequest.Action -> replies.send(
+            is NotificationRequest.Action -> replies(
                 once(request.message.idempotencyKey, request.message.createdUnixMs) { act(request.message) },
             )
         }
@@ -211,7 +270,7 @@ class NotificationEngine(
 
     // Events
 
-    private suspend fun apply(event: Event) {
+    private fun apply(event: Event) {
         when (event) {
             is Event.Connected -> {
                 resetCollection()
@@ -228,6 +287,12 @@ class NotificationEngine(
                 refreshAvailability(transition = false)
             }
             Event.PolicyChanged -> refreshAvailability(transition = true)
+            Event.ImagesReady -> for ((key, c) in candidates.entries.toList()) {
+                if (c.mapped?.imagesPending != true) continue
+                c.mapped = null
+                // The notification is out already; this adds its pictures without alerting again.
+                reconcile(key, quiet = true)
+            }
             is Event.Posted -> {
                 val s = event.snapshot
                 if (s.packageName == ownPackage) return
@@ -253,7 +318,7 @@ class NotificationEngine(
         else -> NotificationAvailability.READY
     }
 
-    private suspend fun refreshAvailability(transition: Boolean) {
+    private fun refreshAvailability(transition: Boolean) {
         val before = _availability.value
         val now = currentAvailability()
         if (now != before) {
@@ -277,7 +342,7 @@ class NotificationEngine(
         images.retain(emptySet())
     }
 
-    private suspend fun reconcileAll(quiet: Boolean) {
+    private fun reconcileAll(quiet: Boolean) {
         for (key in candidates.keys.toList()) reconcile(key, quiet)
         // Anything shared that no candidate backs any more.
         for (key in sharedByPlatformKey.keys.toList()) if (key !in candidates) {
@@ -285,7 +350,7 @@ class NotificationEngine(
         }
     }
 
-    private suspend fun reconcileWithGroup(platformKey: String?, pkg: String, groupKey: String?, quiet: Boolean) {
+    private fun reconcileWithGroup(platformKey: String?, pkg: String, groupKey: String?, quiet: Boolean) {
         if (platformKey != null) reconcile(platformKey, quiet)
         if (groupKey == null) return
         for ((key, c) in candidates.entries.toList()) {
@@ -309,7 +374,7 @@ class NotificationEngine(
         return true
     }
 
-    private suspend fun reconcile(platformKey: String, quiet: Boolean) {
+    private fun reconcile(platformKey: String, quiet: Boolean) {
         val candidate = candidates[platformKey]
         if (candidate == null || !shouldShare(candidate.snapshot)) {
             removeShared(platformKey, NotificationRemovalReason.NOTIFICATION_REMOVAL_REASON_NOT_SHARED)
@@ -343,7 +408,7 @@ class NotificationEngine(
         }))
     }
 
-    private suspend fun removeShared(platformKey: String, reason: NotificationRemovalReason) {
+    private fun removeShared(platformKey: String, reason: NotificationRemovalReason) {
         val protoKey = sharedByPlatformKey.remove(platformKey) ?: return
         shared.remove(protoKey)
         val revision = collection.remove(protoKey) ?: return
@@ -363,19 +428,9 @@ class NotificationEngine(
         RemovalCause.UNKNOWN -> NotificationRemovalReason.NOTIFICATION_REMOVAL_REASON_UNSPECIFIED
     }
 
-    private suspend fun emit(event: NotificationEvent) {
+    private fun emit(event: NotificationEvent) {
         for (subscriber in subscribers) {
-            if (!subscriber.synced) continue
-            try {
-                subscriber.transport.send(event)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // The connection is going away. Stop sending to it, so its desktop never sees events
-                // with gaps before it syncs again.
-                subscriber.synced = false
-                onError(e)
-            }
+            if (subscriber.synced) subscriber.offer { subscriber.transport.send(event) }
         }
     }
 
@@ -388,10 +443,10 @@ class NotificationEngine(
             failure(ErrorCode.ERROR_CODE_PERMISSION_REQUIRED, "notification access is not granted", NOTIFICATION_ACCESS)
     }
 
-    private suspend fun handleSync(request: NotificationRequest.Sync, replies: ReplySink, from: NotificationTransport) {
+    private fun handleSync(request: NotificationRequest.Sync, replies: (NotificationReply) -> Unit, from: NotificationTransport) {
         val since = if (request.message.hasSince()) request.message.since else null
         val (reset, changes) = collection.changesSince(since)
-        for (batch in collection.batches(reset, changes)) replies.send(NotificationReply.Batch(batch))
+        for (batch in collection.batches(reset, changes)) replies(NotificationReply.Batch(batch))
         subscribers.firstOrNull { it.transport === from }?.synced = true
     }
 
@@ -461,6 +516,9 @@ class NotificationEngine(
         if (wire.requiresUnlock && environment.isLocked) {
             return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the action needs the phone unlocked")
         }
+        if ((takesReply || action.mayOpenActivity) && environment.isLocked && !policy.actWhileLocked) {
+            return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the phone is locked")
+        }
         val mayStart = environment.canStartActivitiesFromBackground
         if (action.opensActivity && !mayStart) {
             return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the app may not open apps from the background")
@@ -512,6 +570,8 @@ class NotificationEngine(
     companion object {
         /** `ErrorReply.permission` for the missing notification access. */
         const val NOTIFICATION_ACCESS = "notification-access"
+
+        const val OUTBOX_CAPACITY = 1024
 
         private val random = SecureRandom()
 

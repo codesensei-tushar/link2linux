@@ -30,6 +30,13 @@ sealed interface NotificationEvent {
 fun interface NotificationTransport {
     /** May throw when the connection is gone; the engine drops the event, and delta sync recovers. */
     suspend fun send(event: NotificationEvent)
+
+    /**
+     * The desktop has stopped reading: so much waits for it that the engine
+     * gave up. End the session, so it syncs again when it reconnects. Must
+     * not block.
+     */
+    fun abandon() = Unit
 }
 
 /** A request from the desktop, as the session decoded it. */
@@ -92,6 +99,13 @@ interface NotificationPolicy {
 
     /** The user shares this app's notifications without their content. */
     fun isContentHidden(packageName: String): Boolean
+
+    /**
+     * A desktop may reply, and run actions that may open an app, while the
+     * phone is locked. Off, it works as Android's own lock screen does,
+     * which asks for the phone to be unlocked first.
+     */
+    val actWhileLocked: Boolean
 }
 
 /** Facts about the phone that decide whether an action may run now. */

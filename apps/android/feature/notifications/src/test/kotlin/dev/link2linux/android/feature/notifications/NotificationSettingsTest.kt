@@ -29,6 +29,7 @@ class NotificationSettingsTest {
         assertFalse(s.enabled)
         assertTrue(s.dismissSync)
         assertTrue(s.hideOneTimeCodes)
+        assertFalse(s.actWhileLocked)
         assertTrue(s.excluded.isEmpty())
         assertTrue(s.contentHidden.isEmpty())
     }
@@ -40,6 +41,7 @@ class NotificationSettingsTest {
         a.setEnabled(true)
         a.setDismissSync(false)
         a.setHideOneTimeCodes(false)
+        a.setActWhileLocked(true)
         a.setShared("org.chat", false)
         a.setContentHidden("org.mail", true)
         a.rememberApp("org.chat", "Chat")
@@ -47,6 +49,7 @@ class NotificationSettingsTest {
         assertTrue(b.enabled)
         assertFalse(b.dismissSync)
         assertFalse(b.hideOneTimeCodes)
+        assertTrue(b.actWhileLocked)
         assertEquals(setOf("org.chat"), b.excluded)
         assertEquals(setOf("org.mail"), b.contentHidden)
         assertEquals(mapOf("org.chat" to "Chat"), b.knownApps)

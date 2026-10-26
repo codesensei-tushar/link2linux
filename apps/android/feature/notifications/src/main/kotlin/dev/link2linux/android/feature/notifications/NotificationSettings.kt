@@ -23,6 +23,8 @@ data class NotificationSettingsState(
     val dismissSync: Boolean = true,
     /** Notifications that look like they hold a one-time code are shared without their content. On by default. */
     val hideOneTimeCodes: Boolean = true,
+    /** A computer may reply, and press buttons that open an app, while the phone is locked. Off by default. */
+    val actWhileLocked: Boolean = false,
     /** Apps whose notifications are not shared. */
     val excluded: Set<String> = emptySet(),
     /** Apps whose notifications are shared without their text. */
@@ -54,6 +56,11 @@ class NotificationSettings(private val store: SettingsStore, private val onChang
         update { copy(hideOneTimeCodes = on) }
     }
 
+    fun setActWhileLocked(on: Boolean) {
+        store.putBoolean(ACT_WHILE_LOCKED, on)
+        update { copy(actWhileLocked = on) }
+    }
+
     fun setShared(packageName: String, shared: Boolean) {
         val next = if (shared) _state.value.excluded - packageName else _state.value.excluded + packageName
         store.putStrings(EXCLUDED, next)
@@ -83,6 +90,7 @@ class NotificationSettings(private val store: SettingsStore, private val onChang
         enabled = store.getBoolean(ENABLED, false),
         dismissSync = store.getBoolean(DISMISS_SYNC, true),
         hideOneTimeCodes = store.getBoolean(HIDE_ONE_TIME_CODES, true),
+        actWhileLocked = store.getBoolean(ACT_WHILE_LOCKED, false),
         excluded = store.getStrings(EXCLUDED),
         contentHidden = store.getStrings(CONTENT_HIDDEN),
         knownApps = store.getStrings(KNOWN_APPS).mapNotNull {
@@ -95,6 +103,7 @@ class NotificationSettings(private val store: SettingsStore, private val onChang
         const val ENABLED = "enabled"
         const val DISMISS_SYNC = "dismiss_sync"
         const val HIDE_ONE_TIME_CODES = "hide_one_time_codes"
+        const val ACT_WHILE_LOCKED = "act_while_locked"
         const val EXCLUDED = "excluded"
         const val CONTENT_HIDDEN = "content_hidden"
         const val KNOWN_APPS = "known_apps"

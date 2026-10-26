@@ -62,6 +62,7 @@ fun NotificationsScreen(
         onOpenAccessSettings = { openAccessSettings(context) },
         onDismissSync = runtime.settings::setDismissSync,
         onHideOneTimeCodes = runtime.settings::setHideOneTimeCodes,
+        onActWhileLocked = runtime.settings::setActWhileLocked,
         onShared = runtime.settings::setShared,
         onContentHidden = runtime.settings::setContentHidden,
         modifier = modifier,
@@ -87,6 +88,7 @@ internal fun NotificationsContent(
     onOpenAccessSettings: () -> Unit,
     onDismissSync: (Boolean) -> Unit,
     onHideOneTimeCodes: (Boolean) -> Unit,
+    onActWhileLocked: (Boolean) -> Unit,
     onShared: (String, Boolean) -> Unit,
     onContentHidden: (String, Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -161,6 +163,15 @@ internal fun NotificationsContent(
                         supportingContent = { Text(stringResource(R.string.notifications_one_time_codes_summary)) },
                         trailingContent = {
                             Switch(checked = settings.hideOneTimeCodes, onCheckedChange = onHideOneTimeCodes)
+                        },
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.notifications_act_while_locked_title)) },
+                        supportingContent = { Text(stringResource(R.string.notifications_act_while_locked_summary)) },
+                        trailingContent = {
+                            Switch(checked = settings.actWhileLocked, onCheckedChange = onActWhileLocked)
                         },
                     )
                 }

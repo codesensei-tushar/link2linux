@@ -24,6 +24,8 @@ class MappedNotification(
     val alertWhenNew: Boolean,
     val alertOnUpdate: Boolean,
     val imageHashes: Set<ByteString>,
+    /** An image is still rendering: mapping again once it is done adds it. */
+    val imagesPending: Boolean = false,
 )
 
 /**
@@ -34,6 +36,7 @@ class NotificationMapper(
     private val images: ImageStore,
     private val redaction: RedactionDetector = RedactionDetector(),
     private val oneTimeCodes: OneTimeCodeDetector = OneTimeCodeDetector(),
+    private val keys: NotificationKeys = HmacNotificationKeys.random(),
 ) {
     /**
      * @param contentHidden the user chose not to share this app's content.
@@ -68,7 +71,7 @@ class NotificationMapper(
         val importance = importanceOf(s.importance)
 
         val notification = phoneNotification {
-            key = WireText.identifier(s.key)
+            key = keys.key(s.key)
             appId = s.packageName
             appName = WireText.truncate(s.appName, Limits.APP_NAME)
             appIcon?.let { this.appIcon = it }
@@ -81,7 +84,7 @@ class NotificationMapper(
             category = categoryOf(s)
             this.importance = importance
             ongoing = s.isOngoing
-            s.groupKey?.let { this.group = WireText.identifier(it) }
+            s.groupKey?.let { this.group = keys.group(it) }
             actions += builtActions.map { it.first }
             this.messages += messages.takeLast(Limits.MESSAGES).map(::message)
             if (group && full) conversationTitle = clean(s.conversation.title, Limits.SHORT_TEXT)
@@ -95,7 +98,7 @@ class NotificationMapper(
             largeIcon?.let { this.largeIcon = it }
             picture?.let { this.picture = it }
             this.content = content
-            visibility = visibilityOf(s.visibility)
+            visibility = visibilityOf(strictest(s.visibility, s.visibilityOverride))
             dismissible = s.isClearable && !s.isOngoing
             isGroupConversation = group
         }
@@ -116,6 +119,8 @@ class NotificationMapper(
             alertWhenNew = alerts,
             alertOnUpdate = alerts && !s.onlyAlertOnce,
             imageHashes = listOfNotNull(appIcon, largeIcon, picture).mapTo(mutableSetOf()) { it.sha256 },
+            imagesPending = images.isPending(s.appIcon, ImageKind.APP_ICON) ||
+                (full && (images.isPending(s.largeIcon, ImageKind.LARGE_ICON) || images.isPending(s.picture, ImageKind.PICTURE))),
         )
     }
 
@@ -196,6 +201,10 @@ class NotificationMapper(
         AndroidValues.IMPORTANCE_HIGH, AndroidValues.IMPORTANCE_MAX -> NotificationImportance.NOTIFICATION_IMPORTANCE_HIGH
         else -> NotificationImportance.NOTIFICATION_IMPORTANCE_UNSPECIFIED
     }
+
+    /** The app's visibility, unless the user chose a stricter one for the channel. */
+    private fun strictest(app: Int, user: Int): Int =
+        if (user in AndroidValues.VISIBILITY_SECRET..AndroidValues.VISIBILITY_PUBLIC) minOf(app, user) else app
 
     private fun visibilityOf(value: Int): NotificationVisibility = when (value) {
         AndroidValues.VISIBILITY_PUBLIC -> NotificationVisibility.NOTIFICATION_VISIBILITY_PUBLIC

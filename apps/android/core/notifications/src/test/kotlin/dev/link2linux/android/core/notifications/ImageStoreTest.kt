@@ -4,6 +4,7 @@ import com.google.protobuf.ByteString
 import dev.link2linux.protocol.v1.ImageFormat
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -81,5 +82,37 @@ class ImageStoreTest {
         val b = store.intern(FakeImage(bytes(2)), ImageKind.LARGE_ICON)!!
         assertNull(store.get(a.sha256))
         assertNotNull(store.get(b.sha256))
+    }
+
+    @Test
+    fun `an image that is still rendering is pending, and the store says when it is ready`() {
+        val waiting = mutableListOf<() -> Unit>()
+        val store = ImageStore(renderer = { source, kind, done -> waiting += { done(source.render(kind)) } })
+        var rendered = 0
+        store.onRendered = { rendered++ }
+        val source = FakeImage(bytes(4))
+
+        assertNull(store.intern(source, ImageKind.LARGE_ICON))
+        assertTrue(store.isPending(source, ImageKind.LARGE_ICON))
+        // Asking again does not start a second render.
+        assertNull(store.intern(source, ImageKind.LARGE_ICON))
+        assertEquals(1, waiting.size)
+
+        waiting.single()()
+        assertEquals(1, rendered)
+        assertFalse(store.isPending(source, ImageKind.LARGE_ICON))
+        assertNotNull(store.intern(source, ImageKind.LARGE_ICON))
+        assertEquals(1, source.renders)
+    }
+
+    @Test
+    fun `an image that runs out of memory or overflows the stack is no image`() {
+        val store = ImageStore()
+        for (error in listOf(OutOfMemoryError(), StackOverflowError())) {
+            val source = object : ImageSource {
+                override fun render(kind: ImageKind): EncodedImage = throw error
+            }
+            assertNull(store.intern(source, ImageKind.PICTURE))
+        }
     }
 }

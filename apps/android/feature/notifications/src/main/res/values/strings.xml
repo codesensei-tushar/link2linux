@@ -19,6 +19,9 @@
     <string name="notifications_one_time_codes_title">Keep one-time codes on your phone</string>
     <string name="notifications_one_time_codes_summary">Your computer shows that a code arrived, but not the code.</string>
 
+    <string name="notifications_act_while_locked_title">Reply while this phone is locked</string>
+    <string name="notifications_act_while_locked_summary">Let your computer send replies and press buttons that open an app while your phone is locked. When off, unlock your phone first, as on its lock screen.</string>
+
     <string name="notifications_apps_title">Apps</string>
     <string name="notifications_apps_summary">Choose which apps share their notifications. Apps are listed after they post their first notification.</string>
     <string name="notifications_apps_empty">No apps yet.</string>

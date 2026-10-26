@@ -134,6 +134,9 @@ class NotificationSessionHooks(
                 is NotificationEvent.Removed -> session.send { notificationRemoved = event.message }
             }
         }
+
+        // The desktop reconnects and syncs again.
+        override fun abandon() = session.close()
     }
 
     /** Answers one request: every envelope carries the request's `seq` as `reply_to`. */

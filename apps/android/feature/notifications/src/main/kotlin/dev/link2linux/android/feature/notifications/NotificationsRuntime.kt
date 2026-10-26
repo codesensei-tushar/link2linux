@@ -3,7 +3,10 @@ package dev.link2linux.android.feature.notifications
 import android.content.ComponentName
 import android.content.Context
 import android.service.notification.NotificationListenerService
+import android.util.Base64
 import android.service.notification.StatusBarNotification
+import dev.link2linux.android.core.notifications.HmacNotificationKeys
+import dev.link2linux.android.core.notifications.ImageRenderers
 import dev.link2linux.android.core.notifications.ImageStore
 import dev.link2linux.android.core.notifications.NotificationCanceller
 import dev.link2linux.android.core.notifications.NotificationEngine
@@ -19,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.security.SecureRandom
 
 /**
  * The process-wide notifications feature: settings, the engine, and the glue
@@ -36,6 +40,7 @@ class NotificationsRuntime private constructor(context: Context) {
         override val accessGranted get() = runtime.connected
         override val dismissSync get() = runtime.settings.state.value.dismissSync
         override val hideOneTimeCodes get() = runtime.settings.state.value.hideOneTimeCodes
+        override val actWhileLocked get() = runtime.settings.state.value.actWhileLocked
 
         override fun isExcluded(packageName: String) = packageName in runtime.settings.state.value.excluded
 
@@ -59,7 +64,8 @@ class NotificationsRuntime private constructor(context: Context) {
     )
 
     private val extractor = SnapshotExtractor(app)
-    private val images = ImageStore()
+    // Other apps' images load on threads of their own, never on the engine's.
+    private val images = ImageStore(renderer = ImageRenderers.background())
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val engine = NotificationEngine(
@@ -67,7 +73,11 @@ class NotificationsRuntime private constructor(context: Context) {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1)),
         policy = Policy(this),
         environment = AndroidEnvironment(app),
-        mapper = NotificationMapper(images, RedactionDetector(bySystem = RedactionDetector.DEFAULT_BY_SYSTEM + SystemPlaceholders.bySystem())),
+        mapper = NotificationMapper(
+            images,
+            RedactionDetector(bySystem = RedactionDetector.DEFAULT_BY_SYSTEM + SystemPlaceholders.bySystem()),
+            keys = HmacNotificationKeys(keySecret()),
+        ),
         images = images,
         canceller = NotificationCanceller { key ->
             val s = service
@@ -80,6 +90,23 @@ class NotificationsRuntime private constructor(context: Context) {
         },
         ownPackage = app.packageName,
     )
+
+    /**
+     * The secret the notifications' wire names are made with. It is kept (the
+     * app's data is never backed up), so the names stay the same when the
+     * app restarts and a desktop's queued requests still find their
+     * notifications.
+     */
+    private fun keySecret(): ByteArray {
+        val prefs = app.getSharedPreferences("notification_keys", Context.MODE_PRIVATE)
+        prefs.getString(KEY_SECRET, null)
+            ?.let { runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull() }
+            ?.takeIf { it.size == HmacNotificationKeys.SECRET_SIZE }
+            ?.let { return it }
+        val fresh = ByteArray(HmacNotificationKeys.SECRET_SIZE).also(SecureRandom()::nextBytes)
+        prefs.edit().putString(KEY_SECRET, Base64.encodeToString(fresh, Base64.NO_WRAP)).apply()
+        return fresh
+    }
 
     /** Re-reads the system's notification access state, for example when the settings screen resumes. */
     fun refreshAccess() {
@@ -142,6 +169,8 @@ class NotificationsRuntime private constructor(context: Context) {
     }
 
     companion object {
+        private const val KEY_SECRET = "secret"
+
         @Volatile
         private var instance: NotificationsRuntime? = null
 

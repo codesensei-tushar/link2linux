@@ -120,6 +120,41 @@ class OneTimeCodeDetectorTest {
     )
 
     @Test
+    fun `letter-only codes, long tokens and sign-in links are caught`() = assertEach(
+        listOf(
+            "Your Steam Guard code: FRVXW",
+            "Your confirmation code is ABC-DEF",
+            "Your verification code: KQZTRW",
+            "Tu código es HMKQ. No lo compartas.",
+            "Your one-time recovery code: k8Df2LqZ9xT4mW7p",
+            "Do not share this token with anyone: 9fK2xQ7mZ1pL8vR3",
+            "Sign in with this link: https://x.example/l?token=Zx81kq0PzQ7mN2bVc9Lr",
+            "Tap to log in: https://app.example.com/magic?code=8f3K2LqZ7xT4mW9pR1sV&utm_source=email",
+            "Confirm your email address\nhttps://accounts.example.org/verify?access_token=eyJhbGciOiJIUzI1NiJ9.e30",
+        ),
+        code = true,
+    )
+
+    @Test
+    fun `capitals, long numbers and links that are no codes are left alone`() = assertEach(
+        listOf(
+            "Use promo code SAVEBIG",
+            "CODE RED drill at 10",
+            "Use code WELCOME at checkout for 20% off",
+            "Your verification is COMPLETE",
+            "Your order code is READY",
+            "New login from Chrome on WINDOWS in BERLIN",
+            "Dress code: FORMAL",
+            "YOUR CODE WORD FOR TODAY IS FUN",
+            "Order ID: 1Z999AA10123456784, track it here",
+            "Read more at https://example.com/post?id=1234567890123456789",
+            "Summer sale: https://shop.example.com/sale?code=SUMMER",
+            "Your parcel KA01AB1234XY is out for delivery",
+        ),
+        code = false,
+    )
+
+    @Test
     fun `a keyword alone or a token alone is not enough`() {
         assertFalse(detector.containsCode(listOf("Your verification code is ready")))
         assertFalse(detector.containsCode(listOf("Never share your OTP with anyone")))

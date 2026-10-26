@@ -10,9 +10,15 @@ import java.text.Normalizer
  * codes Android does not recognise.
  *
  * It fires only when a code-shaped token (`482913`, `482-913`, `482 913`,
- * `G-482913`, `K7Q2XM`) sits near a keyword such as "code", "OTP" or
- * "verification", in English or one of a dozen other languages. A keyword or
- * a token alone is not enough. Numbers that read as something else are not
+ * `G-482913`, `K7Q2XM`, `FRVXW`, `ABC-DEF`) sits near a keyword such as
+ * "code", "OTP" or "verification", in English or one of a dozen other
+ * languages. A keyword or a token alone is not enough, with one exception: a
+ * link whose query carries a long `token`, `code`, `otp` or similar value
+ * is a sign-in or confirmation link, which is as good as a code. Long mixed
+ * tokens (11 to 40 letters and digits) count only next to a strong keyword
+ * such as "one-time" or "do not share". Letter-only codes count only in
+ * capitals, in text that is not all capitals, and not among words of an
+ * offer. Numbers that read as something else are not
  * tokens: phone numbers, dates, times, amounts, percentages, counts, years
  * away from a keyword, and numbers labelled as an order, a tracking number, a
  * card and the like. It leans towards catching codes, since a false positive
@@ -25,6 +31,7 @@ class OneTimeCodeDetector {
     private val qualifiers = QUALIFIERS.map(::foldLower).toSet()
     private val measures = MEASURES.map(::foldLower).toSet()
     private val currencies = CURRENCIES.map(::foldLower).toSet()
+    private val codeWords = CODE_WORDS.map(::foldLower).toSet()
 
     /** True when any text of [s] that could reach the desktop looks like it holds a code, action labels included. */
     fun detect(s: NotificationSnapshot): Boolean = containsCode(
@@ -50,7 +57,7 @@ class OneTimeCodeDetector {
     fun containsCode(fields: List<String>): Boolean {
         val shown = fields.filter { it.isNotBlank() }.joinToString(FIELD_BREAK.toString()) { fold(it.take(MAX_FIELD)) }
         val lower = shown.lowerChars()
-        return candidates(shown, lower).any { keywordNear(lower, it) }
+        return CREDENTIAL_LINK.containsMatchIn(lower) || candidates(shown, lower).any { keywordNear(lower, it) }
     }
 
     private class Word(val start: Int, val end: Int, val digits: Int) {
@@ -58,7 +65,18 @@ class OneTimeCodeDetector {
         val numeric get() = digits == length
     }
 
-    private class Candidate(val start: Int, val end: Int, val yearLike: Boolean = false)
+    /**
+     * A token that may be a code. [strongOnly] counts only next to a strong
+     * keyword; [codeWordOnly] also next to a weak one that names a code
+     * ("code", "código"), not one like "login".
+     */
+    private class Candidate(
+        val start: Int,
+        val end: Int,
+        val yearLike: Boolean = false,
+        val strongOnly: Boolean = false,
+        val codeWordOnly: Boolean = false,
+    )
 
     private class Keyword(val text: String, val strong: Boolean, private val prefix: Boolean) {
         // Latin keywords must stand as words; other scripts may not put spaces between words.
@@ -77,6 +95,8 @@ class OneTimeCodeDetector {
     private fun candidates(shown: String, s: String): List<Candidate> {
         val words = words(s)
         val found = ArrayList<Candidate>()
+        // Capitals stand out as a code only in text that is not all capitals.
+        val mixedCase = shown.any { it.isLowerCase() }
         var k = 0
         while (k < words.size) {
             val w = words[k]
@@ -88,14 +108,19 @@ class OneTimeCodeDetector {
                     k += 2
                 }
                 w.numeric -> k = numericRun(s, words, k, found)
-                // 7HQ-4WP: two short upper-case halves with letters and digits.
-                next != null && w.length in 3..5 && next.length in 3..5 && !next.numeric && w.digits + next.digits > 0 &&
+                // 7HQ-4WP: two short upper-case halves with letters and digits; ABC-DEF: letters only, halves alike.
+                next != null && w.length in 3..5 && next.length in 3..5 && !next.numeric &&
+                    (w.digits + next.digits > 0 || (mixedCase && w.length == next.length && !offered(s, w.start))) &&
                     shown.substring(w.start, next.end).none { it.isLowerCase() } -> {
-                    found += Candidate(w.start, next.end)
+                    found += Candidate(w.start, next.end, codeWordOnly = w.digits + next.digits == 0)
                     k += 2
                 }
                 else -> {
-                    if (isMixedCode(shown, s, w)) found += Candidate(w.start, w.end)
+                    when {
+                        isMixedCode(shown, s, w) -> found += Candidate(w.start, w.end)
+                        mixedCase && isLetterCode(shown, s, w) -> found += Candidate(w.start, w.end, codeWordOnly = true)
+                        isLongToken(s, w) -> found += Candidate(w.start, w.end, strongOnly = true)
+                    }
                     k++
                 }
             }
@@ -150,6 +175,23 @@ class OneTimeCodeDetector {
         return w.digits >= 2 || upper
     }
 
+    /** FRVXW: four to eight capitals that are no common word, keyword or part of an offer. */
+    private fun isLetterCode(shown: String, s: String, w: Word): Boolean {
+        if (w.digits != 0 || w.length !in 4..8 || shown.substring(w.start, w.end).any { !it.isUpperCase() }) return false
+        val lower = s.substring(w.start, w.end)
+        return lower !in CAPITAL_WORDS && keywords.none { it.text == lower } && !offered(s, w.start)
+    }
+
+    /** A recovery code or a token: 11 to 40 characters with at least two letters and two digits. */
+    private fun isLongToken(s: String, w: Word): Boolean =
+        w.length in 11..40 && w.digits >= 2 && w.length - w.digits >= 2 && s.getOrNull(w.end) != '@' && s.getOrNull(w.start - 1) != '@'
+
+    /** Words of an offer near [at]: a capitalized "code" there is a promotion, "Use code WELCOME at checkout". */
+    private fun offered(s: String, at: Int): Boolean {
+        val window = s.substring((at - WEAK_REACH * 2).coerceAtLeast(0), (at + WEAK_REACH * 2).coerceAtMost(s.length))
+        return words(window).any { window.substring(it.start, it.end) in OFFER_WORDS } || '%' in window
+    }
+
     private fun isYear(s: String, w: Word) = w.length == 4 && s.substring(w.start, w.end).toInt() in 1900..2099
 
     /** Labelled as something other than a code: "order #4839201", "card ending in 1234". */
@@ -202,7 +244,8 @@ class OneTimeCodeDetector {
                     start >= c.end -> s.substring(c.end, start)
                     else -> null
                 }
-                if (gap != null && k.matchesAt(s, start) && !qualified(s, start, end)) {
+                val counts = k.strong || (!c.strongOnly && (!c.codeWordOnly || k.text in codeWords))
+                if (gap != null && counts && k.matchesAt(s, start) && !qualified(s, start, end)) {
                     val near = when {
                         // "Happy 2026" is not a code, "code: 2026" is.
                         c.yearLike -> FIELD_BREAK !in gap && gap.length <= YEAR_REACH
@@ -263,6 +306,35 @@ class OneTimeCodeDetector {
         const val YEAR_REACH = 12
         const val MAX_FILLERS = 3
         const val JOINERS = " -.:/,'"
+
+        /**
+         * A link whose query holds a credential: `?token=…`, `&code=…`, `otp=`,
+         * `auth=`, `magic=`, `key=` and the like, with 16 or more characters.
+         * Matched in folded, lower-case text.
+         */
+        val CREDENTIAL_LINK = Regex(
+            "https?://\\S*?[?&#](?:[a-z_]*token|code|otp|auth|magic|login|signin|key|ticket)=[a-z0-9._~%-]{16,}",
+        )
+
+        /** Capitals that are words, not codes: "Your verification is COMPLETE". */
+        val CAPITAL_WORDS = setOf(
+            "your", "this", "that", "here", "with", "from", "have", "will", "only", "more", "free", "sale", "offer",
+            "deal", "deals", "save", "shop", "help", "info", "stop", "start", "done", "ready", "sent", "paid", "open",
+            "closed", "valid", "active", "pending", "failed", "success", "complete", "completed", "verified",
+            "confirmed", "approved", "declined", "expired", "urgent", "alert", "notice", "important", "warning",
+            "error", "today", "now", "call", "reply", "click", "link", "login", "account", "bank", "card", "otp",
+            "code", "test", "demo", "note", "news", "live", "best", "final", "last", "next", "total", "amount",
+        )
+
+        /** Words around a capitalized code that make it a promotion: "Use code WELCOME at checkout". */
+        val OFFER_WORDS = setOf(
+            "off", "sale", "checkout", "discount", "deal", "deals", "offer", "offers", "shop", "shopping", "order",
+            "orders", "coupon", "promo", "voucher", "cashback", "save", "free", "shipping", "buy", "subscribe",
+            "earn", "bonus", "reward", "rewards", "points", "coins", "gift",
+        )
+
+        /** Weak keywords that name a code, the only ones a letter-only token may sit next to. */
+        val CODE_WORDS = listOf("code", "código", "codice", "kode", "kod", "код", "कोड", "コード", "코드", "代码", "رمز", "كود")
 
         val ORDINAL_OR_MEASURE = Regex("\\d+(st|nd|rd|th|am|pm|[kmgt]b|px|ms|s|m|h|d|km|kg|g|hz|fps|mph|p|k|x|mins?|hrs?|secs?|yrs?)")
         val WORD_AND_NUMBER = Regex("[a-z]{4,}\\d+|[a-z]{3}\\d{1,3}")

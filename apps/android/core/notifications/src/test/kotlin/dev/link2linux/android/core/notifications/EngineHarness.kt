@@ -15,13 +15,24 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 
+/** Sends platform keys as they are, so the engine's tests can name notifications by them. */
+object PlainKeys : NotificationKeys {
+    override fun key(platformKey: String) = platformKey
+
+    override fun group(groupKey: String) = groupKey
+}
+
 /** An engine wired to fakes. Its consumer runs eagerly on the test scheduler (background scopes do not run under advanceUntilIdle). */
 @OptIn(ExperimentalCoroutinesApi::class)
-class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.android") {
+class EngineHarness(
+    val scope: TestScope,
+    ownPackage: String = "dev.link2linux.android",
+    val images: ImageStore = ImageStore(),
+    outboxCapacity: Int = NotificationEngine.OUTBOX_CAPACITY,
+) {
     val policy = FakePolicy()
     val env = FakeEnvironment()
     val canceller = FakeCanceller()
-    val images = ImageStore()
     val transport = FakeTransport()
     var now = 1_000_000_000L
     private var epochs = 0L
@@ -31,13 +42,14 @@ class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.a
         scope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(scope.testScheduler)),
         policy = policy,
         environment = env,
-        mapper = NotificationMapper(images),
+        mapper = NotificationMapper(images, keys = PlainKeys),
         images = images,
         canceller = canceller,
         ownPackage = ownPackage,
         clock = { now },
         newEpoch = { ++epochs },
         onError = { errors += it },
+        outboxCapacity = outboxCapacity,
     )
 
     suspend fun idle() = scope.advanceUntilIdle()

@@ -1185,10 +1185,10 @@ rules on Android 11 and later can hide the app from a normal lookup.
 ### Keys
 
 `key`, `group` and an action's `id` identify things, so they are never
-truncated. The phone sends a notification's platform key, or its group
-key, as it is when it is at most 256 bytes, and otherwise as `h:` followed
-by the base64url SHA-256 of it (45 bytes). Apps choose part of these keys
-themselves and can make them arbitrarily long.
+truncated. The phone never sends Android's own keys, which hold parts the
+posting app chooses (often a contact): `key` and `group` are `k:` or `g:`
+and 22 base64url characters of an HMAC of them under a secret the phone
+keeps. The desktop treats both as opaque strings.
 
 An action's `id` is derived from the action's label and semantic action
 (and, for a reply action, its reply input), never from its position alone,
@@ -1273,7 +1273,10 @@ the action, in two cases that the system would otherwise not report:
 - the action opens an app on the phone, and the phone app may not start
   activities from the background (it has no companion-device association
   and is not in the foreground). When it may, it fires the action with the
-  background-start opt-in.
+  background-start opt-in;
+- the phone is locked and the request is a reply or may open an app,
+  unless the user turned on "Reply while this phone is locked" (off by
+  default).
 
 ### Dismissing
 
@@ -1306,7 +1309,8 @@ dismissal or reply is more surprising than a lost one.
 - pictures as JPEG or WebP, at most 1024 pixels on the longer side.
 
 The phone keeps the images of the notifications it currently shares, so it
-can answer requests for them.
+can answer requests for them. An image may arrive in a later, quiet update
+of the notification.
 
 ### Redacted and hidden content
 
