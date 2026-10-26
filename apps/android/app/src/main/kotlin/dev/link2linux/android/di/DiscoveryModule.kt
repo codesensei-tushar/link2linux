@@ -10,6 +10,7 @@ import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.DiscoveryStatus
@@ -48,7 +49,7 @@ internal object DiscoveryModule {
         networks: ConnectivityLocalNetworks,
     ): DiscoveryController = DiscoveryController(
         // One coroutine at a time: the controller keeps plain state.
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1)),
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1) + loggingUncaught("discovery")),
         pairedDevices = pairedDevices,
         pairing = pairing,
         connections = connections,

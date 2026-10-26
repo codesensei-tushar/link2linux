@@ -11,6 +11,7 @@ import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.network.pairing.PairingService
 import dev.link2linux.android.core.network.pairing.SessionHooks
 import dev.link2linux.android.core.security.AndroidKeyStoreIdentity
@@ -52,7 +53,7 @@ internal abstract class NetworkModule {
             localDevice = localDevice,
             listenAddresses = listenAddresses,
             // Connections outlive any screen; the service lives as long as the app.
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the pairing service")),
             hooks = hooks,
         )
     }

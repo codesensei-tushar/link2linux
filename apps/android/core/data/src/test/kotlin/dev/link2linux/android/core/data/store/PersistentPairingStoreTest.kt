@@ -9,6 +9,7 @@ import dev.link2linux.android.core.model.PresenceKey
 import dev.link2linux.android.core.security.AesGcmSecretBox
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,6 +25,7 @@ import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.security.InvalidKeyException
+import java.security.ProviderException
 import javax.crypto.KeyGenerator
 
 /** The store with a software key; on a phone the key lives in the Keystore. */
@@ -146,6 +148,23 @@ class PersistentPairingStoreTest {
         assertEquals(listOf(desk), store.pairedDevices.first())
         assertEquals(id, store.localDevice().id)
         assertArrayEquals(sealed, file.readBytes())
+        assertFalse(File(file.parentFile, "pairings.bin.unreadable").exists())
+    }
+
+    @Test
+    fun aKeystoreProviderErrorIsTriedAgainToo() = runBlocking {
+        store().save(desk)
+
+        // The Keystore daemon was not reachable: a RuntimeException, not a GeneralSecurityException.
+        var failures = 2
+        val flaky = object : AesGcmSecretBox({ key }) {
+            override fun open(sealed: ByteArray, associatedData: ByteArray): ByteArray {
+                if (failures-- > 0) throw ProviderException("Keystore is not connected")
+                return super.open(sealed, associatedData)
+            }
+        }
+
+        assertEquals(listOf(desk), withTimeout(5_000) { store(flaky).pairedDevices.first() })
         assertFalse(File(file.parentFile, "pairings.bin.unreadable").exists())
     }
 

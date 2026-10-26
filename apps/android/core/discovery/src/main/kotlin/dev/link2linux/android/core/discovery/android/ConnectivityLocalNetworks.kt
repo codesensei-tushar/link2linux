@@ -11,6 +11,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import androidx.core.content.ContextCompat
+import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.discovery.InterfaceSnapshot
 import dev.link2linux.android.core.discovery.LocalNetwork
 import dev.link2linux.android.core.discovery.LocalNetworks
@@ -82,7 +83,7 @@ class ConnectivityLocalNetworks(context: Context) : LocalNetworks {
         callback = cb
         connectivity.registerNetworkCallback(request, cb)
 
-        val poller = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val poller = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the network scan"))
         scope = poller
 
         // System broadcasts: not-exported receivers get them. Neither needs a permission.
