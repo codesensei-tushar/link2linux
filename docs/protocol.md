@@ -1423,6 +1423,10 @@ The sender keeps pushes few and in order:
   user explicitly shares, the text goes to every peer.
 - When a session starts, a device MAY push its latest copy if the user made
   it less than 60 seconds earlier and it has not reached that peer.
+- The phone's share targets can be started directly by any app in the
+  foreground on the phone, which could put text on the desktop's clipboard
+  without the user choosing to. The phone offers them only while the
+  feature is on, and confirms every share it sends on screen.
 
 ### Content
 
