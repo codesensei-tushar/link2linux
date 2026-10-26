@@ -115,9 +115,10 @@ pub(crate) fn shown(name: &str) -> String {
 }
 
 /// Whether `c` cannot be stored in a name (`/`, NUL), is a separator on
-/// other systems, or [`misleads`].
+/// other systems, cannot be stored on FAT and exFAT drives, where Downloads
+/// may live, or [`misleads`].
 fn is_unsafe(c: char) -> bool {
-    c == '/' || c == '\\' || misleads(c)
+    matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || misleads(c)
 }
 
 /// Whether `c` would change how a name looks: control characters and the
@@ -126,7 +127,12 @@ fn misleads(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+            '\u{061C}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
         )
 }
 
@@ -171,6 +177,10 @@ mod tests {
         // Reordering marks would show this as "photo_gpj.exe".
         assert_eq!(received("photo\u{202E}gpj.exe"), "photo_gpj.exe");
         assert_eq!(received("\u{FEFF}bom"), "_bom");
+        assert_eq!(received("mark\u{061C}here"), "mark_here");
+        // FAT and exFAT drives cannot store these.
+        assert_eq!(received("Meeting 10:30.pdf"), "Meeting 10_30.pdf");
+        assert_eq!(received("a*b?c\"d<e>f|g"), "a_b_c_d_e_f_g");
     }
 
     #[test]
@@ -217,6 +227,7 @@ mod tests {
         assert_eq!(shown("photo\u{202E}gpj.exe"), "photo_gpj.exe");
         assert_eq!(shown("tab\there"), "tab_here");
         assert_eq!(shown(".hidden \\ dir"), ".hidden \\ dir");
+        assert_eq!(shown("10:30 \u{061C}"), "10:30 _");
     }
 
     #[test]
