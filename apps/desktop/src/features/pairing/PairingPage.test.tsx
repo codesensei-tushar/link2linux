@@ -1,11 +1,11 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppProviders } from "@/app/providers";
-import type { PairingState } from "@/lib/api";
-import { createFakeApi, type FakeApi } from "@/test/fake-api";
-import { qrOffer } from "@/test/pairing-fixtures";
+import type { PairingFailure, PairingState } from "@/lib/api";
+import { createFakeApi, testDevice, type FakeApi } from "@/test/fake-api";
+import { qrOffer, sasCode, searching } from "@/test/pairing-fixtures";
 
 import { PairingPage } from "./PairingPage";
 
@@ -137,5 +137,139 @@ describe("PairingPage: QR code", () => {
     expect(api.cancelPairing).toHaveBeenCalledOnce();
     api.emitPairing({ step: "idle" });
     expect(screen.getByRole("button", { name: "Pair a phone" })).toHaveFocus();
+  });
+});
+
+describe("PairingPage: code comparison", () => {
+  it("lists phones, waits while none are found, and dials the chosen one", async () => {
+    const user = userEvent.setup();
+    const api = await renderPage(createFakeApi(), searching());
+    expect(screen.getByRole("heading", { name: "Choose your phone" })).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("Looking for phones on this network");
+
+    api.emitPairing(
+      searching({
+        phones: [
+          { id: "a", name: "Pixel 9", address: "192.168.1.42:27380" },
+          { id: "b", name: "Galaxy S24", address: "192.168.1.57:27380" },
+        ],
+      }),
+    );
+    const list = screen.getByRole("list", { name: "Phones ready to pair" });
+    expect(within(list).getAllByRole("button")).toHaveLength(2);
+
+    await user.click(within(list).getByRole("button", { name: /Galaxy S24/ }));
+    expect(api.pairWith).toHaveBeenCalledExactlyOnceWith({ kind: "discovered", id: "b" });
+  });
+
+  it("explains the last failure and how many tries are left", async () => {
+    await renderPage(
+      createFakeApi(),
+      searching({ lastFailure: "verificationFailed", attemptsLeft: 1 }),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("The codes didn't match");
+    expect(screen.getByText("You have 1 try left.")).toBeInTheDocument();
+  });
+
+  it("offers the typed address and a QR code here too", async () => {
+    const user = userEvent.setup();
+    const api = await renderPage(createFakeApi(), searching({ attemptsLeft: 2 }));
+    expect(screen.getByText("You have 2 tries left.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Type the phone's address instead" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Scan a QR code instead" }));
+    expect(api.startPairing).toHaveBeenCalledExactlyOnceWith("qrCode");
+  });
+
+  it("shows progress while connecting and verifying", async () => {
+    const api = await renderPage();
+    api.emitPairing({ step: "connecting", method: "sas", phoneName: "Pixel 9" });
+    expect(screen.getByRole("heading", { name: "Connecting to Pixel 9" })).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("Opening a secure connection");
+
+    api.emitPairing({ step: "verifying", method: "qrCode", phoneName: null });
+    expect(screen.getByRole("heading", { name: "Checking the connection" })).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("Making sure your phone is the phone");
+  });
+
+  it("shows the code grouped, readable by screen readers, and sends the answer", async () => {
+    const user = userEvent.setup();
+    const api = await renderPage(createFakeApi(), sasCode());
+
+    expect(screen.getByRole("heading", { name: "Compare the codes with Pixel 9" })).toHaveFocus();
+    expect(screen.getByLabelText("Code: 4 8 2 9 1 3")).toHaveTextContent("482 913");
+    expect(screen.getByRole("timer")).toHaveTextContent("Code valid for 0:52");
+
+    await user.click(screen.getByRole("button", { name: "Codes match" }));
+    expect(api.answerCode).toHaveBeenLastCalledWith(true);
+    await user.click(screen.getByRole("button", { name: "Codes don't match" }));
+    expect(api.answerCode).toHaveBeenLastCalledWith(false);
+  });
+
+  it("waits for the phone once confirmed here", async () => {
+    await renderPage(createFakeApi(), sasCode({ confirmedHere: true }));
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for Pixel 9 to confirm");
+    expect(screen.queryByRole("button", { name: "Codes match" })).not.toBeInTheDocument();
+  });
+});
+
+describe("PairingPage: finished", () => {
+  it("celebrates success and dismisses on Done", async () => {
+    const user = userEvent.setup();
+    const api = await renderPage();
+    api.emitPairing({
+      step: "paired",
+      device: testDevice({ name: "Pixel 9", status: "connected" }),
+    });
+
+    expect(screen.getByRole("heading", { name: "Paired with Pixel 9" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(api.cancelPairing).toHaveBeenCalledOnce();
+  });
+
+  const reasons: [PairingFailure, string][] = [
+    ["rejected", "The phone refused the connection"],
+    ["declinedByPhone", "Pairing was declined on the phone"],
+    ["verificationFailed", "The codes didn't match"],
+    ["timedOut", "Pairing took too long"],
+    ["notExpected", "The phone wasn't expecting this computer"],
+    ["unsupported", "The apps can't pair with each other"],
+    ["expired", "The code expired"],
+    ["phoneNotFound", "Couldn't reach the phone"],
+    ["connectionLost", "The connection dropped"],
+    ["tooManyAttempts", "Too many tries"],
+  ];
+
+  it.each(reasons)("explains %s", async (reason, title) => {
+    const api = await renderPage();
+    api.emitPairing({ step: "failed", method: "sas", reason });
+
+    expect(screen.getByRole("heading", { name: title })).toHaveFocus();
+    expect(screen.getByRole("alert")).not.toBeEmptyDOMElement();
+  });
+
+  it("restarts the same method, offers the other, and closes", async () => {
+    const user = userEvent.setup();
+    const api = await renderPage(createFakeApi(), {
+      step: "failed",
+      method: "qrCode",
+      reason: "expired",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(api.startPairing).toHaveBeenLastCalledWith("qrCode");
+    await user.click(screen.getByRole("button", { name: "Pair with a code instead" }));
+    expect(api.startPairing).toHaveBeenLastCalledWith("sas");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(api.cancelPairing).toHaveBeenCalledTimes(3);
+  });
+
+  it("asks to start again after too many tries", async () => {
+    await renderPage(createFakeApi(), {
+      step: "failed",
+      method: "sas",
+      reason: "tooManyAttempts",
+    });
+    expect(screen.getByRole("button", { name: "Start again" })).toBeInTheDocument();
   });
 });
