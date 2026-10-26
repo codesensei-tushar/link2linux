@@ -11,8 +11,10 @@ import dev.link2linux.protocol.v1.FileInfo
 import dev.link2linux.protocol.v1.FileOffer
 import dev.link2linux.protocol.v1.fileAccept
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 
 /**
@@ -251,11 +253,15 @@ internal class FileReceiver(
             declined[key] = clock()
             known
         }
-        val link = transfer.lock.withLock {
-            if (transfer.state.isFinished) return
-            transfer.link.also { transfer.end(TransferState.Cancelled(byPeer = false)) }
+        // Out of the table, nothing else would end it: finish even if the caller goes away
+        // while a chunk of it is being written.
+        withContext(NonCancellable) {
+            val link = transfer.lock.withLock {
+                if (transfer.state.isFinished) return@withContext
+                transfer.link.also { transfer.end(TransferState.Cancelled(byPeer = false)) }
+            }
+            sendCancel(link, transfer.peer, key.id)
         }
-        sendCancel(link, transfer.peer, key.id)
     }
 
     suspend fun cancelAll() {

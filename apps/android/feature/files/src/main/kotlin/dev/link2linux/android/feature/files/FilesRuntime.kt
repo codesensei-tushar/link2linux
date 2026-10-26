@@ -117,6 +117,15 @@ class FilesRuntime @Inject internal constructor(@ApplicationContext context: Con
         }
     }
 
+    /**
+     * Stops a transfer. It runs in the app's scope, not the caller's: a
+     * screen that closes while the cancel waits for a chunk being written
+     * must not leave the transfer half cancelled.
+     */
+    fun cancel(key: TransferKey) {
+        scope.launch { engine.cancel(key) }
+    }
+
     /** Re-reads the storage permission, for example when the screen resumes. */
     fun refreshStorageAccess() {
         val granted = StorageAccess.isGranted(app)

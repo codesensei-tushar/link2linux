@@ -71,9 +71,7 @@ class FilesViewModel @Inject internal constructor(
         viewModelScope.launch { _shareResult.value = ShareResult(desktop, sending.await(), uris.size) }
     }
 
-    fun cancel(key: TransferKey) {
-        viewModelScope.launch { runtime.engine.cancel(key) }
-    }
+    fun cancel(key: TransferKey) = runtime.cancel(key)
 
     fun dismiss(key: TransferKey) = runtime.engine.dismiss(key)
 

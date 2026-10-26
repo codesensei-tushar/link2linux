@@ -19,12 +19,19 @@ import java.io.IOException
 import java.io.InputStream
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Shared storage in memory. Names are made unique the way the phone's storage does it. */
 class FakeStore : ReceivedFileStore {
     var free = Long.MAX_VALUE / 2
     var noSpaceOnAppend = false
     var failPublish = false
+
+    /** While set, writing waits for it, as slow storage would; [appending] counts the writes that began. */
+    @Volatile var gate: CountDownLatch? = null
+    val appending = AtomicInteger()
 
     /** Published files, by the name they got. */
     val saved = LinkedHashMap<String, ByteArray>()
@@ -48,6 +55,8 @@ class FakeStore : ReceivedFileStore {
         var bytes = ByteArray(0)
 
         override fun append(data: ByteArray) {
+            appending.incrementAndGet()
+            gate?.await(10, TimeUnit.SECONDS)
             if (noSpaceOnAppend) throw NoSpaceException("full")
             bytes += data
         }

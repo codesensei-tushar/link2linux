@@ -12,9 +12,6 @@ import dagger.hilt.components.SingletonComponent
 import dev.link2linux.android.core.files.Direction
 import dev.link2linux.android.core.files.TransferId
 import dev.link2linux.android.core.files.TransferKey
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 /**
  * Cancel on a transfer's progress notification. Not exported: only the
@@ -31,15 +28,7 @@ class TransferActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_CANCEL) return
         val key = intent.data?.let(::keyOf) ?: return
-        val runtime = EntryPointAccessors.fromApplication(context.applicationContext, Files::class.java).runtime()
-        val pending = goAsync()
-        CoroutineScope(Dispatchers.Default).launch {
-            try {
-                runtime.engine.cancel(key)
-            } finally {
-                pending.finish()
-            }
-        }
+        EntryPointAccessors.fromApplication(context.applicationContext, Files::class.java).runtime().cancel(key)
     }
 
     internal companion object {
