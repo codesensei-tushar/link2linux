@@ -2190,6 +2190,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "link2linux-runtime"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "link2linux-core",
+ "link2linux-platform",
+ "link2linux-protocol",
+ "rustls",
+ "serde",
+ "specta",
+ "specta-typescript",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
