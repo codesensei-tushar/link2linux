@@ -173,16 +173,12 @@ pub(crate) async fn watch(core: Arc<Core>) {
             core.clipboard_changed();
             return;
         }
-        // A phone's text that goes on the clipboard while this reads makes
-        // what it read old news.
-        let since = core.clipboard_hub.generation();
-        match Clipboard::read(&clipboard).await {
-            Ok(text) => {
-                if let Some(clip) = core.clipboard_hub.copied(text, Instant::now(), since) {
-                    share(&core, &clip, Origin::Automatic);
-                }
-            }
-            Err(error) => tracing::debug!(%error, "could not read the clipboard"),
+        if let Some(clip) = core
+            .clipboard_hub
+            .read_copy(&clipboard, Instant::now())
+            .await
+        {
+            share(&core, &clip, Origin::Automatic);
         }
     }
 }
@@ -209,6 +205,8 @@ fn use_focus(core: &Arc<Core>) {
     }
     let task = core.clone();
     core.handle.spawn(async move {
+        // A push the session took after its phone was unpaired.
+        task.drop_unpaired_held();
         let copy = task.clipboard_hub.focused(&clipboard, Instant::now()).await;
         if let Some(clip) = copy {
             share(&task, &clip, Origin::Automatic);
@@ -274,6 +272,7 @@ pub(crate) async fn follow(core: Arc<Core>, mut events: broadcast::Receiver<Clip
 /// Shows the pop-up for text that just arrived to wait for the window, and
 /// takes it down once no text waits.
 async fn offer(core: &Core, event: Option<&ClipboardEvent>) {
+    core.drop_unpaired_held();
     let held = core.clipboard_hub.held();
     let banner = lock(&core.clipboard_page).banner;
     match held {
@@ -309,7 +308,7 @@ async fn offer(core: &Core, event: Option<&ClipboardEvent>) {
 /// window, the text goes on the clipboard: now if the window has focus,
 /// else once the click brings the window up.
 pub(crate) fn popup_clicked(core: &Arc<Core>, id: NotificationId) {
-    if lock(&core.clipboard_page).banner != Some(id) || !core.clipboard_hub.request_held() {
+    if lock(&core.clipboard_page).banner != Some(id) || core.clipboard_hub.held().is_none() {
         return;
     }
     if core.clipboard_hub.is_focused() {

@@ -807,3 +807,32 @@ async fn text_whose_push_failed_goes_again() {
     link.share(clip("x"), Origin::Automatic).await;
     assert_eq!(link.pushed().await.1.text, "x");
 }
+
+#[tokio::test]
+async fn on_focus_the_phones_text_wins_over_an_earlier_desktop_copy_which_stays_here() {
+    let hub = ClipboardHub::new(ClipboardSettings::default());
+    let clipboard = FakeClipboard::new(ClipboardAccess::FocusOnly);
+    let mut link = Link::ready("phone-1", &hub, &clipboard).await;
+
+    // The window had focus with "before" on the clipboard, which went to
+    // the phone.
+    *clipboard.content.lock().unwrap() = Some(text("before"));
+    hub.set_focused(true);
+    let before = hub.focused(&clipboard, Instant::now()).await.unwrap();
+    link.share(before, Origin::Automatic).await;
+    let (seq, _) = link.pushed().await;
+    link.ack(seq).await;
+    hub.set_focused(false);
+
+    // The user copies in another app, then shares from the phone.
+    *clipboard.content.lock().unwrap() = Some(text("copied elsewhere"));
+    let answer = link.push("from the phone", false).await;
+    assert!(matches!(answer.payload, Some(Payload::Ack(_))));
+
+    // The window gains focus: the phone's text goes on the clipboard, and
+    // what the clipboard held does not go back over it on the phone.
+    hub.set_focused(true);
+    assert!(hub.focused(&clipboard, Instant::now()).await.is_none());
+    assert_eq!(clipboard.text().unwrap().text, "from the phone");
+    link.quiet().await;
+}

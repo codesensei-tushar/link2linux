@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use link2linux_platform::{Clipboard, ClipboardText};
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tokio::time::Instant;
 
 use super::{
@@ -13,29 +13,14 @@ use super::{
 };
 
 /// Text a phone pushed that waits for the window to gain focus, on a
-/// desktop that lets the app use its clipboard only then.
+/// desktop that lets the app use its clipboard only then. It goes on the
+/// clipboard when the window gains focus or the user clicks its pop-up.
 #[derive(Clone)]
 pub struct Held {
     /// The text.
     pub clip: Clip,
     /// The phone that pushed it.
     pub device_id: String,
-    /// What the clipboard held when the text arrived, if the desktop had
-    /// looked. Other content when the window gains focus is a newer copy
-    /// made on the desktop, which wins.
-    before: Option<Content>,
-    release: Release,
-}
-
-impl Held {
-    fn new(clip: Clip, device_id: String, before: Option<Content>) -> Self {
-        Self {
-            clip,
-            device_id,
-            before,
-            release: Release::OnFocus,
-        }
-    }
 }
 
 impl fmt::Debug for Held {
@@ -43,22 +28,8 @@ impl fmt::Debug for Held {
         f.debug_struct("Held")
             .field("clip", &self.clip)
             .field("device_id", &self.device_id)
-            .field("release", &self.release)
-            .finish_non_exhaustive()
+            .finish()
     }
-}
-
-/// When held text goes on the clipboard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Release {
-    /// When the window gains focus, unless the user copied something else
-    /// on the desktop meanwhile.
-    OnFocus,
-    /// Only once the user clicks its pop-up: a newer desktop copy won.
-    OnClick,
-    /// The user clicked its pop-up: when the window has focus, whatever the
-    /// clipboard holds.
-    Requested,
 }
 
 /// What the desktop clipboard held when the desktop last looked.
@@ -69,20 +40,25 @@ enum Content {
     NoText,
 }
 
-/// How many times a phone's text was put on the clipboard. A read that
-/// started before the latest time may return what that text replaced, so
-/// [`ClipboardHub::copied`] drops it.
+/// Counts the starts and ends of writes of a phone's text to the
+/// clipboard. A read that a write overlapped may return what the text
+/// replaced, so [`ClipboardHub::copied`] drops it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Generation(u64);
 
 /// What a phone's text replaced in the hub, to put back if the text could
 /// not be written.
 pub(super) struct Marked {
-    generation: Generation,
+    /// Which write it was.
+    mark: u64,
     seen: Option<Content>,
     from_phone: Option<Digest>,
     latest: Option<(Arc<Clip>, Instant)>,
 }
+
+/// How many times [`ClipboardHub::read_copy`] reads the clipboard again
+/// after a phone's text overtook its read.
+const MAX_READS: usize = 4;
 
 #[derive(Default)]
 struct State {
@@ -96,6 +72,9 @@ struct State {
     /// phone, and not to the others.
     from_phone: Option<Digest>,
     generation: u64,
+    /// Writes of a phone's text started so far, and those still running.
+    marks: u64,
+    writing: u32,
     /// The latest copy made on this desktop, while the clipboard holds it
     /// and it may be shared, and when it was made.
     latest: Option<(Arc<Clip>, Instant)>,
@@ -110,6 +89,8 @@ struct State {
 pub struct ClipboardHub {
     state: Arc<Mutex<State>>,
     events: broadcast::Sender<ClipboardEvent>,
+    /// Told when no write of a phone's text runs any more.
+    settled: Arc<Notify>,
 }
 
 impl ClipboardHub {
@@ -122,6 +103,7 @@ impl ClipboardHub {
                 ..State::default()
             })),
             events: broadcast::channel(64).0,
+            settled: Arc::new(Notify::new()),
         }
     }
 
@@ -200,13 +182,35 @@ impl ClipboardHub {
         Generation(self.lock().generation)
     }
 
+    /// Reads the clipboard after a change, and returns the copy to share
+    /// with every phone, as [`Self::copied`] does. A read that a write of a
+    /// phone's text overlapped is made again once the write is over, so
+    /// neither the text the write replaced nor a copy the user made just
+    /// before it is lost or mistaken.
+    pub async fn read_copy<C: Clipboard>(&self, clipboard: &C, now: Instant) -> Option<Arc<Clip>> {
+        for _ in 0..MAX_READS {
+            self.writes_done().await;
+            let since = self.generation();
+            let text = match clipboard.read().await {
+                Ok(text) => text,
+                Err(error) => {
+                    tracing::debug!(%error, "could not read the clipboard");
+                    return None;
+                }
+            };
+            if let Some(copy) = self.take(text, now, since) {
+                return copy;
+            }
+        }
+        None
+    }
+
     /// The clipboard holds `text` now, or no text when `None`, as read in a
-    /// read that started at `since` ([`Self::generation`]), after a change
-    /// or when the window gained focus. Returns the copy to share with
-    /// every phone, or `None` when nothing new is to be shared: the same
-    /// content as before, the text a phone put there, a read that a phone's
-    /// newer text overtook, or a copy the limits or the settings keep here.
-    /// Too long text and secrets are reported as
+    /// read that started at `since` ([`Self::generation`]). Returns the
+    /// copy to share with every phone, or `None` when nothing new is to be
+    /// shared: the same content as before, the text a phone put there, a
+    /// read that a write of a phone's text overlapped, or a copy the limits
+    /// or the settings keep here. Too long text and secrets are reported as
     /// [`ClipboardEvent::NotShared`].
     pub fn copied(
         &self,
@@ -214,30 +218,41 @@ impl ClipboardHub {
         now: Instant,
         since: Generation,
     ) -> Option<Arc<Clip>> {
+        self.take(text, now, since).flatten()
+    }
+
+    /// As [`Self::copied`], with `None` for a read that a write of a
+    /// phone's text overlapped.
+    fn take(
+        &self,
+        text: Option<ClipboardText>,
+        now: Instant,
+        since: Generation,
+    ) -> Option<Option<Arc<Clip>>> {
         let mut state = self.lock();
-        if state.generation != since.0 {
+        if state.generation != since.0 || state.writing > 0 {
             return None;
         }
         let Some(text) = text else {
             state.seen = Some(Content::NoText);
             state.from_phone = None;
             state.latest = None;
-            return None;
+            return Some(None);
         };
         let clip = Clip::new(text);
         let content = Content::Text(clip.digest());
         if state.seen.replace(content) == Some(content) {
-            return None;
+            return Some(None);
         }
         if state.from_phone == Some(clip.digest()) {
-            return None;
+            return Some(None);
         }
         state.from_phone = None;
         match check(&clip, state.settings) {
             Ok(()) => {
                 let clip = Arc::new(clip);
                 state.latest = Some((clip.clone(), now));
-                Some(clip)
+                Some(Some(clip))
             }
             Err(reason) => {
                 // The clipboard moved on to a copy that stays here.
@@ -247,8 +262,19 @@ impl ClipboardHub {
                     tracing::info!(bytes = clip.len(), ?reason, "a copy is not shared");
                     self.emit(ClipboardEvent::NotShared(reason));
                 }
-                None
+                Some(None)
             }
+        }
+    }
+
+    /// Waits until no write of a phone's text runs.
+    async fn writes_done(&self) {
+        loop {
+            let settled = self.settled.notified();
+            if self.lock().writing == 0 {
+                return;
+            }
+            settled.await;
         }
     }
 
@@ -293,85 +319,33 @@ impl ClipboardHub {
     }
 
     /// The window gained focus, on a desktop that lets the app use its
-    /// clipboard only then. If the user copied something on the desktop
-    /// while the window was away, that copy wins: it is returned as for
-    /// [`Self::copied`], and text that waits stays for its pop-up.
-    /// Otherwise the text that waits goes on the clipboard. Call it after
+    /// clipboard only then. Text that waits goes on the clipboard, and what
+    /// the clipboard held is not shared: the desktop could not see when it
+    /// was copied, and it is most likely older than the phone's text.
+    /// Otherwise the clipboard is read, and a copy the user made while the
+    /// window was away is returned as for [`Self::copied`]. Call it after
     /// [`Self::set_focused`] said so; it does nothing once the window has
     /// lost focus again.
     pub async fn focused<C: Clipboard>(&self, clipboard: &C, now: Instant) -> Option<Arc<Clip>> {
         if !self.is_focused() {
             return None;
         }
-        let since = self.generation();
-        let read = match clipboard.read().await {
-            Ok(text) => Some(text),
-            Err(error) => {
-                tracing::info!(%error, "could not read the clipboard");
-                None
+        if let Some((held, marked)) = self.release() {
+            match clipboard.write(held.clip.text()).await {
+                Ok(()) => {
+                    self.written(marked, true);
+                    self.emit(ClipboardEvent::Released {
+                        device_id: held.device_id,
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not put the phone's text on the clipboard");
+                    self.put_back(held, marked);
+                }
             }
-        };
-        let content = read.as_ref().map(|text| match text {
-            Some(text) => Content::Text(Digest::of(&text.text)),
-            None => Content::NoText,
-        });
-        if self.release_on_focus(content) {
-            self.put_held(clipboard).await;
             return None;
         }
-        self.copied(read?, now, since)
-    }
-
-    /// The user clicked the pop-up of the text that waits: it goes on the
-    /// clipboard the next time [`Self::focused`] runs, whatever the
-    /// clipboard holds then. Returns whether any text waits.
-    pub fn request_held(&self) -> bool {
-        match self.lock().held.as_mut() {
-            Some(held) => {
-                held.release = Release::Requested;
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Whether the text that waits goes on the clipboard now, the window
-    /// having focus with `content` on the clipboard (`None` when it could
-    /// not be read). Notes a newer desktop copy, after which only a click
-    /// on the pop-up releases the text.
-    fn release_on_focus(&self, content: Option<Content>) -> bool {
-        let mut state = self.lock();
-        let Some(held) = state.held.as_mut() else {
-            return false;
-        };
-        match held.release {
-            Release::Requested => true,
-            Release::OnClick => false,
-            Release::OnFocus => {
-                let newer =
-                    matches!((held.before, content), (Some(before), Some(now)) if before != now);
-                if newer {
-                    held.release = Release::OnClick;
-                }
-                !newer
-            }
-        }
-    }
-
-    /// Puts the text that waits on the clipboard.
-    async fn put_held<C: Clipboard>(&self, clipboard: &C) {
-        let Some((held, marked)) = self.release() else {
-            return;
-        };
-        match clipboard.write(held.clip.text()).await {
-            Ok(()) => self.emit(ClipboardEvent::Released {
-                device_id: held.device_id,
-            }),
-            Err(error) => {
-                tracing::warn!(%error, "could not put the phone's text on the clipboard");
-                self.hold_back(held, marked);
-            }
-        }
+        self.read_copy(clipboard, now).await
     }
 
     /// The latest copy, if the user made it within [`RECENT_COPY`] before
@@ -383,39 +357,46 @@ impl ClipboardHub {
     }
 
     /// A phone's text is about to go on the clipboard: when the clipboard
-    /// reports it, it is not shared on, and reads that started before now
-    /// are dropped. Returns what to put back with [`Self::restore`] if the
-    /// text cannot be written.
+    /// reports it, it is not shared on, and reads that overlap the write are
+    /// dropped. Pass the result to [`Self::written`] once the write is over.
     pub(super) fn mark(&self, digest: Digest) -> Marked {
         let mut state = self.lock();
         state.generation += 1;
+        state.marks += 1;
+        state.writing += 1;
         Marked {
-            generation: Generation(state.generation),
+            mark: state.marks,
             seen: state.seen.replace(Content::Text(digest)),
             from_phone: state.from_phone.replace(digest),
             latest: state.latest.take(),
         }
     }
 
-    /// The phone's text did not go on the clipboard after all: the
-    /// clipboard still holds what it held, unless newer phone text was
-    /// marked meanwhile. Returns whether it was put back.
-    pub(super) fn restore(&self, marked: Marked) -> bool {
+    /// The write of a phone's text is over. When it failed, the clipboard
+    /// still holds what it held, and that is put back, unless a newer phone
+    /// text was marked meanwhile. Returns whether it was put back.
+    pub(super) fn written(&self, marked: Marked, ok: bool) -> bool {
         let mut state = self.lock();
-        if state.generation != marked.generation.0 {
-            return false;
+        state.writing = state.writing.saturating_sub(1);
+        // A read that overlapped the write's end is old news too.
+        state.generation += 1;
+        let restored = !ok && state.marks == marked.mark;
+        if restored {
+            state.seen = marked.seen;
+            state.from_phone = marked.from_phone;
+            state.latest = marked.latest;
         }
-        state.seen = marked.seen;
-        state.from_phone = marked.from_phone;
-        state.latest = marked.latest;
-        true
+        let settled = state.writing == 0;
+        drop(state);
+        if settled {
+            self.settled.notify_waiters();
+        }
+        restored
     }
 
     /// Keeps a phone's text for the window, replacing older text.
     pub(super) fn hold(&self, clip: Clip, device_id: String) {
-        let mut state = self.lock();
-        let before = state.seen;
-        state.held = Some(Held::new(clip, device_id, before));
+        self.lock().held = Some(Held { clip, device_id });
     }
 
     /// A phone's text went on the clipboard: older text that waited for
@@ -438,8 +419,8 @@ impl ClipboardHub {
 
     /// Holds `held` again after it could not go on the clipboard, unless a
     /// phone's newer text arrived meanwhile.
-    fn hold_back(&self, held: Held, marked: Marked) {
-        if self.restore(marked) {
+    fn put_back(&self, held: Held, marked: Marked) {
+        if self.written(marked, false) {
             self.lock().held.get_or_insert(held);
         }
     }
@@ -488,11 +469,19 @@ mod tests {
         hub.mark(Clip::new(self::text(text)).digest())
     }
 
+    /// A phone's text goes on the clipboard.
+    fn put(hub: &ClipboardHub, text: &str) {
+        let marked = mark(hub, text);
+        hub.written(marked, true);
+    }
+
     /// A clipboard that works only while the window has focus.
     #[derive(Default)]
     struct FocusOnly {
         content: StdMutex<Option<ClipboardText>>,
         broken: AtomicBool,
+        /// Runs once during the next read, after it took the content.
+        during_read: StdMutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl FocusOnly {
@@ -516,7 +505,12 @@ mod tests {
             if self.broken.load(Ordering::Relaxed) {
                 return Err(PlatformError::Unsupported("clipboard"));
             }
-            Ok(self.content.lock().unwrap().clone())
+            let text = self.content.lock().unwrap().clone();
+            let during = self.during_read.lock().unwrap().take();
+            if let Some(during) = during {
+                during();
+            }
+            Ok(text)
         }
 
         async fn write(&self, text: &ClipboardText) -> Result<(), PlatformError> {
@@ -559,7 +553,7 @@ mod tests {
     #[test]
     fn a_phones_text_is_not_shared_on_until_something_else_is_copied() {
         let hub = ClipboardHub::new(ClipboardSettings::default());
-        mark(&hub, "from the phone");
+        put(&hub, "from the phone");
         assert!(copy(&hub, text("from the phone")).is_none());
         // A settings change does not make it new.
         hub.set_settings(ClipboardSettings::default());
@@ -572,18 +566,26 @@ mod tests {
     }
 
     #[test]
-    fn a_read_overtaken_by_a_phones_text_is_dropped() {
+    fn a_read_that_a_phones_write_overlaps_is_dropped() {
         let hub = ClipboardHub::new(ClipboardSettings::default());
-        mark(&hub, "first");
-        // The watcher starts reading after the first push's write...
-        let since = hub.generation();
-        // ...the phone's next push is marked while the read runs...
-        mark(&hub, "second");
-        // ...and the read returns the first push, which goes nowhere.
+        put(&hub, "first");
+        // A read starts before the next phone text is marked...
+        let before = hub.generation();
+        let marked = mark(&hub, "second");
+        // ...another starts while it is written...
+        let during = hub.generation();
         assert!(
-            hub.copied(Some(text("first")), Instant::now(), since)
+            hub.copied(Some(text("first")), Instant::now(), during)
                 .is_none()
         );
+        hub.written(marked, true);
+        // ...and both return what the write replaced, which goes nowhere.
+        for since in [before, during] {
+            assert!(
+                hub.copied(Some(text("first")), Instant::now(), since)
+                    .is_none()
+            );
+        }
         // The second push is still recognized when the clipboard reports
         // it.
         assert!(copy(&hub, text("second")).is_none());
@@ -593,19 +595,49 @@ mod tests {
     #[test]
     fn a_phones_text_that_did_not_go_on_the_clipboard_leaves_the_hub_as_it_was() {
         let hub = ClipboardHub::new(ClipboardSettings::default());
-        mark(&hub, "earlier phone text");
+        put(&hub, "earlier phone text");
         let failed = mark(&hub, "x");
-        assert!(hub.restore(failed));
+        assert!(hub.written(failed, false));
         // The earlier phone text is still on the clipboard and still not
         // shared on; x was never there.
         assert!(copy(&hub, text("earlier phone text")).is_none());
         assert!(copy(&hub, text("x")).is_some());
 
-        // A restore after newer phone text changes nothing.
+        // A failure after newer phone text was marked changes nothing.
         let older = mark(&hub, "older");
-        mark(&hub, "newer");
-        assert!(!hub.restore(older));
+        let newer = mark(&hub, "newer");
+        assert!(!hub.written(older, false));
+        hub.written(newer, true);
         assert!(copy(&hub, text("newer")).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_read_overtaken_by_a_phones_text_is_made_again() {
+        let hub = ClipboardHub::new(ClipboardSettings::default());
+        let now = Instant::now();
+
+        // The read takes the user's earlier copy, then the phone's text is
+        // written over it: the second read finds the phone's text, and
+        // nothing is shared.
+        let clipboard = Arc::new(FocusOnly::holding("earlier"));
+        let (during, writing) = (clipboard.clone(), hub.clone());
+        *clipboard.during_read.lock().unwrap() = Some(Box::new(move || {
+            let marked = writing.mark(Clip::new(text("from the phone")).digest());
+            *during.content.lock().unwrap() = Some(text("from the phone"));
+            writing.written(marked, true);
+        }));
+        assert!(hub.read_copy(clipboard.as_ref(), now).await.is_none());
+
+        // The read takes a copy the user just made, and the phone's text
+        // cannot be written over it: the copy is read again and shared.
+        let clipboard = Arc::new(FocusOnly::holding("just copied"));
+        let failing = hub.clone();
+        *clipboard.during_read.lock().unwrap() = Some(Box::new(move || {
+            let marked = failing.mark(Clip::new(text("from the phone")).digest());
+            failing.written(marked, false);
+        }));
+        let copy = hub.read_copy(clipboard.as_ref(), now).await.unwrap();
+        assert_eq!(copy.text().text, "just copied");
     }
 
     #[test]
@@ -695,7 +727,7 @@ mod tests {
         // Nor after a phone's text went on it.
         hub.copied(Some(text("c")), start, hub.generation())
             .unwrap();
-        mark(&hub, "p");
+        put(&hub, "p");
         assert!(hub.recent(start).is_none());
     }
 
@@ -704,7 +736,7 @@ mod tests {
         let hub = ClipboardHub::new(ClipboardSettings::default());
         let start = Instant::now();
         // Even the text a phone put there: the user asked.
-        mark(&hub, "p");
+        put(&hub, "p");
         assert_eq!(hub.send(Some(text("p")), start).unwrap().text().text, "p");
         assert_eq!(hub.send(None, start).unwrap_err(), NotShared::NoText);
         assert_eq!(
@@ -782,31 +814,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_desktop_copy_made_while_text_waited_wins_and_the_popup_still_offers_the_text() {
+    async fn held_text_wins_over_whatever_the_clipboard_held_and_that_is_not_shared() {
         let hub = ClipboardHub::new(ClipboardSettings::default());
         let clipboard = FocusOnly::holding("before");
         hub.set_focused(true);
         assert!(hub.focused(&clipboard, Instant::now()).await.is_some());
         hub.set_focused(false);
 
-        // The phone's text arrives while the window is away, and the user
-        // then copies something else on the desktop.
+        // The user copies something in another app, and later the phone's
+        // text arrives: the desktop cannot tell which came first.
+        clipboard.write(&text("copied elsewhere")).await.unwrap();
         hold(&hub, "from the phone", "phone-1");
-        clipboard.write(&text("copied here")).await.unwrap();
         hub.set_focused(true);
-        let clip = hub.focused(&clipboard, Instant::now()).await.unwrap();
-        assert_eq!(clip.text().text, "copied here");
-        assert_eq!(clipboard.text().unwrap(), "copied here");
-        // Focus does not put the text on later either.
-        assert!(hub.focused(&clipboard, Instant::now()).await.is_none());
-        assert_eq!(clipboard.text().unwrap(), "copied here");
-        assert!(hub.held().is_some());
-
-        // A click on its pop-up does.
-        assert!(hub.request_held());
         assert!(hub.focused(&clipboard, Instant::now()).await.is_none());
         assert_eq!(clipboard.text().unwrap(), "from the phone");
-        assert!(!hub.request_held());
+        // Focused again: nothing new to share.
+        assert!(hub.focused(&clipboard, Instant::now()).await.is_none());
     }
 
     #[tokio::test]
@@ -824,8 +847,8 @@ mod tests {
         // Newer phone text is marked while the held text is being written:
         // the held text is not held again over it.
         let (held, marked) = hub.release().unwrap();
-        mark(&hub, "newer");
-        hub.hold_back(held, marked);
+        put(&hub, "newer");
+        hub.put_back(held, marked);
         assert!(hub.held().is_none());
     }
 
