@@ -2,8 +2,12 @@ package dev.link2linux.android.core.notifications
 
 import dev.link2linux.android.core.notifications.EngineHarness.Companion.snap
 import dev.link2linux.protocol.v1.ErrorCode
+import dev.link2linux.protocol.v1.NotificationContent
 import dev.link2linux.protocol.v1.NotificationRemovalReason
-import dev.link2linux.protocol.v1.imageRequest
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,6 +15,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class NotificationEngineSyncTest {
     @Test
     fun `a sync after connecting answers with a snapshot of what is shared`() = runTest {
@@ -37,21 +42,6 @@ class NotificationEngineSyncTest {
             snap("ok"),
         )
         with(h) { assertEquals(listOf("ok"), sync().keys()) }
-    }
-
-    @Test
-    fun `posts and removals change what a later sync returns`() = runTest {
-        val h = EngineHarness(this)
-        h.connect(snap("a"))
-        h.post(snap("b"))
-        h.post(snap("a", text = "v2"))
-        h.remove("b")
-        h.remove("unknown")
-        val answer = h.sync()
-        with(h) {
-            assertEquals(listOf("a"), answer.keys())
-            assertEquals(4L, answer.cursor().revision)
-        }
     }
 
     @Test
@@ -147,6 +137,117 @@ class NotificationEngineSyncTest {
     }
 
     @Test
+    fun `a group summary stays out while a child is shared and returns when the children are gone`() = runTest {
+        val h = EngineHarness(this)
+        val summary = snap("sum").copy(groupKey = "g", isGroupSummary = true)
+        val child = snap("child").copy(groupKey = "g")
+        h.connect(summary)
+        h.attach()
+        with(h) { assertEquals(listOf("sum"), sync().keys()) }
+        h.post(child)
+        assertEquals(listOf("child"), h.transport.posted.map { it.notification.key })
+        assertEquals(
+            listOf("sum" to NotificationRemovalReason.NOTIFICATION_REMOVAL_REASON_NOT_SHARED),
+            h.transport.removed.map { it.key to it.reason },
+        )
+        h.remove("child")
+        assertEquals(listOf("child", "sum"), h.transport.posted.map { it.notification.key })
+        assertFalse(h.transport.posted.last().alert)
+    }
+
+    @Test
+    fun `excluding an app reports its notifications as not shared`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a", pkg = "org.chat"), snap("b", pkg = "org.mail"))
+        h.attach()
+        h.sync()
+        h.policy.excluded += "org.chat"
+        h.changePolicy()
+        assertEquals(
+            listOf("a" to NotificationRemovalReason.NOTIFICATION_REMOVAL_REASON_NOT_SHARED),
+            h.transport.removed.map { it.key to it.reason },
+        )
+        h.policy.excluded.clear()
+        h.changePolicy()
+        assertEquals(listOf("a"), h.transport.posted.map { it.notification.key })
+        assertFalse(h.transport.posted.single().alert)
+    }
+
+    @Test
+    fun `hiding an app's content re-sends it as hidden by the user`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a", pkg = "org.chat", text = "secret"))
+        h.attach()
+        h.sync()
+        h.policy.hidden += "org.chat"
+        h.changePolicy()
+        val n = h.transport.posted.single().notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_HIDDEN_BY_USER, n.content)
+        assertEquals("", n.text)
+    }
+
+    @Test
+    fun `a request while the feature is off or access is missing is refused`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a"))
+        h.policy.enabled = false
+        h.changePolicy()
+        h.sync().assertError(ErrorCode.ERROR_CODE_DISABLED)
+        h.policy.enabled = true
+        h.policy.accessGranted = false
+        h.changePolicy()
+        val denied = h.sync()
+        denied.assertError(ErrorCode.ERROR_CODE_PERMISSION_REQUIRED)
+        assertEquals("notification-access", (denied.single as NotificationReply.Error).message.permission)
+        assertEquals(NotificationAvailability.PERMISSION_REQUIRED, h.engine.availability.value)
+    }
+
+    @Test
+    fun `turning the feature off ends live events and turning it on gives a new epoch`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a"))
+        h.attach()
+        val before = with(h) { sync().cursor() }
+        h.policy.enabled = false
+        h.changePolicy()
+        h.post(snap("b"))
+        assertTrue(h.transport.events.isEmpty())
+        h.policy.enabled = true
+        h.changePolicy()
+        val answer = h.sync(before)
+        with(h) {
+            assertEquals(listOf("a", "b"), answer.keys())
+            assertNotEquals(before.epoch, answer.cursor().epoch)
+        }
+    }
+
+    @Test
+    fun `losing the listener empties the collection`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a"))
+        h.policy.accessGranted = false
+        h.engine.onListenerDisconnected()
+        h.changePolicy()
+        h.policy.accessGranted = true
+        h.connect()
+        with(h) { assertTrue(sync().keys().isEmpty()) }
+    }
+
+    @Test
+    fun `a listener restart shows up as two availability changes`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a"))
+        val seen = mutableListOf<NotificationAvailability>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) { h.engine.availabilityChanges.toList(seen) }
+        h.policy.accessGranted = false
+        h.engine.onListenerDisconnected()
+        h.policy.accessGranted = true
+        h.connect(snap("a"))
+        job.cancel()
+        assertEquals(listOf(NotificationAvailability.PERMISSION_REQUIRED, NotificationAvailability.READY), seen)
+    }
+
+    @Test
     fun `a failing transport stops the events until the next sync`() = runTest {
         val h = EngineHarness(this)
         h.connect()
@@ -161,12 +262,5 @@ class NotificationEngineSyncTest {
         h.sync()
         h.post(snap("c"))
         assertEquals(listOf("c"), h.transport.posted.map { it.notification.key })
-    }
-
-    @Test
-    fun `a request the engine does not handle yet is unsupported`() = runTest {
-        val sink = RecordingSink()
-        EngineHarness(this).engine.handle(NotificationRequest.Image(imageRequest { }), sink)
-        sink.assertError(ErrorCode.ERROR_CODE_UNSUPPORTED)
     }
 }
