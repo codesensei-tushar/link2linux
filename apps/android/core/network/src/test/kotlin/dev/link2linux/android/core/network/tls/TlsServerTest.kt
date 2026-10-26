@@ -1,11 +1,15 @@
 package dev.link2linux.android.core.network.tls
 
 import dev.link2linux.android.core.model.KeyFingerprint
+import dev.link2linux.android.core.network.Session
+import dev.link2linux.android.core.network.SessionException
 import dev.link2linux.android.core.security.IdentityKey
 import dev.link2linux.android.core.security.IdentityKeySource
 import dev.link2linux.android.core.security.PairingCrypto
 import dev.link2linux.android.core.security.Spki
 import dev.link2linux.android.core.testing.TestCertificates
+import dev.link2linux.protocol.v1.Hello
+import kotlinx.coroutines.runBlocking
 import org.conscrypt.Conscrypt
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -170,6 +174,56 @@ class TlsServerTest {
         assertFalse(sessions[0].id.isNotEmpty() && sessions[0].id.contentEquals(sessions[1].id))
         first.first.getOrThrow().close()
         second.first.getOrThrow().close()
+    }
+
+    /** A desktop whose end of a connection never reads, and the phone's end with frames that soon fill the buffers. */
+    private fun stalledDesktop(): Triple<TlsTransport, SSLSocket, Hello> {
+        val (phoneSide, client) = connect(server { true }, TestDesktop())
+        // Under the 512 KiB limit for frames without an image.
+        val big = Hello.newBuilder().setDeviceName("x".repeat(400_000)).build()
+        return Triple(phoneSide.getOrThrow(), client.get(10, TimeUnit.SECONDS), big)
+    }
+
+    @Test
+    fun aDesktopThatStopsReadingIsCutOffAtTheWriteDeadline() {
+        val (transport, desktopEnd, big) = stalledDesktop()
+        try {
+            val phone = Session(transport, writeTimeoutMillis = 500).apply { markPaired() }
+            val started = System.nanoTime()
+            val sending = executor.submit<Throwable?> {
+                runBlocking { runCatching { repeat(256) { phone.send { hello = big } } }.exceptionOrNull() }
+            }
+
+            // Closing the desktop's end in finally frees a writer that is still stuck.
+            val error = sending.get(10, TimeUnit.SECONDS)
+            val tookMillis = (System.nanoTime() - started) / 1_000_000
+
+            assertTrue("got $error", error is SessionException)
+            assertTrue("took $tookMillis ms", tookMillis < 8_000)
+        } finally {
+            desktopEnd.close()
+        }
+    }
+
+    @Test
+    fun closingWhileAWriteIsStuckReturnsAtOnceAndEndsTheWrite() {
+        val (transport, desktopEnd, big) = stalledDesktop()
+        try {
+            val phone = Session(transport, writeTimeoutMillis = 60_000).apply { markPaired() }
+            val sending = executor.submit<Throwable?> {
+                runBlocking { runCatching { repeat(256) { phone.send { hello = big } } }.exceptionOrNull() }
+            }
+            Thread.sleep(1_000)
+            assertFalse("the buffers took every frame", sending.isDone)
+
+            // What the notifications engine's abandon() and a replaced session's cut-off do.
+            val closing = executor.submit { phone.close() }
+            closing.get(2, TimeUnit.SECONDS)
+
+            assertTrue(sending.get(5, TimeUnit.SECONDS) != null)
+        } finally {
+            desktopEnd.close()
+        }
     }
 
     @Test

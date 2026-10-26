@@ -9,6 +9,9 @@ import dev.link2linux.android.core.model.DeviceId
 import dev.link2linux.android.core.model.DeviceKind
 import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.model.PresenceKey
+import dev.link2linux.android.core.network.FrameCodec
+import dev.link2linux.android.core.network.Session
+import dev.link2linux.android.core.network.Transport
 import dev.link2linux.android.core.network.pairing.DesktopPeer
 import dev.link2linux.android.core.network.pairing.PairingService
 import dev.link2linux.android.core.network.tls.TestDesktop
@@ -16,6 +19,7 @@ import dev.link2linux.android.core.network.tls.asSource
 import dev.link2linux.android.core.notifications.AndroidValues
 import dev.link2linux.android.core.notifications.HmacNotificationKeys
 import dev.link2linux.android.core.notifications.ImageStore
+import dev.link2linux.android.core.notifications.NotificationAvailability
 import dev.link2linux.android.core.notifications.NotificationCanceller
 import dev.link2linux.android.core.notifications.NotificationEngine
 import dev.link2linux.android.core.notifications.NotificationEnvironment
@@ -31,8 +35,12 @@ import dev.link2linux.protocol.v1.FeatureAvailability
 import dev.link2linux.protocol.v1.Goodbye
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.PairingMethod
+import dev.link2linux.protocol.v1.DeviceKind as WireDeviceKind
+import dev.link2linux.protocol.v1.envelope
+import dev.link2linux.protocol.v1.hello
 import dev.link2linux.protocol.v1.notificationDismissRequest
 import dev.link2linux.protocol.v1.notificationSyncRequest
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,7 +57,15 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.SequenceInputStream
 import java.net.InetAddress
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /** The notifications feature over real loopback TLS sessions, with a fake platform behind the engine. */
 class NotificationSessionTest {
@@ -345,5 +361,108 @@ class NotificationSessionTest {
 
         assertEquals(request, reply.replyTo)
         assertEquals(ErrorCode.ERROR_CODE_UNSUPPORTED, reply.errorReply.code)
+    }
+    /**
+     * A connection over which the desktop's `Hello` arrives, then nothing,
+     * and whose writes fail once [broken] is set: a desktop that dropped off
+     * the network before the phone noticed.
+     */
+    private class BreakingTransport : Transport {
+        @Volatile var broken = false
+        val failedWrites = AtomicInteger()
+        private val written = ByteArrayOutputStream()
+        private val closed = CountDownLatch(1)
+
+        override val input: InputStream = SequenceInputStream(
+            ByteArrayInputStream(
+                ByteArrayOutputStream().also {
+                    FrameCodec().write(
+                        envelope {
+                            seq = 1
+                            hello = hello {
+                                protocolVersion = 1
+                                deviceId = DesktopPeer.DEVICE_ID
+                                deviceName = "Test desktop"
+                                kind = WireDeviceKind.DEVICE_KIND_DESKTOP
+                                features += "notifications"
+                            }
+                        },
+                        it,
+                    )
+                }.toByteArray(),
+            ),
+            object : InputStream() {
+                override fun read(): Int {
+                    closed.await()
+                    return -1
+                }
+            },
+        )
+
+        override val output: OutputStream = object : OutputStream() {
+            override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                if (broken) {
+                    failedWrites.incrementAndGet()
+                    throw IOException("Broken pipe")
+                }
+                synchronized(written) { written.write(b, off, len) }
+            }
+        }
+
+        /** The envelopes the phone wrote. */
+        fun envelopes(): List<Envelope> {
+            val bytes = ByteArrayInputStream(synchronized(written) { written.toByteArray() })
+            return generateSequence { FrameCodec().read(bytes) }.toList()
+        }
+
+        override fun close() = closed.countDown()
+    }
+
+    @Test
+    fun anAvailabilityChangeOnADeadConnectionDoesNotCrashTheApp() = runBlocking {
+        val uncaught = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val hooksScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, e -> uncaught += e })
+        val hooks = NotificationSessionHooks(engine, hooksScope)
+        val record = PairedDevice(
+            device = Device(DeviceId(DesktopPeer.DEVICE_ID), "Test desktop", DeviceKind.DESKTOP),
+            fingerprint = desktop.fingerprint!!,
+            pairedAtEpochMillis = 0,
+            presenceKey = PresenceKey.of(ByteArray(32) { 9 }),
+        )
+        val phoneHello = hello {
+            protocolVersion = 1
+            deviceId = "phone-1"
+            deviceName = "Phone"
+            kind = WireDeviceKind.DEVICE_KIND_PHONE
+        }
+        suspend fun established(transport: Transport) = Session(transport).also {
+            withTimeout(5_000) { it.handshake(phoneHello) }
+            hooks.featureStatus()
+            hooks.onEstablished(record, it)
+        }
+        engine.onListenerConnected(emptyList())
+        withTimeout(5_000) { engine.availability.first { it == NotificationAvailability.READY } }
+        try {
+            val dead = BreakingTransport()
+            established(dead)
+            dead.broken = true
+
+            policy.accessGranted = false
+            engine.onPolicyChanged()
+            withTimeout(5_000) { while (dead.failedWrites.get() == 0) delay(10) }
+            delay(200)
+
+            // A later session still gets the changes.
+            val live = BreakingTransport()
+            established(live)
+            policy.accessGranted = true
+            engine.onPolicyChanged()
+            withTimeout(5_000) { while (live.envelopes().none { it.hasFeatureStatus() }) delay(10) }
+            assertEquals(FeatureAvailability.FEATURE_AVAILABILITY_READY, live.envelopes().last { it.hasFeatureStatus() }.availability())
+            assertTrue("uncaught: $uncaught", uncaught.isEmpty())
+        } finally {
+            hooksScope.cancel()
+        }
     }
 }
