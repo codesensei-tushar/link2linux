@@ -33,8 +33,8 @@ pub use self::desktop::{
     PairingBinding, PairingChannel, PairingPrompt, PairingTimeouts, SasDecision,
 };
 pub use self::qr::{
-    DEFAULT_BEACON_PORT, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, QR_PAYLOAD_VERSION, QR_URI_PREFIX,
-    QrError, QrPayload,
+    DEFAULT_BEACON_PORT, MAX_FAILED_PROOFS, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, OFFER_LIFETIME,
+    OfferStatus, QR_PAYLOAD_VERSION, QR_URI_PREFIX, QrError, QrOffer, QrPayload,
 };
 pub use self::store::FileTrustStore;
 use crate::device::DeviceKind;
@@ -183,6 +183,12 @@ pub enum PairingError {
     /// The peer's `PairingProof` or `SasCommit` did not verify.
     #[error("the phone's proof did not verify")]
     VerificationFailed,
+    /// The QR offer cannot be used any more.
+    #[error("the QR code is no longer valid ({0:?})")]
+    OfferUnavailable(OfferStatus),
+    /// This peer failed a proof for the current QR offer before.
+    #[error("this peer already failed to pair with the current QR code")]
+    Blocked,
     /// The peer broke the pairing protocol.
     #[error("pairing protocol error: {0}")]
     Protocol(String),

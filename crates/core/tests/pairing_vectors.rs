@@ -6,9 +6,13 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use link2linux_core::CertificateFingerprint;
+use link2linux_core::discovery::beacon::Beacon;
 use link2linux_core::pairing::crypto::{self, Role};
-use link2linux_core::pairing::{PairingSecret, QrPayload};
+use link2linux_core::pairing::{PairingSecret, QrOffer, QrPayload};
+use tokio::time::Instant;
 
 const VECTOR: &str = include_str!("../../../proto/testdata/v1/pairing.txt");
 
@@ -71,6 +75,27 @@ fn qr_code_uri() {
     let payload = qr_payload(&v);
     assert_eq!(payload.to_uri(), v["qr_uri"]);
     assert_eq!(QrPayload::parse(v["qr_uri"]).unwrap(), payload);
+}
+
+/// Discovery finds the phone that scanned the code by the offer's pairing
+/// tag and its pairing beacons.
+#[test]
+fn the_offer_is_found_by_its_pairing_tag_and_beacons() {
+    let v = vector();
+    let offer = QrOffer::from_payload(qr_payload(&v), Instant::now());
+
+    let tag = offer.pairing_tag();
+    assert_eq!(to_hex(&tag), v["pairing_tag"]);
+    assert_eq!(URL_SAFE_NO_PAD.encode(tag), v["txt_q"]);
+
+    let beacon = Beacon::parse(&hex(v["beacon_pairing"])).unwrap();
+    assert!(beacon.is_pairing());
+    assert!(beacon.verify(offer.secret().as_bytes()));
+    assert!(
+        !Beacon::parse(&hex(v["beacon"]))
+            .unwrap()
+            .verify(offer.secret().as_bytes())
+    );
 }
 
 #[test]
