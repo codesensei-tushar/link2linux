@@ -133,6 +133,59 @@ class FileSenderTest {
     }
 
     @Test
+    fun aCancelledTransfersChunksKeepTheirPlacesUntilAnswered() = sending {
+        val first = send(FakeFile("a", bytes(10 * chunk, seed = 1)))
+        val second = send(FakeFile("b", bytes(10 * chunk, seed = 2)))
+        attach()
+        accept(link.offers.single { TransferId(it.offer.transferId) == first.id })
+        accept(link.offers.single { TransferId(it.offer.transferId) == second.id })
+        assertEquals(8, link.chunks.size)
+        h.engine.cancel(first)
+        h.idle()
+        // The 8 chunks are still on their way, so the other transfer waits.
+        assertEquals(8, link.chunks.size)
+        val cancelled = link.chunks.toList()
+        answer(cancelled[0], failure(ErrorCode.ERROR_CODE_NOT_FOUND))
+        assertEquals(9, link.chunks.size)
+        assertEquals(second.id, TransferId(link.chunks.last().chunk.transferId))
+        answer(cancelled[1], failure(ErrorCode.ERROR_CODE_NOT_FOUND))
+        assertEquals(10, link.chunks.size)
+        assertEquals(8, link.unanswered.count { it.request is FileRequest.Chunk })
+    }
+
+    @Test
+    fun aPauseKeepsChunksOnTheirWayInTheWindow() = sending {
+        val key = send(FakeFile("a", bytes(10 * chunk)))
+        attach()
+        accept(link.offers.single())
+        assertEquals(8, link.chunks.size)
+        link.peerReady.value = false
+        h.idle()
+        link.peerReady.value = true
+        h.idle()
+        accept(link.offers.last())
+        // Offered again, but the 8 earlier chunks still wait for their answers.
+        assertEquals(8, link.chunks.size)
+        answer(link.chunks[0], FileAnswer.Ack)
+        assertEquals(9, link.chunks.size)
+        assertEquals(key.id, TransferId(link.chunks.last().chunk.transferId))
+    }
+
+    @Test
+    fun aTimedOutChunkFreesOnlyItsOwnPlace() = sending {
+        send(FakeFile("a", bytes(10 * chunk)))
+        attach()
+        accept(link.offers.single())
+        link.chunks[0].timeOut()
+        h.idle()
+        advance(FileSender.RETRY_DELAY_MILLIS)
+        accept(link.offers.last())
+        // 7 chunks of the first attempt still wait, so one place is free.
+        assertEquals(9, link.chunks.size)
+        assertEquals(8, link.unanswered.count { it.request is FileRequest.Chunk })
+    }
+
+    @Test
     fun aResumedTransferHashesTheBytesTheDesktopHasAlready() = sending {
         val first = bytes(1000)
         val second = bytes(2 * chunk + 10, seed = 4)

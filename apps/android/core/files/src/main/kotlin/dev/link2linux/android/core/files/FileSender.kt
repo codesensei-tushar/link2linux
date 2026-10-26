@@ -12,9 +12,13 @@ import dev.link2linux.protocol.v1.fileChunk
 import dev.link2linux.protocol.v1.fileInfo
 import dev.link2linux.protocol.v1.fileOffer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -116,6 +120,7 @@ internal class FileSender(
 
     private val transfers = LinkedHashMap<TransferKey, Outgoing>() // guarded by this, in the order they were sent
     private val pumps = HashMap<FileLink, Job>() // guarded by this
+    private val windows = HashMap<FileLink, Window>() // guarded by this
 
     /** Desktops with a session where files are ready on both sides, and how many such sessions. Guarded by this. */
     private val readyPeers = HashMap<String, Int>()
@@ -147,12 +152,12 @@ internal class FileSender(
 
     /** Starts a pump for the session [link]. */
     fun attach(link: FileLink) {
+        val window = Window()
         val pump = scope.launch(start = CoroutineStart.LAZY) {
             combine(link.peerReady, availability) { ready, here -> ready && here == FileAvailability.READY }
                 .distinctUntilChanged()
                 .collectLatest { ready ->
                     if (!ready) return@collectLatest
-                    val window = Semaphore(MAX_UNANSWERED_CHUNKS)
                     setReady(link.peer.id, true)
                     try {
                         // Transfers run as children: when either side stops being ready, they stop and wait.
@@ -162,20 +167,60 @@ internal class FileSender(
                     }
                 }
         }
-        synchronized(this) { pumps.put(link, pump) }?.cancel()
+        synchronized(this) {
+            windows.put(link, window)?.close()
+            pumps.put(link, pump)
+        }?.cancel()
         pump.start()
     }
 
-    /** The session [link] ended: its transfers wait for the next one. */
+    /** The session [link] ended: its transfers wait for the next one, and its chunks get no answers. */
     fun detach(link: FileLink) {
-        val pump = synchronized(this) {
+        val (pump, window) = synchronized(this) {
             transfers.values.forEach { if (it.stuckOn === link) it.stuckOn = null }
-            pumps.remove(link)
+            pumps.remove(link) to windows.remove(link)
         }
         pump?.cancel()
+        window?.close()
     }
 
-    private fun startWaiting(link: FileLink, window: Semaphore, runner: CoroutineScope) {
+    /**
+     * One session's room for chunks without an answer, shared by its
+     * transfers. A chunk keeps its place until the desktop answers it, its
+     * answer times out or the session ends; not when its transfer stops,
+     * since the chunk is still on its way and the desktop answers it all the
+     * same. So a cancel, a timeout or a pause never lets more than
+     * [MAX_UNANSWERED_CHUNKS] be on their way.
+     */
+    private inner class Window {
+        val places = Semaphore(MAX_UNANSWERED_CHUNKS)
+
+        /** Waits for the answers apart from the transfers; ended with the session. */
+        private val waiting = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+
+        /** Waits for [pending]'s answer and frees its place then; the transfer reads it if it still wants it. */
+        fun answerOf(pending: PendingAnswer): Deferred<FileAnswer> {
+            val answer = CompletableDeferred<FileAnswer>()
+            // ATOMIC: it starts even if the session is ending, so the place is always freed.
+            waiting.launch(start = CoroutineStart.ATOMIC) {
+                try {
+                    answer.complete(pending.await())
+                } catch (e: CancellationException) {
+                    answer.completeExceptionally(IOException("The session ended"))
+                    throw e
+                } catch (e: Exception) {
+                    answer.completeExceptionally(e)
+                } finally {
+                    places.release()
+                }
+            }
+            return answer
+        }
+
+        fun close() = waiting.cancel()
+    }
+
+    private fun startWaiting(link: FileLink, window: Window, runner: CoroutineScope) {
         val started = synchronized(this) {
             val mine = transfers.values.filter { it.peer.id == link.peer.id }
             val free = MAX_RUNNING_PER_PEER - mine.count { it.running }
@@ -192,7 +237,7 @@ internal class FileSender(
         started.forEach { it.start() }
     }
 
-    private suspend fun run(transfer: Outgoing, link: FileLink, window: Semaphore) {
+    private suspend fun run(transfer: Outgoing, link: FileLink, window: Window) {
         var unanswered = 0
         var failures = 0
         try {
@@ -239,7 +284,7 @@ internal class FileSender(
     }
 
     /** Offers [transfer] on [link] and sends what the desktop does not have yet. */
-    private suspend fun attempt(transfer: Outgoing, link: FileLink, window: Semaphore): Outcome {
+    private suspend fun attempt(transfer: Outgoing, link: FileLink, window: Window): Outcome {
         synchronized(this) {
             if (transfer.state.isFinished) return Outcome.Done
             transfer.state = TransferState.Running
@@ -328,7 +373,7 @@ internal class FileSender(
      * it only go into the hash. Each chunk waits for room in [window]; its
      * answer is awaited in [answers].
      */
-    private suspend fun sendFile(transfer: Outgoing, link: FileLink, window: Semaphore, index: Int, from: Long, answers: CoroutineScope) {
+    private suspend fun sendFile(transfer: Outgoing, link: FileLink, window: Window, index: Int, from: Long, answers: CoroutineScope) {
         val size = transfer.infos[index].size
         val digest = sha256()
         val buffer = ByteArray(MAX_CHUNK_BYTES)
@@ -362,20 +407,15 @@ internal class FileSender(
                     data = ByteString.copyFrom(buffer, 0, length)
                     if (last) sha256 = ByteString.copyFrom(digest.digest())
                 }
-                window.acquire()
+                window.places.acquire()
                 val pending = try {
                     link.send(FileRequest.Chunk(chunk))
                 } catch (e: Throwable) {
-                    window.release()
+                    window.places.release()
                     throw e
                 }
-                answers.launch {
-                    try {
-                        answered(transfer, pending.await(), length)
-                    } finally {
-                        window.release()
-                    }
-                }
+                val answer = window.answerOf(pending)
+                answers.launch { answered(transfer, answer.await(), length) }
                 offset += length
             } while (!last)
         }
