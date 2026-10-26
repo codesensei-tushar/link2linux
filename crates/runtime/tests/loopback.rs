@@ -357,7 +357,7 @@ async fn a_phone_pairs_reconnects_and_mirrors_a_notification() {
         .unwrap();
     let banners = rig.sink.wait_for_banners(1).await;
     let (id, banner) = &banners[0];
-    assert_eq!(banner.summary, "Ana");
+    assert_eq!(banner.summary, "Chat · Ana");
     assert_eq!(banner.body, "Lunch?");
     assert_eq!(banner.app_name, "Chat");
 
