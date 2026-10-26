@@ -35,6 +35,7 @@ pub mod discovery;
 pub mod identity;
 pub mod outbox;
 pub mod pairing;
+mod secure_file;
 pub mod session;
 pub mod sync;
 pub mod transport;
@@ -48,5 +49,5 @@ pub mod photos;
 pub mod screen;
 
 pub use device::{DeviceInfo, DeviceKind, Feature, FeatureError};
-pub use identity::CertificateFingerprint;
+pub use identity::{CertificateFingerprint, Identity};
 pub use session::{Session, SessionConfig, SessionError, SessionEvent};
