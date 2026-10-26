@@ -32,6 +32,12 @@ from Unreleased to a version.
   keyring, the key stays in a file only you can read, as before. Once the key
   has moved, 0.1.0 no longer finds it: going back to 0.1.0 means pairing your
   phones again.
+- **Pop-ups hide the notification's text.** Desktop pop-ups pass through the
+  desktop's notification service, where other apps can read them, so a pop-up
+  now only names the phone's app and says "New notification". The whole
+  notification is in the link2linux window, which a click on the pop-up opens.
+  Notifications the phone's app marked secret get no pop-up at all while the
+  screen is locked.
 
 ## [0.1.0] - 2026-10-26
 

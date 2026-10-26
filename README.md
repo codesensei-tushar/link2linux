@@ -125,6 +125,11 @@ Bluetooth on the computer.
   shows that a code arrived, but not the code. This is on by default and can
   be turned off on the phone. Other content that Android marks as sensitive
   stays hidden too.
+- The desktop keeps the key that identifies it to your phone in the system
+  keyring (GNOME Keyring, KWallet or KeePassXC), or in a file only you can
+  read when there is no keyring.
+- Desktop pop-ups only name the app. The full notification stays in the
+  link2linux window.
 
 Found a security issue? Please report it privately as described in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-security-issues).

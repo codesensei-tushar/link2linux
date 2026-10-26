@@ -60,7 +60,10 @@ pub fn run() {
             let backend: Arc<dyn Backend> = if std::env::var_os("L2L_FAKE_SCRIPT").is_some() {
                 Arc::new(backend::fake::FakeBackend::from_env(sink))
             } else {
-                Arc::new(backend::live::LiveBackend::start(sink)?)
+                let handle = app.handle().clone();
+                Arc::new(backend::live::LiveBackend::start(sink, move || {
+                    show_window(&handle);
+                })?)
             };
             app.manage(AppState::new(backend));
             Ok(())
@@ -75,6 +78,15 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to start the link2linux desktop app");
+}
+
+/// Brings the main window to the front, for a click on a pop-up.
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 #[cfg(test)]

@@ -1173,8 +1173,14 @@ place.
 - The desktop offers dismissal on the phone only for notifications with
   `dismissible` set. Android does not let notification listeners cancel
   most `ongoing` notifications.
-- `visibility` is a hint for the desktop's own privacy settings, for
-  example to hide `PRIVATE` content while the desktop's screen is shared.
+- A banner passes through the desktop's notification service, where other
+  programs of the same user can read it, and stays in the desktop's
+  notification history. So by default the desktop's banners name only the
+  app, and the content shows in the desktop app's own window, which a click
+  on the banner opens.
+- `visibility` is a hint for the desktop's own privacy settings. While the
+  desktop's screen is locked, its banners never show content, and
+  `SECRET` notifications get no banner at all.
 
 ### Actions and replies
 
