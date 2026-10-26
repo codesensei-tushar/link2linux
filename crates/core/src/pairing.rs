@@ -12,10 +12,13 @@
 //! Stub: the types, the [`TrustStore`] trait and an in-memory store are in
 //! place, and the messages are in `pairing.proto`; the handshake comes next.
 
+pub mod crypto;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::SystemTime;
 
+pub use self::crypto::PairingSecret;
 use crate::device::DeviceKind;
 pub use crate::identity::CertificateFingerprint;
 
@@ -29,10 +32,27 @@ impl PairingCode {
         Self(code.into())
     }
 
-    /// The code as shown to the user.
+    /// The code for a number below 1 000 000: six digits, with leading
+    /// zeros.
+    #[must_use]
+    pub fn from_number(value: u32) -> Self {
+        Self(format!("{:06}", value % 1_000_000))
+    }
+
+    /// The code as six digits, such as `"042917"`.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The code as shown to the user: two groups of three digits, such as
+    /// `"042 917"`.
+    #[must_use]
+    pub fn grouped(&self) -> String {
+        match (self.0.get(..3), self.0.get(3..)) {
+            (Some(head), Some(tail)) if self.0.len() == 6 => format!("{head} {tail}"),
+            _ => self.0.clone(),
+        }
     }
 }
 
@@ -148,6 +168,13 @@ mod tests {
         assert!(store.remove("a").unwrap());
         assert!(!store.remove("a").unwrap());
         assert_eq!(store.get("a"), None);
+    }
+
+    #[test]
+    fn codes_are_six_digits_in_two_groups() {
+        assert_eq!(PairingCode::from_number(42_917).as_str(), "042917");
+        assert_eq!(PairingCode::from_number(979_999).grouped(), "979 999");
+        assert_eq!(PairingCode::new("12").grouped(), "12");
     }
 
     #[test]
