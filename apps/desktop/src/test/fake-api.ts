@@ -57,6 +57,8 @@ export function testNotification(
 
 export interface FakeApi extends DesktopApi {
   appInfo: Mock<DesktopApi["appInfo"]>;
+  startupError: Mock<DesktopApi["startupError"]>;
+  restartApp: Mock<DesktopApi["restartApp"]>;
   listDevices: Mock<DesktopApi["listDevices"]>;
   listNotifications: Mock<DesktopApi["listNotifications"]>;
   subscribeNotifications: Mock<DesktopApi["subscribeNotifications"]>;
@@ -92,6 +94,8 @@ export function createFakeApi(): FakeApi {
 
   return {
     appInfo: vi.fn<DesktopApi["appInfo"]>().mockResolvedValue(testAppInfo),
+    startupError: vi.fn<DesktopApi["startupError"]>().mockResolvedValue(null),
+    restartApp: vi.fn<DesktopApi["restartApp"]>().mockResolvedValue(undefined),
     listDevices: vi.fn<DesktopApi["listDevices"]>().mockResolvedValue([]),
     listNotifications: vi.fn<DesktopApi["listNotifications"]>().mockResolvedValue([]),
     subscribeNotifications: vi.fn<DesktopApi["subscribeNotifications"]>((_deviceId, onEvent) => {
