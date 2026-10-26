@@ -51,6 +51,25 @@ class TetheredNetworksTest {
     }
 
     @Test
+    fun pppWireGuardWifiAwareAndOtherModemInterfacesAreNeverTethering() {
+        val never = listOf("ppp0", "wg0", "aware_data0", "nan0", "wwan0", "rev_rmnet0")
+        assertEquals(emptyList<String>(), names(never.map { nic(it, "10.0.0.2") }))
+    }
+
+    @Test
+    fun aTetheredNetworkOwnsEveryAddressOfItsInterface() {
+        val hotspot = InterfaceSnapshot(
+            "wlan1",
+            isUp = true,
+            isLoopback = false,
+            addresses = listOf(NetworkAddress(ip("192.168.43.1"), 24), NetworkAddress(ip("fe80::1"), 64)),
+        )
+        val network = TetheredNetworks.classify(listOf(hotspot), emptySet()).single()
+        assertEquals(listOf(ip("192.168.43.1")), network.addresses.map { it.address })
+        assertEquals(listOf(ip("192.168.43.1"), ip("fe80::1")), network.ownAddresses)
+    }
+
+    @Test
     fun onlyUpNonLoopbackPrivateIpv4InterfacesCount() {
         assertEquals(emptyList<String>(), names(listOf(nic("wlan1", up = false))))
         assertEquals(emptyList<String>(), names(listOf(nic("wlan1", loopback = true))))

@@ -30,6 +30,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
@@ -40,8 +41,8 @@ import javax.inject.Inject
  * pairing is under way, and it keeps running when the phone leaves Wi-Fi
  * and Ethernet: Android lets an app start a foreground service from the
  * background only in a few cases, so the service never stops and restarts
- * with the network. Discovery pauses by itself while there is no network
- * and resumes when one returns.
+ * with the network. The listener closes and discovery pauses while there is
+ * no local network, and both resume when one returns.
  *
  * It is started when the app is opened, and from the background only by
  * the companion-device service ([DesktopPresenceService]). Running it on a
@@ -74,8 +75,10 @@ class ConnectionService : Service() {
         networks.start()
         discovery.start()
         // Listening while a desktop is paired lets it reconnect outside a pairing window.
+        // Off a local network the listener closes, so nothing listens on mobile data.
         scope.launch {
-            combine(pairedDevices.pairedDevices, pairing.state, connectionSwitch.enabled, ListenerPolicy::shouldListen)
+            val onLocalNetwork = networks.networks.map { it.isNotEmpty() }
+            combine(pairedDevices.pairedDevices, pairing.state, connectionSwitch.enabled, onLocalNetwork, ListenerPolicy::shouldListen)
                 .distinctUntilChanged()
                 .collect { listen -> if (listen) listener.start() else listener.stop() }
         }

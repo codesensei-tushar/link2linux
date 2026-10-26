@@ -1,6 +1,7 @@
 package dev.link2linux.android.core.network.interop
 
 import dev.link2linux.android.core.data.InMemoryPairedDeviceRepository
+import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.discovery.QrOfferParser
 import dev.link2linux.android.core.discovery.QrParseResult
@@ -56,6 +57,7 @@ class DesktopInteropTest {
         devices = devices,
         localDevice = local,
         scope = scope,
+        listenAddresses = ListenAddresses { it.isLoopbackAddress },
         port = 0,
         bindAddress = InetAddress.getLoopbackAddress(),
     )

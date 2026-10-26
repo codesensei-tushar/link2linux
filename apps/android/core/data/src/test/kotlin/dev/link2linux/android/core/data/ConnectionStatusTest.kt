@@ -38,17 +38,24 @@ class ConnectionStatusTest {
 
     @Test
     fun theListenerRunsForAPairedDesktopWhileTheSwitchIsOn() {
-        assertTrue(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true))
-        assertFalse(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = false))
-        assertFalse(ListenerPolicy.shouldListen(emptyList(), PairingState.Idle, switchOn = true))
+        assertTrue(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true, onLocalNetwork = true))
+        assertFalse(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = false, onLocalNetwork = true))
+        assertFalse(ListenerPolicy.shouldListen(emptyList(), PairingState.Idle, switchOn = true, onLocalNetwork = true))
     }
 
     @Test
     fun aPairingUnderWayNeedsTheListenerEvenWithoutAPairedDesktop() {
         val verifying = PairingState.Verifying(PairingMethod.SAS, "x")
-        assertTrue(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = true))
-        assertTrue(ListenerPolicy.shouldListen(emptyList(), PairingState.ConfirmCode(SasCode(123456), "x"), switchOn = true))
-        assertFalse(ListenerPolicy.shouldListen(emptyList(), PairingState.Failed(PairingFailure.TIMED_OUT), switchOn = true))
-        assertFalse(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = false))
+        assertTrue(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = true, onLocalNetwork = true))
+        assertTrue(ListenerPolicy.shouldListen(emptyList(), PairingState.ConfirmCode(SasCode(123456), "x"), switchOn = true, onLocalNetwork = true))
+        assertFalse(ListenerPolicy.shouldListen(emptyList(), PairingState.Failed(PairingFailure.TIMED_OUT), switchOn = true, onLocalNetwork = true))
+        assertFalse(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = false, onLocalNetwork = true))
+    }
+
+    @Test
+    fun theListenerClosesOffALocalNetwork() {
+        val verifying = PairingState.Verifying(PairingMethod.SAS, "x")
+        assertFalse(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true, onLocalNetwork = false))
+        assertFalse(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = true, onLocalNetwork = false))
     }
 }

@@ -2,6 +2,7 @@ package dev.link2linux.android.core.network.pairing
 
 import com.google.protobuf.ByteString
 import dev.link2linux.android.core.data.InMemoryPairedDeviceRepository
+import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
@@ -13,6 +14,7 @@ import dev.link2linux.android.core.model.PairingSecret
 import dev.link2linux.android.core.model.PairingState
 import dev.link2linux.android.core.model.PresenceKey
 import dev.link2linux.android.core.model.QrPairingOffer
+import dev.link2linux.android.core.network.Session
 import dev.link2linux.android.core.network.pairing.DesktopPeer.Companion.bytes
 import dev.link2linux.android.core.network.tls.TestDesktop
 import dev.link2linux.android.core.network.tls.asSource
@@ -23,18 +25,22 @@ import dev.link2linux.protocol.v1.Envelope.PayloadCase
 import dev.link2linux.protocol.v1.ErrorCode
 import dev.link2linux.protocol.v1.Goodbye
 import dev.link2linux.protocol.v1.GoodbyeReason
+import dev.link2linux.protocol.v1.Hello
 import dev.link2linux.protocol.v1.KeyRotation
 import dev.link2linux.protocol.v1.PairingMethod
 import dev.link2linux.protocol.v1.PairingOutcome
 import dev.link2linux.protocol.v1.PairingProof
 import dev.link2linux.protocol.v1.PresenceUpdate
 import dev.link2linux.protocol.v1.SasNonce
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -46,6 +52,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.SecureRandom
 
 /** The whole phone side, from the listener to the stored pairing, against test desktops over loopback. */
@@ -59,19 +66,28 @@ class PairingServiceTest {
         override suspend fun localDevice() = Device(DeviceId("phone-1"), "Phone", DeviceKind.PHONE)
         override suspend fun setName(name: String?) = Unit
     }
-    private val service = PairingService(
+    private val services = mutableListOf<PairingService>()
+
+    private fun newService(
+        listenAddresses: ListenAddresses = ListenAddresses { it.isLoopbackAddress },
+        hooks: SessionHooks = SessionHooks.None,
+    ) = PairingService(
         identity = phone.asSource(),
         devices = devices,
         localDevice = local,
         scope = scope,
+        listenAddresses = listenAddresses,
+        hooks = hooks,
         pairing = PhonePairing(stepTimeoutMillis = 2_000, userTimeoutMillis = 5_000, resultTimeoutMillis = 2_000),
         port = 0,
         bindAddress = InetAddress.getLoopbackAddress(),
-    )
+    ).also { services += it }
+
+    private val service = newService()
 
     @After
     fun tearDown() {
-        runBlocking { service.stop() }
+        runBlocking { services.forEach { it.stop() } }
         scope.cancel()
     }
 
@@ -85,17 +101,24 @@ class PairingServiceTest {
 
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
-    private suspend fun port(): Int = service.listeningPort.filterNotNull().first()
+    private suspend fun port(on: PairingService = service): Int = on.listeningPort.filterNotNull().first()
 
     private suspend fun awaitState(predicate: (PairingState) -> Boolean): PairingState =
         withTimeout(10_000) { service.state.first(predicate) }
 
     /** Connects [desktop] and exchanges Hellos with [method]. */
-    private suspend fun dial(desktop: TestDesktop, method: PairingMethod, deviceId: String = DesktopPeer.DEVICE_ID): DesktopPeer {
-        val port = port()
+    private suspend fun dial(
+        desktop: TestDesktop,
+        method: PairingMethod,
+        deviceId: String = DesktopPeer.DEVICE_ID,
+        name: String = "Test desktop",
+        features: List<String> = emptyList(),
+        on: PairingService = service,
+    ): DesktopPeer {
+        val port = port(on)
         return io {
             DesktopPeer(desktop.connect(port), desktop).apply {
-                sendHello(method, deviceId)
+                sendHello(method, deviceId, features, name)
                 readHello()
             }
         }
@@ -213,7 +236,7 @@ class PairingServiceTest {
         assertTrue(io { runCatching { TestDesktop().connect(port).also { it.outputStream.write(0); it.inputStream.read() } } }.isFailure)
     }
 
-    private suspend fun pairedRecord(desktop: TestDesktop, id: String = DesktopPeer.DEVICE_ID): PairedDevice {
+    private suspend fun pairedRecord(desktop: TestDesktop, id: String = DesktopPeer.DEVICE_ID, on: PairingService = service): PairedDevice {
         val record = PairedDevice(
             device = Device(DeviceId(id), "Test desktop", DeviceKind.DESKTOP),
             fingerprint = desktop.fingerprint!!,
@@ -221,7 +244,7 @@ class PairingServiceTest {
             presenceKey = PresenceKey.of(ByteArray(32) { 9 }),
         )
         devices.save(record)
-        service.start()
+        on.start()
         return record
     }
 
@@ -351,5 +374,106 @@ class PairingServiceTest {
         assertEquals(PairingState.Idle, service.state.value)
         assertTrue(io { peer.read()?.pairingResult?.outcome != PairingOutcome.PAIRING_OUTCOME_ACCEPTED })
         assertTrue(devices.pairedDevices.first().isEmpty())
+    }
+
+    @Test
+    fun aConnectionThatDidNotArriveOverALocalNetworkIsClosedBeforeTls() = runBlocking {
+        val asked = mutableListOf<InetAddress>()
+        val offLan = newService(listenAddresses = ListenAddresses { synchronized(asked) { asked += it }; false })
+        val desktop = TestDesktop()
+        pairedRecord(desktop, on = offLan)
+        val port = port(offLan)
+
+        val result = io { runCatching { desktop.connect(port).also { it.outputStream.write(0); it.inputStream.read() } } }
+
+        assertTrue(result.isFailure || result.getOrNull()?.inputStream?.read() == -1)
+        assertNull(desktop.seenPhone) // the phone never sent its certificate
+        assertEquals(listOf(InetAddress.getLoopbackAddress()), synchronized(asked) { asked.toList() })
+    }
+
+    @Test
+    fun idleConnectionsFromOneHostCannotKeepAPairedDesktopOut() = runBlocking<Unit> {
+        val desktop = TestDesktop()
+        pairedRecord(desktop)
+        val port = port()
+        // More stalled connections than the app has IO threads, all from another loopback address.
+        val idle = io {
+            List(80) {
+                runCatching {
+                    Socket().apply {
+                        bind(InetSocketAddress(InetAddress.getByName("127.0.0.2"), 0))
+                        connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 1_000)
+                    }
+                }.getOrNull()
+            }
+        }
+        try {
+            withTimeout(5_000) { dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED).readSessionStart() }
+        } finally {
+            idle.forEach { it?.close() }
+        }
+    }
+
+    @Test
+    fun aReplacedSessionWhoseDesktopStoppedReadingDoesNotHoldUpTheNewOne() = runBlocking {
+        val writerStuck = CompletableDeferred<Unit>()
+        val hooks = object : SessionHooks {
+            @Volatile var sessions = 0
+
+            override suspend fun onEstablished(desktop: PairedDevice, session: Session) {
+                if (sessions++ > 0) return
+                // The phone writes far more than the desktop (which never reads) and the socket buffers take.
+                val big = Hello.newBuilder().setDeviceName("x".repeat(1_000_000)).build()
+                scope.launch {
+                    runCatching { repeat(256) { session.send { hello = big } } }
+                }
+                scope.launch {
+                    delay(1_000)
+                    writerStuck.complete(Unit)
+                }
+            }
+        }
+        val phone = newService(hooks = hooks)
+        val desktop = TestDesktop()
+        pairedRecord(desktop, on = phone)
+        val first = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED, on = phone)
+        writerStuck.await()
+
+        val second = withTimeout(5_000) {
+            dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED, on = phone).also { it.readSessionStart() }
+        }
+
+        withTimeout(5_000) { phone.connected.first { desktop.fingerprint in it } }
+        io {
+            first.close()
+            second.close()
+        }
+    }
+
+    @Test
+    fun aHelloWithAMalformedDeviceIdIsAProtocolError() = runBlocking {
+        val desktop = TestDesktop()
+        pairedRecord(desktop, id = "../desk 1")
+        val peer = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED, deviceId = "../desk 1")
+        assertEquals(GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR, io { peer.read()!!.goodbye.reason })
+    }
+
+    @Test
+    fun aHelloWithTenThousandFeaturesIsAProtocolError() = runBlocking {
+        val desktop = TestDesktop()
+        pairedRecord(desktop)
+        val peer = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED, features = List(10_000) { "" })
+        assertEquals(GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR, io { peer.read()!!.goodbye.reason })
+    }
+
+    @Test
+    fun aLongDesktopNameIsCutBeforeItIsShownOrStored() = runBlocking {
+        val desktop = TestDesktop()
+        service.startQrPairing(offerFor(desktop))
+        val peer = dial(desktop, PairingMethod.PAIRING_METHOD_QR_CODE, name = "Desk\u202E" + "y".repeat(4_096))
+
+        assertEquals(PairingOutcome.PAIRING_OUTCOME_ACCEPTED, peer.pairByQrCode())
+        val paired = (awaitState { it is PairingState.Paired } as PairingState.Paired).device
+        assertEquals("Desk" + "y".repeat(60), paired.device.name)
     }
 }

@@ -4,6 +4,7 @@ import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairingFailure
 import dev.link2linux.android.core.model.PairingState
 import dev.link2linux.android.core.model.QrPairingOffer
+import java.net.InetAddress
 
 /**
  * Whether the phone is waiting for a desktop to pair, and with whom: the
@@ -23,6 +24,11 @@ internal class PairingWindow(private val now: () -> Long) {
         val attemptsLeft: Int,
         val busy: Boolean,
         val lastFailure: PairingFailure?,
+        /** Who holds the slot now, as [PreAuthLimits.source] names it, and whether the phone revealed its nonce to them. */
+        val holder: String? = null,
+        val revealed: Boolean = false,
+        /** Per source, the connections that took the slot and ended before the phone revealed its nonce. */
+        val abandoned: Map<String, Int> = emptyMap(),
     ) : Open
 
     @Volatile
@@ -64,12 +70,21 @@ internal class PairingWindow(private val now: () -> Long) {
     fun qrOfferFor(key: KeyFingerprint): QrPairingOffer? =
         (open as? Qr)?.takeIf { it.offer.desktopFingerprint == key && now() < it.until }?.offer
 
-    /** Takes the single SAS slot. False if SAS mode is off, used up, or busy with another connection. */
+    /**
+     * Takes the single SAS slot for a connection from [from]. False if SAS
+     * mode is off, used up, or busy with another connection, or if that
+     * source already took the slot [MAX_ABANDONED_SAS_CLAIMS] times without
+     * getting as far as the phone's nonce: a desktop sends its nonce at
+     * once, so a host that keeps the slot and never does is holding it from
+     * the user's desktop.
+     */
     @Synchronized
-    fun claimSas(): Boolean {
+    fun claimSas(from: InetAddress): Boolean {
         val window = open as? Sas ?: return false
         if (window.busy || window.attemptsLeft <= 0 || now() >= window.until) return false
-        open = window.copy(busy = true)
+        val source = PreAuthLimits.source(from)
+        if ((window.abandoned[source] ?: 0) >= MAX_ABANDONED_SAS_CLAIMS) return false
+        open = window.copy(busy = true, holder = source, revealed = false)
         return true
     }
 
@@ -77,7 +92,7 @@ internal class PairingWindow(private val now: () -> Long) {
     @Synchronized
     fun sasAttemptUsed() {
         val window = open as? Sas ?: return
-        open = window.copy(attemptsLeft = window.attemptsLeft - 1)
+        open = window.copy(attemptsLeft = window.attemptsLeft - 1, revealed = true)
     }
 
     /**
@@ -92,7 +107,13 @@ internal class PairingWindow(private val now: () -> Long) {
             open = null
             return PairingState.Failed(failure)
         }
-        open = window.copy(busy = false, lastFailure = failure)
+        val holder = window.holder
+        val abandoned = if (holder == null || window.revealed) {
+            window.abandoned
+        } else {
+            window.abandoned + (holder to (window.abandoned[holder] ?: 0) + 1)
+        }
+        open = window.copy(busy = false, lastFailure = failure, holder = null, revealed = false, abandoned = abandoned)
         return PairingState.AwaitingDesktop.Sas(window.until, window.attemptsLeft, failure)
     }
 
@@ -117,5 +138,8 @@ internal class PairingWindow(private val now: () -> Long) {
 
         /** Attempts per activation of SAS mode. */
         const val SAS_ATTEMPTS: Int = 3
+
+        /** Per activation of SAS mode, how often one source may take the slot and leave before the phone's nonce. */
+        const val MAX_ABANDONED_SAS_CLAIMS: Int = 2
     }
 }

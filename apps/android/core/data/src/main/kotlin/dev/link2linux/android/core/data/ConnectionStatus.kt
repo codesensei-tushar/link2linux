@@ -12,12 +12,13 @@ fun List<PairedDevice>.connectedIn(connected: Set<KeyFingerprint>): List<PairedD
 object ListenerPolicy {
 
     /**
-     * The listener runs while the user's connection switch is on and either a
-     * desktop is paired, so it can reconnect, or a pairing is under way, so
-     * the desktop can reach the phone.
+     * The listener runs while the user's connection switch is on, the phone
+     * is on a local network, and either a desktop is paired, so it can
+     * reconnect, or a pairing is under way, so the desktop can reach the
+     * phone. Off a local network (on mobile data only) it is closed.
      */
-    fun shouldListen(paired: List<PairedDevice>, pairing: PairingState, switchOn: Boolean): Boolean =
-        switchOn && (paired.isNotEmpty() || pairing.isUnderWay)
+    fun shouldListen(paired: List<PairedDevice>, pairing: PairingState, switchOn: Boolean, onLocalNetwork: Boolean): Boolean =
+        switchOn && onLocalNetwork && (paired.isNotEmpty() || pairing.isUnderWay)
 
     private val PairingState.isUnderWay: Boolean
         get() = when (this) {

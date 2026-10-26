@@ -24,10 +24,14 @@ data class InterfaceSnapshot(
  */
 object TetheredNetworks {
 
-    /** Interface name prefixes that are never tethering: loopback, mobile data, VPNs, 464XLAT and Wi-Fi Direct. */
+    /**
+     * Interface name prefixes that are never tethering: loopback, mobile data,
+     * VPNs (including PPP and WireGuard), 464XLAT, Wi-Fi Direct and Wi-Fi
+     * Aware.
+     */
     private val NEVER = listOf(
-        "lo", "rmnet", "r_rmnet", "ccmni", "ccinet", "seth", "sipa", "epdg",
-        "tun", "tap", "ipsec", "clat", "v4-", "dummy", "p2p",
+        "lo", "rmnet", "r_rmnet", "rev_rmnet", "ccmni", "ccinet", "seth", "sipa", "epdg", "wwan",
+        "tun", "tap", "ipsec", "ppp", "wg", "clat", "v4-", "dummy", "p2p", "aware_data", "nan",
     )
 
     /**
@@ -42,7 +46,11 @@ object TetheredNetworks {
                 val addresses = snapshot.addresses.filter { (a, prefix) ->
                     a is Inet4Address && a.isSiteLocalAddress && prefix in 1..30
                 }
-                if (addresses.isEmpty()) null else LocalNetwork(idOf(snapshot.name), addresses, tethered = true)
+                if (addresses.isEmpty()) {
+                    null
+                } else {
+                    LocalNetwork(idOf(snapshot.name), addresses, tethered = true, ownAddresses = snapshot.addresses.map { it.address })
+                }
             }
             .sortedBy { it.id }
 

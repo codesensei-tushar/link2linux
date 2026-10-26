@@ -7,6 +7,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.link2linux.android.core.data.DesktopConnections
+import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
 import dev.link2linux.android.core.discovery.ConnectionSwitch
@@ -32,6 +33,10 @@ internal object DiscoveryModule {
     @Singleton
     fun localNetworks(@ApplicationContext context: Context): ConnectivityLocalNetworks =
         ConnectivityLocalNetworks(context)
+
+    /** The listener takes connections only on the phone's addresses on these networks. */
+    @Provides
+    fun listenAddresses(networks: ConnectivityLocalNetworks): ListenAddresses = ListenAddresses(networks::isLocalAddress)
 
     @Provides
     @Singleton

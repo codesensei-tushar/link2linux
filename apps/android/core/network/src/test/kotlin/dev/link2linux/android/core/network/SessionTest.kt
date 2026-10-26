@@ -95,6 +95,42 @@ class SessionTest {
         assertEquals(SessionState.Established(newer, version = 1), phone.state.value)
     }
 
+    /** Closes [transport] after [millis] on another thread, so a test of a deadline fails instead of hanging without it. */
+    private fun closeLater(transport: Transport, millis: Long) =
+        Thread { Thread.sleep(millis); transport.close() }.apply { isDaemon = true; start() }
+
+    @Test
+    fun aPeerThatSendsNoHelloIsCutOffAtTheDeadline() = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        closeLater(desktopEnd, 5_000)
+        val phone = Session(phoneEnd)
+
+        val started = System.nanoTime()
+        val error = runCatching { phone.handshake(phoneHello, timeoutMillis = 500) }.exceptionOrNull()
+        val tookMillis = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue("got $error", error is SessionException)
+        assertTrue("took $tookMillis ms", tookMillis < 3_000)
+        assertEquals(SessionState.Closed, phone.state.value)
+    }
+
+    @Test
+    fun aPeerThatStopsReadingIsClosedAtTheWriteDeadline() = runBlocking {
+        val (phoneEnd, _) = connectedPair()
+        closeLater(phoneEnd, 10_000)
+        val phone = Session(phoneEnd, writeTimeoutMillis = 500)
+        val big = desktopHello.toBuilder().setDeviceName("x".repeat(1_000_000)).build()
+
+        val started = System.nanoTime()
+        // The desktop end never reads: once the socket buffers are full a write blocks.
+        val error = runCatching { repeat(256) { phone.send { hello = big } } }.exceptionOrNull()
+        val tookMillis = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue("got $error", error is SessionException)
+        assertTrue("took $tookMillis ms", tookMillis < 8_000)
+        assertEquals(SessionState.Closed, phone.state.value)
+    }
+
     @Test
     fun noCommonVersionSendsVersionMismatch() = runBlocking {
         val (phoneEnd, desktopEnd) = connectedPair()

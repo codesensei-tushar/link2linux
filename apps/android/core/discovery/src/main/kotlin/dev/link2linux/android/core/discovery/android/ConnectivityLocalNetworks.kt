@@ -16,6 +16,7 @@ import dev.link2linux.android.core.discovery.LocalNetwork
 import dev.link2linux.android.core.discovery.LocalNetworks
 import dev.link2linux.android.core.discovery.NetworkAddress
 import dev.link2linux.android.core.discovery.TetheredNetworks
+import dev.link2linux.android.core.discovery.ownsAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.SocketException
 
@@ -33,7 +35,8 @@ import java.net.SocketException
  * Follows the networks the phone is on: the Wi-Fi and Ethernet networks it has
  * joined, and the ones it hosts (its Wi-Fi hotspot, USB tethering and
  * Bluetooth tethering). The request does not ask for internet access: a router
- * without an uplink is still a network the desktop can be on. Call [start]
+ * without an uplink is still a network the desktop can be on. Like every
+ * request it leaves out VPNs, and it never matches mobile data. Call [start]
  * once the connection service runs and [stop] when it ends.
  *
  * Android does not report tethering as a network to apps, so the hosted ones
@@ -114,6 +117,32 @@ class ConnectivityLocalNetworks(context: Context) : LocalNetworks {
         scope = null
         addresses.clear()
         state.value = emptyList()
+    }
+
+    /**
+     * Whether [address], one of the phone's own, is on a network the phone is
+     * on or hosts: the listener asks this for every connection. While [start]
+     * has not run (a pairing can start the listener with the connection
+     * service off) it looks at the networks now.
+     */
+    fun isLocalAddress(address: InetAddress): Boolean {
+        val tracked = synchronized(this) { state.value.takeIf { callback != null } }
+        return (tracked ?: lookNow()).ownsAddress(address)
+    }
+
+    /** The networks [publish] would report, found without the callback. */
+    @Suppress("DEPRECATION") // allNetworks, as in claimedInterfaces.
+    @SuppressLint("MissingPermission")
+    private fun lookNow(): List<LocalNetwork> {
+        val platform = connectivity.allNetworks.mapNotNull { network ->
+            val capabilities = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
+            val local = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+            val properties = connectivity.getLinkProperties(network)
+            if (!local || properties == null) return@mapNotNull null
+            LocalNetwork(network.networkHandle, properties.linkAddresses.map { NetworkAddress(it.address, it.prefixLength) }, network)
+        }
+        return TetheredNetworks.merge(platform, TetheredNetworks.classify(interfaces(), claimedInterfaces()))
     }
 
     @Synchronized

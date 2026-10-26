@@ -2,6 +2,7 @@ package dev.link2linux.android.core.network.features
 
 import com.google.protobuf.ByteString
 import dev.link2linux.android.core.data.InMemoryPairedDeviceRepository
+import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
@@ -93,6 +94,7 @@ class NotificationSessionTest {
             override suspend fun setName(name: String?) = Unit
         },
         scope = scope,
+        listenAddresses = ListenAddresses { it.isLoopbackAddress },
         hooks = NotificationSessionHooks(engine, scope),
         port = 0,
         bindAddress = InetAddress.getLoopbackAddress(),
