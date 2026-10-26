@@ -37,7 +37,11 @@ class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.a
 
     fun post(s: NotificationSnapshot) = engine.onPosted(s)
 
-    fun remove(key: String) = engine.onRemoved(key)
+    fun remove(key: String, cause: RemovalCause = RemovalCause.USER_DISMISSED) = engine.onRemoved(key, cause)
+
+    suspend fun attach() {
+        engine.attach(transport)
+    }
 
     suspend fun sync(since: SyncCursor? = null): RecordingSink {
         val sink = RecordingSink()
