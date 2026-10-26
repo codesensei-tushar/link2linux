@@ -8,11 +8,11 @@
 //! is the stream a session then runs on.
 //!
 //! The desktop always dials the phone and is the TLS client, through a
-//! [`Connector`]. It offers only TLS 1.3, never resumes a session or sends
-//! early data, sends no server name (it dials an IP address), and fails
-//! unless the phone selected the ALPN protocol [`ALPN_PROTOCOL`]. A
-//! [`Listener`] is the phone's side, for tests and tools that stand in for
-//! a phone.
+//! [`Connector`]: [`TlsDialer`] is the real one. It offers only TLS 1.3,
+//! never resumes a session or sends early data, sends no server name (it
+//! dials an IP address), and fails unless the phone selected the ALPN
+//! protocol [`ALPN_PROTOCOL`]. A [`Listener`] is the phone's side, for tests
+//! and tools that stand in for a phone.
 //!
 //! In TLS 1.3 the client finishes its handshake before the server has
 //! checked the client's certificate. When the phone refuses this desktop's
@@ -21,12 +21,16 @@
 //! errors through [`TransportError::from`] to tell a refusal
 //! ([`TransportError::RejectedByPeer`]) from other failures.
 
+mod tls;
+mod verifier;
+
 use std::io;
 use std::net::SocketAddr;
 
 use rustls::AlertDescription;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub use self::tls::{DialTimeouts, TlsConnection, TlsDialer};
 use crate::identity::CertificateFingerprint;
 
 /// The ALPN protocol ID both sides offer and require.
@@ -153,7 +157,7 @@ impl From<rustls::Error> for TransportError {
 
 impl From<io::Error> for TransportError {
     /// Unwraps a TLS error carried in an I/O error, as reads and writes on
-    /// a TLS stream report them.
+    /// a [`TlsConnection`] report them.
     fn from(error: io::Error) -> Self {
         let is_tls = error
             .get_ref()
