@@ -50,6 +50,10 @@ if-addrs = "0.15.0"
 # D-Bus, for the Linux platform integration. The tokio feature runs it on
 # the tokio runtime and leaves async-io out.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+# The Secret Service keyring, which holds the desktop's private key. It runs
+# on the zbus above; the session with the keyring is encrypted with
+# RustCrypto.
+oo7 = { version = "0.6.0", default-features = false, features = ["tokio", "native_crypto"] }
 
 # Tests.
 proptest = "1.12"

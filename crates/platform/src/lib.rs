@@ -7,7 +7,9 @@
 //! - [`Clipboard`]: read, write and watch the desktop clipboard;
 //! - [`FileStore`]: where received files go, and opening them;
 //! - [`CallAudio`]: carry call audio between the phone and the desktop's
-//!   microphone and speakers over Bluetooth.
+//!   microphone and speakers over Bluetooth;
+//! - [`SecretStore`]: keep small secrets, such as the desktop's private
+//!   key, in the desktop's keyring.
 //!
 //! Linux comes first, in the `linux` module. Another OS adds a sibling
 //! module behind its own `cfg(target_os = ...)`, and the app shell picks the
@@ -20,11 +22,13 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 pub mod linux;
 mod presence;
+mod secrets;
 
 pub use presence::{
     AddressKind, BluetoothAddress, MAX_ADVERTISED_NAME_BYTES, PRESENCE_SERVICE_UUID,
     ParseAddressError, PresenceAdapter, PresenceAdvertiser, truncate_device_name,
 };
+pub use secrets::SecretStore;
 
 /// Why a platform call failed.
 #[derive(Debug, thiserror::Error)]
