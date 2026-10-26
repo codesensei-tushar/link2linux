@@ -154,7 +154,8 @@ class DiscoveryController(
 
     private fun apply(facts: Facts, forceRegister: Boolean) {
         val inPairing = facts.pairing is PairingState.AwaitingDesktop ||
-            facts.pairing is PairingState.Verifying || facts.pairing is PairingState.ConfirmCode
+            facts.pairing is PairingState.Verifying || facts.pairing is PairingState.ConfirmCode ||
+            facts.pairing is PairingState.ConfirmReplace
         if (inPairing) multicastLock.acquire() else multicastLock.release()
 
         val qr = facts.pairing as? PairingState.AwaitingDesktop.Qr

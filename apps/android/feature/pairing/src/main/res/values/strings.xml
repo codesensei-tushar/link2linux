@@ -2,7 +2,17 @@
 <resources>
     <string name="feature_pairing_title" translatable="false">link2linux</string>
     <string name="feature_pairing_empty_title">No computer paired yet</string>
-    <string name="feature_pairing_empty_body">Open link2linux on your Linux computer and keep both devices on the same network. To pair, you check that both screens show the same short code.</string>
+    <string name="feature_pairing_empty_body">Open link2linux on your Linux computer and keep both devices on the same network. To pair, scan the code it shows, or check that both screens show the same short code.</string>
     <string name="feature_pairing_paired">Paired</string>
     <string name="feature_pairing_features_header">Features</string>
+    <string name="feature_pairing_computers_header">Paired computers</string>
+
+    <string name="feature_pairing_scan_action">Scan a code</string>
+    <string name="feature_pairing_sas_action">Pair without camera</string>
+    <string name="feature_pairing_unpair">Unpair</string>
+    <string name="feature_pairing_unpair_title">Unpair %1$s?</string>
+    <string name="feature_pairing_unpair_body">This phone and the computer forget each other. To connect again, you pair them again.</string>
+    <string name="feature_pairing_cancel">Cancel</string>
+    <string name="feature_pairing_done">Done</string>
+    <string name="feature_pairing_try_again">Try again</string>
 </resources>
