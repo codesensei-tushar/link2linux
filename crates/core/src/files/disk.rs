@@ -231,13 +231,14 @@ pub(crate) fn open_source(
     Ok(file)
 }
 
-/// Reads `len` bytes at `offset` of `file`, a file of `size` bytes, and
-/// adds them to `hash`.
+/// Reads `len` bytes at `offset` of `file`, a file of `size` bytes last
+/// modified at `modified`, and adds them to `hash`. A file rewritten since,
+/// even at the same size, has changed.
 pub(crate) fn read_chunk(
     file: &File,
     offset: u64,
     len: usize,
-    size: u64,
+    (size, modified): (u64, Option<SystemTime>),
     hash: &mut digest::Context,
 ) -> Result<Vec<u8>, SourceError> {
     let mut data = vec![0; len];
@@ -246,7 +247,8 @@ pub(crate) fn read_chunk(
             ErrorKind::UnexpectedEof => SourceError::Changed,
             _ => SourceError::Unreadable(error),
         })?;
-    if file.metadata()?.len() != size {
+    let metadata = file.metadata()?;
+    if metadata.len() != size || metadata.modified().ok() != modified {
         return Err(SourceError::Changed);
     }
     hash.update(&data);
@@ -388,7 +390,9 @@ mod tests {
         let file = open_source(&path, 1000, modified).unwrap();
         let mut hash = digest::Context::new(&digest::SHA256);
         assert_eq!(
-            read_chunk(&file, 0, 600, 1000, &mut hash).unwrap().len(),
+            read_chunk(&file, 0, 600, (1000, modified), &mut hash)
+                .unwrap()
+                .len(),
             600
         );
         let prefix = hash_prefix(&file, 600).unwrap();
@@ -398,9 +402,18 @@ mod tests {
             open_source(&path, 999, modified),
             Err(SourceError::Changed)
         ));
+        // Rewritten in place at the same size: only its time tells.
+        let rewritten = OpenOptions::new().write(true).open(&path).unwrap();
+        rewritten.write_all_at(&[8; 1000], 0).unwrap();
+        let later = modified.unwrap() + std::time::Duration::from_secs(5);
+        rewritten.set_modified(later).unwrap();
+        assert!(matches!(
+            read_chunk(&file, 600, 400, (1000, modified), &mut hash),
+            Err(SourceError::Changed)
+        ));
         fs::write(&path, vec![7; 500]).unwrap();
         assert!(matches!(
-            read_chunk(&file, 600, 400, 1000, &mut hash),
+            read_chunk(&file, 600, 400, (1000, Some(later)), &mut hash),
             Err(SourceError::Changed)
         ));
         assert!(matches!(
