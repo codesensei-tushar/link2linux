@@ -17,6 +17,14 @@
 //! [`SessionEvent::FeatureStatus`] and [`SessionEvent::Presence`]. A request
 //! of a feature only goes out while the feature is ready on both sides.
 //!
+//! On a pairing connection (one that the desktop dialed to pair, which its
+//! `Hello` says), the pairing exchange comes first: the session carries only
+//! pairing messages, and sends `FeatureStatus` and `PresenceUpdate` once
+//! [`Session::finish_pairing`] says the pairing is stored. On every other
+//! connection, [`SessionStart::expected_peer_id`] names the device the
+//! peer's key belongs to, and a `Hello` with another device id is a
+//! protocol error.
+//!
 //! After that, [`Session::next_event`] drives the session. It answers the
 //! peer's `Ping`s, sends a `Ping` of its own every
 //! [`SessionConfig::ping_interval`], and fails with
@@ -51,7 +59,9 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use link2linux_protocol::v1::{Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason, PresenceUpdate};
+use link2linux_protocol::v1::{
+    Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason, PairingMethod, PresenceUpdate,
+};
 use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
 };
@@ -124,6 +134,16 @@ pub struct SessionStart {
     /// Sent as `PresenceUpdate`: the phone's presence key for this
     /// desktop, or the desktop's Bluetooth LE address.
     pub presence: PresenceUpdate,
+    /// Set by the desktop when it dialed the phone to pair, as
+    /// `Hello.pairing_method`. The session then starts with the pairing
+    /// exchange; see [`Session::finish_pairing`].
+    pub pairing: Option<PairingMethod>,
+    /// The device id of the pairing record that the transport found by the
+    /// key the peer presented. The peer's `Hello` must carry this id, or
+    /// the handshake fails with [`SessionError::UnexpectedPeer`]. Never
+    /// look a record up by the `Hello`'s device id instead: it is only
+    /// what the peer claims.
+    pub expected_peer_id: Option<String>,
 }
 
 impl SessionStart {
@@ -135,6 +155,8 @@ impl SessionStart {
             device,
             availability: FeatureStates::new(),
             presence: PresenceUpdate::default(),
+            pairing: None,
+            expected_peer_id: None,
         }
     }
 }
@@ -226,6 +248,15 @@ pub enum SessionError {
         /// The versions the peer's `Hello` announced.
         remote: VersionRange,
     },
+    /// The peer's `Hello` names another device than the pairing record
+    /// that its key belongs to ([`SessionStart::expected_peer_id`]).
+    #[error("the peer's key belongs to device {expected}, but its Hello says {received}")]
+    UnexpectedPeer {
+        /// The device id of the pairing record.
+        expected: String,
+        /// The device id in the peer's `Hello`.
+        received: String,
+    },
     /// The peer's `Hello` is missing required information.
     #[error("invalid Hello from the peer: {0}")]
     InvalidHello(&'static str),
@@ -282,6 +313,7 @@ impl SessionError {
             | Self::InvalidHello(_)
             | Self::OutOfOrder { .. }
             | Self::UnexpectedHello
+            | Self::UnexpectedPeer { .. }
             | Self::Protocol(_) => true,
             _ => false,
         }
@@ -313,6 +345,11 @@ pub struct Session<S> {
     peer_availability: Option<FeatureStates>,
     /// The peer's latest `PresenceUpdate`, once one has arrived.
     peer_presence: Option<PresenceUpdate>,
+    /// The pairing method, on a pairing connection.
+    pairing_method: Option<PairingMethod>,
+    /// Whether this side is still pairing: on a pairing connection, until
+    /// `finish_pairing`.
+    pairing: bool,
     /// The protocol major version both sides use.
     version: u32,
     idle_timeout: Duration,
@@ -347,8 +384,8 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     /// Runs the `Hello` exchange on `io`, sends this side's
-    /// `FeatureStatus` and `PresenceUpdate`, and returns the established
-    /// session.
+    /// `FeatureStatus` and `PresenceUpdate` unless this is a pairing
+    /// connection, and returns the established session.
     ///
     /// This side's `Hello` goes out first, without waiting for the peer, so
     /// both ends may call this at the same time. That relies on the stream
@@ -358,7 +395,10 @@ where
     ///
     /// Fails if the peer's `Hello` does not arrive within
     /// [`SessionConfig::handshake_timeout`], if the peer sends anything else
-    /// first or sends an invalid `Hello`, and on any framing or I/O error.
+    /// first or sends an invalid `Hello`, with
+    /// [`SessionError::UnexpectedPeer`] when its device id is not the
+    /// expected one, and on any framing or I/O error. On a protocol error it
+    /// sends `Goodbye` with `GOODBYE_REASON_PROTOCOL_ERROR` first.
     /// When the two sides share no protocol version, it sends `Goodbye` with
     /// `GOODBYE_REASON_VERSION_MISMATCH`, shuts the stream down and fails
     /// with [`SessionError::VersionMismatch`].
@@ -375,12 +415,18 @@ where
             device: local,
             availability,
             presence,
+            pairing,
+            expected_peer_id,
         } = start.into();
         let codec = EnvelopeCodec::with_max_frame_len(config.max_frame_len);
         let mut framed = Framed::new(io, codec);
+        let mut hello = hello_from(&local);
+        if let Some(method) = pairing {
+            hello.pairing_method = method.into();
+        }
         let hello = Envelope {
             seq: 1,
-            payload: Some(Payload::Hello(hello_from(&local))),
+            payload: Some(Payload::Hello(hello)),
             ..Envelope::default()
         };
 
@@ -395,8 +441,8 @@ where
             .await
             .map_err(|_| SessionError::HandshakeTimeout(config.handshake_timeout))
             .flatten()
-            .and_then(accept_hello);
-        let (peer, version, last_peer_seq) = match result {
+            .and_then(|first| accept_hello(first, expected_peer_id.as_deref()));
+        let (peer, version, last_peer_seq, peer_pairing) = match result {
             Ok(accepted) => accepted,
             Err(err) => {
                 let (reason, detail) = match &err {
@@ -424,7 +470,9 @@ where
                 return Err(err);
             }
         };
-        debug!(peer.id, peer.name, ?peer.kind, version, "session established");
+        // The desktop's Hello decides whether this is a pairing connection.
+        let pairing_method = pairing.or(peer_pairing);
+        debug!(peer.id, peer.name, ?peer.kind, version, ?pairing_method, "session established");
 
         let now = Instant::now();
         let mut ping_timer = time::interval_at(now + config.ping_interval, config.ping_interval);
@@ -445,6 +493,8 @@ where
             presence,
             peer_availability: None,
             peer_presence: None,
+            pairing_method,
+            pairing: pairing_method.is_some(),
             version,
             idle_timeout: config.idle_timeout,
             request_timeout: config.request_timeout,
@@ -461,7 +511,9 @@ where
             unflushed: false,
             ended: false,
         };
-        session.announce()?;
+        if !session.pairing {
+            session.announce()?;
+        }
         time::timeout(config.handshake_timeout, session.flush())
             .await
             .map_err(|_| SessionError::HandshakeTimeout(config.handshake_timeout))??;
@@ -478,6 +530,40 @@ where
     #[must_use]
     pub fn peer(&self) -> &DeviceInfo {
         &self.peer
+    }
+
+    /// The pairing method, on a connection the desktop dialed to pair.
+    #[must_use]
+    pub fn pairing_method(&self) -> Option<PairingMethod> {
+        self.pairing_method
+    }
+
+    /// Whether this side is still in the pairing exchange: on a pairing
+    /// connection, until [`Session::finish_pairing`].
+    #[must_use]
+    pub fn is_pairing(&self) -> bool {
+        self.pairing
+    }
+
+    /// Ends this side's pairing exchange once the pairing is stored, and
+    /// starts the session proper: sends `FeatureStatus` and
+    /// `PresenceUpdate`. Until then, only pairing messages go either way.
+    /// Does nothing on a connection that is not, or no longer, pairing.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::Ended`] once the session is over, and on
+    /// framing or I/O errors.
+    pub async fn finish_pairing(&mut self) -> Result<(), SessionError> {
+        if self.ended {
+            return Err(SessionError::Ended);
+        }
+        if !self.pairing {
+            return Ok(());
+        }
+        self.pairing = false;
+        self.announce()?;
+        self.flush().await
     }
 
     /// The protocol major version this session uses: the highest one both
@@ -789,6 +875,16 @@ where
         if self.ended {
             return Err(SessionError::Ended);
         }
+        // Pairing messages only while pairing, and feature traffic only
+        // after it.
+        let allowed = match rules.kind {
+            Kind::Pairing => self.pairing,
+            Kind::Request(_) | Kind::Event => !self.pairing,
+            Kind::Control | Kind::Reply => true,
+        };
+        if !allowed {
+            return Err(SessionError::NotAllowed(rules.name));
+        }
         match rules.feature {
             Some(feature) if !self.is_active(feature) => {
                 Err(SessionError::FeatureNotActive(feature))
@@ -952,6 +1048,24 @@ where
             return Ok(());
         };
         let rules = rules::of(&payload);
+        // The peer is pairing until its FeatureStatus arrives, which it
+        // sends once it has stored the pairing.
+        let peer_pairing = self.pairing_method.is_some() && self.peer_availability.is_none();
+        match rules.kind {
+            Kind::Pairing if !peer_pairing => {
+                return Err(SessionError::Protocol(format!(
+                    "{} outside the pairing exchange",
+                    rules.name
+                )));
+            }
+            Kind::Request(_) | Kind::Event if peer_pairing => {
+                return Err(SessionError::Protocol(format!(
+                    "{} during the pairing exchange",
+                    rules.name
+                )));
+            }
+            _ => {}
+        }
         match (rules.kind, expects_reply) {
             _ if reply_to != 0 => self.on_answer(reply_to, seq, payload, rules),
             (Kind::Reply, true) => Err(SessionError::Protocol(format!(
@@ -1275,8 +1389,12 @@ fn hello_from(local: &DeviceInfo) -> Hello {
 }
 
 /// Checks the peer's first envelope. Returns who the peer is, the protocol
-/// version both sides use, and the envelope's sequence number.
-fn accept_hello(first: Envelope) -> Result<(DeviceInfo, u32, u64), SessionError> {
+/// version both sides use, the envelope's sequence number and the pairing
+/// method its `Hello` names.
+fn accept_hello(
+    first: Envelope,
+    expected_peer_id: Option<&str>,
+) -> Result<(DeviceInfo, u32, u64, Option<PairingMethod>), SessionError> {
     check_seq(0, first.seq)?;
     let Some(Payload::Hello(hello)) = first.payload else {
         return Err(SessionError::ExpectedHello);
@@ -1288,7 +1406,19 @@ fn accept_hello(first: Envelope) -> Result<(DeviceInfo, u32, u64), SessionError>
     let version = local
         .negotiate(remote)
         .ok_or(SessionError::VersionMismatch { local, remote })?;
-    Ok((peer_from(hello)?, version, first.seq))
+    if let Some(expected) = expected_peer_id
+        && hello.device_id != expected
+    {
+        return Err(SessionError::UnexpectedPeer {
+            expected: expected.to_owned(),
+            received: hello.device_id,
+        });
+    }
+    let pairing = match hello.pairing_method() {
+        PairingMethod::Unspecified => None,
+        method => Some(method),
+    };
+    Ok((peer_from(hello)?, version, first.seq, pairing))
 }
 
 /// Validates the peer's `Hello`, apart from its versions, and turns it into
