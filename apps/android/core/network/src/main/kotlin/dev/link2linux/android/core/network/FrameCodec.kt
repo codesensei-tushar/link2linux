@@ -104,9 +104,12 @@ class FrameCodec(val maxFrameBytes: Int = DEFAULT_MAX_FRAME_BYTES) {
     }
 }
 
+/** A frame breaks a limit of docs/protocol.md, "Framing". */
+open class FrameLimitException(message: String) : IOException(message)
+
 class FrameTooLargeException(val length: Long, val limit: Int) :
-    IOException("Frame body of ${java.lang.Long.toUnsignedString(length)} bytes is over the $limit-byte limit")
+    FrameLimitException("Frame body of ${java.lang.Long.toUnsignedString(length)} bytes is over the $limit-byte limit")
 
 /** A frame's repeated field holds more entries than the protocol allows. */
 class TooManyEntriesException(val field: String, val limit: Int) :
-    IOException("Frame holds more than $limit entries of $field")
+    FrameLimitException("Frame holds more than $limit entries of $field")

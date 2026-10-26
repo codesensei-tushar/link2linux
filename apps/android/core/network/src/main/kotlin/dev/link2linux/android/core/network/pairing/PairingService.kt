@@ -394,6 +394,7 @@ class PairingService(
 
     /** A connection from a paired desktop becomes its session, unless its pairing went meanwhile. */
     private suspend fun runSession(transport: TlsTransport, session: Session) {
+        session.markPaired()
         val key = transport.peerKey
         val live = Live(session, key)
         val record = trust.withLock {

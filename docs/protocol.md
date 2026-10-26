@@ -67,7 +67,7 @@ BCP 14 (RFC 2119, RFC 8174) when they appear in capitals.
 | TLS exporter label, QR pairing | `EXPERIMENTAL-link2linux-pair-v1` |
 | TLS exporter label, SAS pairing | `EXPERIMENTAL-link2linux-sas-v1` |
 | QR code URI | `link2linux://pair?...` |
-| Maximum frame body | 1.25 MiB with `ImageData`, 512 KiB without |
+| Maximum frame body | 16 KiB until the session starts, then 1.25 MiB with `ImageData` and 512 KiB without |
 | Maximum image size | 1 MiB |
 | Protocol major version | 1 |
 
@@ -807,8 +807,10 @@ connections:
 
 Each frame is a varint holding the length of one serialized `Envelope`,
 followed by that many bytes, the same format as protobuf's length-delimited
-streams. A frame body MUST NOT exceed 1.25 MiB when its payload is
-`ImageData`, and 512 KiB otherwise. It MUST NOT hold more than 64 `Hello.features` or
+streams. A frame body MUST NOT exceed 16 KiB until the session starts
+(during the Hello exchange, and on a pairing connection until the pairing
+is stored), and after that 1.25 MiB when its payload is `ImageData`, and
+512 KiB otherwise. It MUST NOT hold more than 64 `Hello.features` or
 `FeatureStatus.features`, 100 notifications, 1000 `removed_keys`, or 32
 actions, 32 messages or 16 reply choices per notification or action,
 counted over the whole frame. A receiver checks these before decoding, and

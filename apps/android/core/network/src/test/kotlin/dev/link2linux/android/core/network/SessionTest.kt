@@ -5,6 +5,8 @@ import dev.link2linux.protocol.v1.Envelope
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.envelope
 import dev.link2linux.protocol.v1.hello
+import dev.link2linux.protocol.v1.notificationPosted
+import dev.link2linux.protocol.v1.phoneNotification
 import dev.link2linux.protocol.v1.ping
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
@@ -118,8 +120,8 @@ class SessionTest {
     fun aPeerThatStopsReadingIsClosedAtTheWriteDeadline() = runBlocking {
         val (phoneEnd, _) = connectedPair()
         closeLater(phoneEnd, 10_000)
-        val phone = Session(phoneEnd, writeTimeoutMillis = 500)
-        val big = desktopHello.toBuilder().setDeviceName("x".repeat(1_000_000)).build()
+        val phone = Session(phoneEnd, writeTimeoutMillis = 500).apply { markPaired() }
+        val big = desktopHello.toBuilder().setDeviceName("x".repeat(400_000)).build()
 
         val started = System.nanoTime()
         // The desktop end never reads: once the socket buffers are full a write blocks.
@@ -221,6 +223,53 @@ class SessionTest {
 
     @Test
     fun peerClosingBeforeHelloIsAnError() = assertHandshakeFails()
+
+    @Test
+    fun aHelloOverTheHandshakeLimitIsRefused() = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        val big = desktopHello.toBuilder().setDeviceName("x".repeat(FrameCodec.HANDSHAKE_MAX_FRAME_BYTES)).build()
+        FrameCodec().write(envelope { seq = 1; hello = big }, desktopEnd.output)
+        desktopEnd.output.flush()
+
+        val error = withTimeout(5_000) { runCatching { Session(phoneEnd).handshake(phoneHello) }.exceptionOrNull() }
+
+        assertTrue("got $error", error is SessionException)
+        val desktop = FrameCodec()
+        assertTrue(desktop.read(desktopEnd.input)!!.hasHello())
+        val goodbye = desktop.read(desktopEnd.input)!!.goodbye
+        assertEquals(GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR, goodbye.reason)
+        assertTrue(goodbye.detail, goodbye.detail.contains("${FrameCodec.HANDSHAKE_MAX_FRAME_BYTES}-byte limit"))
+    }
+
+    @Test
+    fun largeFramesWaitUntilTheDesktopIsPaired() = runBlocking {
+        val large = envelope {
+            seq = 2
+            notificationPosted = notificationPosted { notification = phoneNotification { text = "x".repeat(100_000) } }
+        }
+        for (paired in listOf(false, true)) {
+            val (phoneEnd, desktopEnd) = connectedPair()
+            val desktop = FrameCodec()
+            desktop.write(envelope { seq = 1; hello = desktopHello }, desktopEnd.output)
+            desktop.write(large, desktopEnd.output)
+            desktopEnd.output.flush()
+            val phone = Session(phoneEnd)
+
+            val received = withTimeout(5_000) {
+                phone.handshake(phoneHello)
+                if (paired) phone.markPaired()
+                runCatching { phone.next() }
+            }
+
+            if (paired) {
+                assertEquals(large, received.getOrThrow())
+            } else {
+                val error = received.exceptionOrNull()
+                assertTrue("got $error", error is SessionException)
+                assertTrue("got $error", error!!.message!!.contains("${FrameCodec.HANDSHAKE_MAX_FRAME_BYTES}-byte limit"))
+            }
+        }
+    }
 
     private fun assertHandshakeFails(vararg fromDesktop: Envelope) = runBlocking {
         val (phoneEnd, desktopEnd) = connectedPair()
