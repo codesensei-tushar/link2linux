@@ -23,8 +23,9 @@ use link2linux_platform::{
 };
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    GoodbyeReason, NotificationCategory, NotificationContent, NotificationImportance,
-    NotificationPosted, NotificationSyncBatch, PairingProof, PhoneNotification, SyncCursor,
+    GoodbyeReason, NotificationAction, NotificationCategory, NotificationContent,
+    NotificationImportance, NotificationPosted, NotificationSyncBatch, PairingProof,
+    PhoneNotification, SyncCursor,
 };
 use link2linux_runtime::notify::ServiceFactory;
 use link2linux_runtime::paths::DataDir;
@@ -383,6 +384,13 @@ fn lunch() -> PhoneNotification {
         importance: NotificationImportance::High.into(),
         content: NotificationContent::Full.into(),
         dismissible: true,
+        // The page only asks for actions a notification offers.
+        actions: vec![NotificationAction {
+            id: "mark".into(),
+            label: "Reply".into(),
+            accepts_reply: true,
+            ..NotificationAction::default()
+        }],
         ..PhoneNotification::default()
     }
 }
