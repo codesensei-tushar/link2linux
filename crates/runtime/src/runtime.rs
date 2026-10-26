@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use link2linux_core::notifications::CachedImage;
-use link2linux_core::pairing::{TrustStore, records};
+use link2linux_core::pairing::{StoreKey, TrustStore, records};
 use tokio::runtime::Handle;
 
 use crate::discovery::{pump_responses, run_discovery, watch_network};
@@ -211,6 +211,23 @@ impl Runtime {
     /// codes and new sessions carry.
     pub fn set_ble_address(&self, address: Option<[u8; 6]>) {
         *lock(&self.core.ble_address) = address;
+    }
+
+    /// Whether the pairing file is sealed but the runtime started without
+    /// its key: the shell may ask the keyring again later.
+    #[must_use]
+    pub fn needs_store_key(&self) -> bool {
+        lock(&self.core.store).needs_key()
+    }
+
+    /// Hands over the key that seals the presence keys in the pairing file,
+    /// when the runtime started without it. The presence keys sealed under
+    /// it are found again.
+    pub fn use_store_key(&self, key: StoreKey) {
+        if let Err(error) = lock(&self.core.store).use_key(key) {
+            tracing::warn!(%error, "could not seal the presence keys in the pairing file");
+        }
+        self.core.publish_keys();
     }
 
     /// The UDP port the beacon listener is bound to.

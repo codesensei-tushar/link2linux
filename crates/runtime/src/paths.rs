@@ -154,7 +154,7 @@ impl DataDir {
     /// The key that seals the phones' presence keys in the pairing file:
     /// from the keyring, or a new one kept there, one per installation
     /// named after its device id. `None` without a keyring, or when the
-    /// device id cannot be read; the presence keys then stay in clear.
+    /// device id cannot be read; see [`key_storage::load_store_key`].
     pub async fn load_store_key<S: SecretStore>(&self, keyring: &S) -> Option<StoreKey> {
         let device_id = self.load_or_create_device_id().ok()?;
         let name = format!("store-key {device_id}");

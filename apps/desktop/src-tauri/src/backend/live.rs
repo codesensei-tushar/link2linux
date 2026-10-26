@@ -7,7 +7,7 @@
 //! calls.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use link2linux_platform::PresenceAdvertiser;
@@ -74,9 +74,12 @@ impl LiveBackend {
             presenter,
             events,
         };
-        let config = RuntimeConfig::new(data_dir);
+        let config = RuntimeConfig::new(data_dir.clone());
         let handle = tauri::async_runtime::handle().inner().clone();
         let runtime = Arc::new(Runtime::start(handle, &config, shell)?);
+        if runtime.needs_store_key() {
+            find_store_key(data_dir, keyring, Arc::downgrade(&runtime));
+        }
         advertise(runtime.clone());
         Ok(Self {
             runtime,
@@ -114,6 +117,32 @@ fn follow_lock(popups: Arc<PrivatePopups>) {
             tokio::time::sleep(retry).await;
             retry = (retry * 2).min(LAST_RETRY);
         }
+    });
+}
+
+/// Asks the keyring again, a few times and less often each time, for the
+/// key of a sealed pairing file that it did not give at start, as on a slow
+/// login.
+fn find_store_key(data_dir: DataDir, keyring: SecretServiceStore, runtime: Weak<Runtime>) {
+    const RETRIES: [Duration; 3] = [
+        Duration::from_secs(30),
+        Duration::from_secs(5 * 60),
+        Duration::from_secs(30 * 60),
+    ];
+    tauri::async_runtime::spawn(async move {
+        for delay in RETRIES {
+            tokio::time::sleep(delay).await;
+            let Some(key) = data_dir.load_store_key(&keyring).await else {
+                continue;
+            };
+            if let Some(runtime) = runtime.upgrade() {
+                runtime.use_store_key(key);
+            }
+            return;
+        }
+        tracing::warn!(
+            "the keyring did not give the pairing file's key: new presence keys stay out of it"
+        );
     });
 }
 
