@@ -304,8 +304,8 @@ impl Core {
         }
     }
 
-    /// A phone's record is gone: forget its slot and what discovery
-    /// showed, and report. `stop` ends the phone's task at once; without
+    /// A phone's record is gone: forget its slot, its pictures and what
+    /// discovery showed, and report. `stop` ends the phone's task at once; without
     /// it the task has been told to leave and says goodbye first.
     pub fn forget_device(&self, id: &str, stop: bool) {
         let slot = lock(&self.slots).remove(id);
@@ -314,6 +314,7 @@ impl Core {
         {
             slot.cancel.cancel();
         }
+        self.drivers.forget(id);
         lock(&self.evidence).forget(id);
         self.publish_keys();
         self.emit_devices();

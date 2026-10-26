@@ -13,12 +13,12 @@ use link2linux_platform::PresenceAdvertiser;
 use link2linux_platform::linux::ble::BluezPresence;
 use link2linux_platform::linux::{DbusNotifications, SecretServiceStore, SessionLock};
 use link2linux_runtime::notify::{Presenter, PrivatePopups, ServiceFactory};
-use link2linux_runtime::paths::{DataDir, desktop_name};
+use link2linux_runtime::paths::{DataDir, desktop_name, runtime_images_dir};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
-    Backend, BackendError, Device, EventSink, MirroredNotification, PairingMethod, PairingState,
-    PhoneTarget, Settings,
+    Backend, BackendError, CachedImage, Device, EventSink, MirroredNotification, PairingMethod,
+    PairingState, PhoneTarget, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -51,6 +51,12 @@ impl LiveBackend {
         let identity = tauri::async_runtime::block_on(
             data_dir.load_identity(&SecretServiceStore::new(APP_ID)),
         )?;
+        // Pictures stay off the disk: in the runtime directory, or else
+        // only in memory.
+        if let Err(error) = data_dir.remove_old_images() {
+            tracing::warn!(%error, "could not delete the pictures kept on disk");
+        }
+        let images = runtime_images_dir();
         let settings_path = data_dir.settings();
         let settings = Settings::load(&settings_path);
         let popups = Arc::new(PrivatePopups::new(
@@ -62,7 +68,7 @@ impl LiveBackend {
         let presenter: Arc<dyn Presenter> = popups.clone();
         let shell = Shell {
             identity,
-            drivers: Arc::new(ServiceFactory::new(presenter.clone(), data_dir.images())),
+            drivers: Arc::new(ServiceFactory::new(presenter.clone(), images)),
             presenter,
             events,
         };
@@ -168,7 +174,7 @@ impl Backend for LiveBackend {
             .run_notification_action(device_id, key, action_id, reply)
     }
 
-    fn notification_image(&self, device_id: &str, sha256: &str) -> Option<std::path::PathBuf> {
+    fn notification_image(&self, device_id: &str, sha256: &str) -> Option<CachedImage> {
         self.runtime.notification_image(device_id, sha256)
     }
 

@@ -62,14 +62,10 @@ pub async fn notification_image(
     device_id: String,
     sha256: String,
 ) -> Result<Option<String>, CommandError> {
-    let Some(path) = state.backend().notification_image(&device_id, &sha256) else {
-        return Ok(None);
-    };
-    let read = tauri::async_runtime::spawn_blocking(move || {
-        let bytes = std::fs::read(&path).ok()?;
-        Some(data_url(path.extension().and_then(|e| e.to_str()), &bytes))
-    });
-    Ok(read.await.ok().flatten())
+    // Pictures are in memory or on the runtime directory's tmpfs, so
+    // reading one here is quick.
+    let image = state.backend().notification_image(&device_id, &sha256);
+    Ok(image.map(|image| data_url(Some(image.extension), &image.data)))
 }
 
 /// The `data:` URL of an image file with this extension.

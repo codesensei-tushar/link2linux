@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use link2linux_core::notifications::CachedImage;
 use link2linux_core::pairing::{TrustStore, records};
 use tokio::runtime::Handle;
 
@@ -181,12 +182,12 @@ impl Runtime {
         )
     }
 
-    /// The file of a picture a phone shared with a notification, named by
-    /// the SHA-256 of its bytes in hexadecimal, if it has arrived.
+    /// A picture a phone shared with a notification, named by the SHA-256
+    /// of its bytes in hexadecimal, if it has arrived.
     #[must_use]
-    pub fn notification_image(&self, device_id: &str, sha256: &str) -> Option<std::path::PathBuf> {
+    pub fn notification_image(&self, device_id: &str, sha256: &str) -> Option<CachedImage> {
         let bytes = decode_hex(sha256)?;
-        self.core.drivers.image_path(device_id, &bytes)
+        self.core.drivers.image(device_id, &bytes)
     }
 
     fn send(&self, device_id: &str, command: Command) -> Result<(), BackendError> {

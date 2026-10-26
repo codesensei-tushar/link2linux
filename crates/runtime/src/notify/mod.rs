@@ -7,11 +7,11 @@
 //! behind it.
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use link2linux_core::device::DeviceInfo;
+pub use link2linux_core::notifications::CachedImage;
 use link2linux_core::notifications::{Answer, Change};
 use link2linux_core::session::{Session, SessionEvent};
 use link2linux_core::transport::TlsConnection;
@@ -175,9 +175,12 @@ pub trait DriverFactory: Send + Sync {
     /// sessions.
     fn create(&self, device: &DeviceInfo) -> Box<dyn NotificationsDriver>;
 
-    /// The file of the picture with this SHA-256 that phone `device_id`
-    /// shared, if it is on disk.
-    fn image_path(&self, _device_id: &str, _sha256: &[u8]) -> Option<PathBuf> {
+    /// The picture with this SHA-256 that phone `device_id` shared, if it
+    /// has arrived.
+    fn image(&self, _device_id: &str, _sha256: &[u8]) -> Option<CachedImage> {
         None
     }
+
+    /// Phone `device_id` is no longer paired: drops its pictures.
+    fn forget(&self, _device_id: &str) {}
 }

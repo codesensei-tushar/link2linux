@@ -13,6 +13,7 @@
 pub mod fake;
 pub mod live;
 
+pub use link2linux_runtime::notify::CachedImage;
 pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, Device, DeviceStatus, DiscoveredPhone, EventSink, MirroredNotification,
@@ -58,8 +59,8 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), BackendError> {
         Ok(())
     }
-    /// The file of a picture the phone shared, if it has arrived.
-    fn notification_image(&self, _device_id: &str, _sha256: &str) -> Option<std::path::PathBuf> {
+    /// A picture the phone shared, if it has arrived.
+    fn notification_image(&self, _device_id: &str, _sha256: &str) -> Option<CachedImage> {
         None
     }
 

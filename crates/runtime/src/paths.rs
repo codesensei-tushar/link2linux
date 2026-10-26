@@ -96,10 +96,22 @@ impl DataDir {
         self.root.join("settings.json")
     }
 
-    /// The pictures phones shared with notifications, one folder per phone.
+    /// Where 0.1.0 kept the pictures phones shared with notifications.
     #[must_use]
-    pub fn images(&self) -> PathBuf {
+    pub fn old_images(&self) -> PathBuf {
         self.root.join("images")
+    }
+
+    /// Deletes the pictures 0.1.0 kept here: they now stay off the disk.
+    ///
+    /// # Errors
+    ///
+    /// Fails when they exist but cannot be deleted.
+    pub fn remove_old_images(&self) -> io::Result<()> {
+        match fs::remove_dir_all(self.old_images()) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
     }
 
     /// Creates the directory, readable only by the user.
@@ -158,6 +170,37 @@ impl DataDir {
     }
 }
 
+/// `$XDG_RUNTIME_DIR/link2linux/images`, for the pictures phones share
+/// with notifications. The runtime directory belongs to the user alone, is
+/// usually in memory (tmpfs), and is emptied at logout. `None` when
+/// `XDG_RUNTIME_DIR` is unset or not absolute, or the directory cannot be
+/// made: pictures then stay in memory only.
+#[must_use]
+pub fn runtime_images_dir() -> Option<PathBuf> {
+    images_in(std::env::var_os("XDG_RUNTIME_DIR"))
+}
+
+fn images_in(runtime_dir: Option<OsString>) -> Option<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let dir = runtime_dir
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())?
+        .join(APP_DIR);
+    let made = match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+        }
+        result => result,
+    };
+    match made {
+        Ok(()) => Some(dir.join("images")),
+        Err(error) => {
+            tracing::warn!(%error, dir = %dir.display(), "keeping pictures in memory");
+            None
+        }
+    }
+}
+
 /// The name shown on the phone for this computer: its host name.
 #[must_use]
 pub fn desktop_name() -> String {
@@ -203,6 +246,29 @@ mod tests {
             &fs::metadata(dir.root()).unwrap().permissions(),
         );
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn pictures_go_to_a_private_runtime_directory_or_stay_in_memory() {
+        assert_eq!(images_in(None), None);
+        assert_eq!(images_in(Some("relative".into())), None);
+
+        let runtime = tempfile::tempdir().unwrap();
+        let images = images_in(Some(runtime.path().into())).unwrap();
+        assert_eq!(images, runtime.path().join("link2linux/images"));
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &fs::metadata(images.parent().unwrap())
+                .unwrap()
+                .permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o700);
+
+        let data = DataDir::new(runtime.path().join("data"));
+        data.remove_old_images().unwrap();
+        fs::create_dir_all(data.old_images().join("phone")).unwrap();
+        fs::write(data.old_images().join("phone/a.png"), b"png").unwrap();
+        data.remove_old_images().unwrap();
+        assert!(!data.old_images().exists());
     }
 
     #[test]
