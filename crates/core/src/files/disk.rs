@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use aws_lc_rs::digest;
-use rustix::fs::{CWD, RenameFlags};
+use rustix::fs::{CWD, OFlags, RenameFlags};
 use rustix::io::Errno;
 
 use super::{TransferId, names};
@@ -73,10 +73,49 @@ fn is_temp_name(name: &OsStr) -> bool {
 /// any other download.
 pub(crate) fn create_temp(path: &Path) -> io::Result<File> {
     OpenOptions::new()
+        .read(true)
         .write(true)
         .create_new(true)
         .mode(0o666)
         .open(path)
+}
+
+/// Opens the temporary file at `path` to go on after its first `written`
+/// bytes: a new one for 0, otherwise the one written before, which must
+/// still be a regular file holding at least those bytes. What lies beyond
+/// them is cut off. A link planted there is never followed.
+pub(crate) fn open_temp(path: &Path, written: u64) -> io::Result<File> {
+    if written == 0 {
+        match create_temp(path) {
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            created => return created,
+        }
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(OFlags::NOFOLLOW.bits().cast_signed())
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() < written {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "the unfinished file changed",
+        ));
+    }
+    file.set_len(written)?;
+    Ok(file)
+}
+
+/// The hash of the first `written` bytes of the temporary `file`, to go on
+/// from there.
+pub(crate) fn hash_written(file: &File, written: u64) -> io::Result<digest::Context> {
+    hash_prefix(file, written).map_err(|error| match error {
+        SourceError::Changed => {
+            io::Error::new(ErrorKind::UnexpectedEof, "the unfinished file shrank")
+        }
+        SourceError::Unreadable(error) => error,
+    })
 }
 
 /// Writes `data` at `offset` of `file` and adds it to `hash`.
@@ -281,6 +320,36 @@ mod tests {
         assert!(!temp.exists());
         let mode = fs::metadata(&saved).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0, "{mode:o}");
+    }
+
+    #[test]
+    fn unfinished_files_are_taken_up_again_only_as_they_were_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp = dir.path().join(temp_name(id(), 0));
+        let file = open_temp(&temp, 0).unwrap();
+        let mut hash = digest::Context::new(&digest::SHA256);
+        write_chunk(&file, 0, b"abcdef", &mut hash).unwrap();
+        drop(file);
+
+        // Taken up after 4 bytes: the rest is cut, and its hash is the
+        // same as of those 4 bytes.
+        let again = open_temp(&temp, 4).unwrap();
+        assert_eq!(again.metadata().unwrap().len(), 4);
+        let mut expected = digest::Context::new(&digest::SHA256);
+        expected.update(b"abcd");
+        assert_eq!(
+            hash_written(&again, 4).unwrap().finish().as_ref(),
+            expected.finish().as_ref()
+        );
+        // Shorter than what was written, or gone, it is refused.
+        assert!(open_temp(&temp, 10).is_err());
+        fs::remove_file(&temp).unwrap();
+        assert!(open_temp(&temp, 4).is_err());
+        // A link planted in its place is not followed.
+        fs::write(dir.path().join("target"), b"abcd").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("target"), &temp).unwrap();
+        assert!(open_temp(&temp, 4).is_err());
+        assert_eq!(fs::read(dir.path().join("target")).unwrap(), b"abcd");
     }
 
     #[test]

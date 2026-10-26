@@ -1497,6 +1497,46 @@ async fn a_transfer_that_arrived_is_complete_when_offered_again_after_leaving_th
     assert_eq!(names_in(downloads.path()), ["a", "b"]);
 }
 
+#[tokio::test]
+async fn only_so_many_transfers_from_the_phone_are_kept() {
+    let downloads = tempfile::tempdir().unwrap();
+    let big = data(300 * KIB, 22);
+    let mut service = service(downloads.path());
+    // Each session starts 4 transfers and drops them half done.
+    for session in 0..5_u8 {
+        let (desktop, mut phone) = desktop_with(service).await;
+        for n in 0..4_u8 {
+            let id = [session * 4 + n + 1; 16];
+            assert_eq!(phone.offer(id, &[("big", &big)]).await, accept(0, 0));
+            let first = chunk(id, 0, 0, &big[..CHUNK_LEN], Vec::new());
+            assert!(is_ack(&phone.ask(first).await));
+        }
+        drop(phone);
+        service = desktop.stopped().await;
+    }
+
+    let partials = names_in(downloads.path())
+        .iter()
+        .filter(|name| name.starts_with(".link2linux-"))
+        .count();
+    assert_eq!(partials, 16);
+    let states: Vec<TransferState> = service.transfers().into_iter().map(|t| t.state).collect();
+    assert_eq!(
+        states
+            .iter()
+            .filter(|s| **s == TransferState::Failed(Failure::Expired))
+            .count(),
+        4
+    );
+    assert_eq!(
+        states
+            .iter()
+            .filter(|s| **s == TransferState::Interrupted)
+            .count(),
+        16
+    );
+}
+
 /// A phone running the same service, on the other end of a pipe.
 async fn pair(desktop_dir: &Path, phone_dir: &Path) -> (Driven, Driven) {
     let (here, there) = duplex(64 * 1024);

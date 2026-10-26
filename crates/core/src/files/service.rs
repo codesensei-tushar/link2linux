@@ -55,6 +55,10 @@ const MAX_FINISHED: usize = 100;
 /// Cancels kept for a phone that is away.
 const MAX_CANCELS: usize = 64;
 
+/// Unfinished transfers from the phone, running or kept for it to go on
+/// with. A new one takes the place of the oldest kept.
+const MAX_KEPT: usize = 16;
+
 /// Why the service could not go on with the session.
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
@@ -404,6 +408,10 @@ impl FileService {
     /// [`FileService::run`] does, so a `FeatureStatus` that makes the
     /// feature ready starts the waiting transfers; it is returned too.
     ///
+    /// Dropped partway, it loses no file: the phone's chunk then gets no
+    /// answer and comes again, and a received file whose running hash went
+    /// with the dropped call gets it back from its bytes on disk.
+    ///
     /// # Errors
     ///
     /// Fails when the session does.
@@ -577,6 +585,7 @@ impl FileService {
             Ok(Err(error)) => tracing::debug!(%error, "free space unknown"),
         }
 
+        self.make_room_to_keep().await;
         let transfer = Incoming::new(id, &offer, self.dir.clone(), unix_ms(SystemTime::now()));
         tracing::info!(transfer = %id, files = offer.files.len(), "receiving files");
         self.publish(TransferEvent::Changed(transfer.view()));
@@ -925,6 +934,35 @@ impl FileService {
         }
     }
 
+    /// Ends the oldest transfers kept for the phone to go on with, and
+    /// deletes what arrived of them, until there is room for one more
+    /// unfinished transfer.
+    async fn make_room_to_keep(&mut self) {
+        loop {
+            let unfinished = self
+                .incoming
+                .iter()
+                .filter(|t| !t.state.is_finished())
+                .count();
+            if unfinished < MAX_KEPT {
+                return;
+            }
+            let Some(transfer) = self
+                .incoming
+                .iter_mut()
+                .filter(|t| t.state == TransferState::Interrupted)
+                .min_by_key(|t| t.since)
+            else {
+                return;
+            };
+            transfer.discard().await;
+            transfer.state = TransferState::Failed(Failure::Expired);
+            let view = transfer.view();
+            tracing::info!(transfer = %view.id, "too many transfers kept: ended the oldest");
+            self.publish(TransferEvent::Changed(view));
+        }
+    }
+
     /// The user turned files off here: the transfers the phone is sending
     /// end, and what was not finished of them is deleted. Offering one
     /// again gets `DECLINED`.
@@ -965,6 +1003,7 @@ impl FileService {
             if transfer.state == TransferState::Running {
                 transfer.state = TransferState::Interrupted;
                 transfer.since = now;
+                transfer.close();
                 let _ = self.events.send(TransferEvent::Changed(transfer.view()));
             }
         }
