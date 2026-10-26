@@ -6,41 +6,15 @@
 //! already works.
 
 pub mod ble;
+pub mod notifications;
+
+pub use notifications::DbusNotifications;
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tracing::debug;
-
-use crate::{
-    CallAudio, Clipboard, DesktopNotification, FileStore, NotificationId, NotificationResponse,
-    NotificationSink, PlatformError,
-};
-
-/// Desktop notifications through the `org.freedesktop.Notifications` D-Bus
-/// service, which every major Linux desktop provides.
-#[derive(Debug, Default)]
-pub struct DbusNotifications;
-
-impl NotificationSink for DbusNotifications {
-    async fn show(
-        &self,
-        notification: &DesktopNotification,
-        _replaces: Option<NotificationId>,
-    ) -> Result<NotificationId, PlatformError> {
-        debug!(summary = %notification.summary, "notification not shown: not implemented yet");
-        Err(PlatformError::Unsupported("desktop notifications"))
-    }
-
-    async fn close(&self, _id: NotificationId) -> Result<(), PlatformError> {
-        Err(PlatformError::Unsupported("desktop notifications"))
-    }
-
-    async fn next_response(&self) -> Result<NotificationResponse, PlatformError> {
-        Err(PlatformError::Unsupported("desktop notifications"))
-    }
-}
+use crate::{CallAudio, Clipboard, FileStore, PlatformError};
 
 /// The desktop clipboard: Wayland data-control where the compositor offers
 /// it, X11 selections otherwise.
@@ -154,11 +128,6 @@ mod tests {
 
     #[tokio::test]
     async fn stubs_report_unsupported() {
-        let notification = DesktopNotification::default();
-        assert!(matches!(
-            DbusNotifications.show(&notification, None).await,
-            Err(PlatformError::Unsupported(_))
-        ));
         assert!(matches!(
             LinuxClipboard.read_text().await,
             Err(PlatformError::Unsupported(_))

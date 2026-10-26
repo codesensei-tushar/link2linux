@@ -15,7 +15,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tokio = { workspace = true, features = ["sync", "time"] }
+futures-util.workspace = true
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
 zbus.workspace = true
 
 [dev-dependencies]

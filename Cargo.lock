@@ -2027,6 +2027,7 @@ dependencies = [
 name = "link2linux-platform"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
