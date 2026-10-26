@@ -1,11 +1,12 @@
 plugins {
     alias(libs.plugins.l2l.android.library)
+    alias(libs.plugins.l2l.hilt)
 }
 
 dependencies {
+    api(projects.core.data)
     api(projects.core.protocol)
     api(projects.core.security)
-    implementation(projects.core.common)
     implementation(libs.conscrypt.android)
     implementation(libs.kotlinx.coroutines.core)
 
