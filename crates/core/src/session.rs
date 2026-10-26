@@ -10,6 +10,12 @@
 //! none, each side sends `Goodbye` with `GOODBYE_REASON_VERSION_MISMATCH`
 //! and gives up. A peer that sends anything else first is refused.
 //!
+//! Right after the `Hello`s, each side reports how ready each of its
+//! features is (`FeatureStatus`, see [`Availability`]), then how to find
+//! it while it is offline (`PresenceUpdate`), and reports them again
+//! whenever they change. The peer's come out as
+//! [`SessionEvent::FeatureStatus`] and [`SessionEvent::Presence`].
+//!
 //! After that, [`Session::next_event`] drives the session. It answers the
 //! peer's `Ping`s, sends a `Ping` of its own every
 //! [`SessionConfig::ping_interval`], and fails with
@@ -44,7 +50,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use link2linux_protocol::v1::{Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason};
+use link2linux_protocol::v1::{Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason, PresenceUpdate};
 use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
 };
@@ -58,10 +64,12 @@ use crate::device::{DeviceInfo, Feature};
 mod goodbye;
 mod request;
 mod rules;
+mod status;
 mod version;
 
 pub use goodbye::{PeerGoodbye, ReconnectPolicy};
 pub use request::{Reply, RequestError};
+pub use status::{Availability, FeatureStates};
 pub use version::VersionRange;
 
 use request::Pending;
@@ -134,6 +142,15 @@ pub enum SessionEvent {
         /// The request's sequence number.
         request: u64,
     },
+    /// The peer's `FeatureStatus`: how ready each feature it listed in its
+    /// `Hello` is. The first one follows the `Hello`; each later one
+    /// replaces the previous one as a whole. See also
+    /// [`Session::peer_availability`].
+    FeatureStatus(FeatureStates),
+    /// The peer's `PresenceUpdate`: how to recognize and reach it while it
+    /// is not connected. It follows the first `FeatureStatus`, and comes
+    /// again whenever its content changes.
+    Presence(PresenceUpdate),
     /// The peer answered this side's latest `Ping`.
     Pong {
         /// Time from sending the `Ping` to receiving the `Pong`.
@@ -246,6 +263,10 @@ pub struct Session<S> {
     framed: Framed<S, EnvelopeCodec>,
     local: DeviceInfo,
     peer: DeviceInfo,
+    /// The peer's latest `FeatureStatus`, once one has arrived.
+    peer_availability: Option<FeatureStates>,
+    /// The peer's latest `PresenceUpdate`, once one has arrived.
+    peer_presence: Option<PresenceUpdate>,
     /// The protocol major version both sides use.
     version: u32,
     idle_timeout: Duration,
@@ -360,6 +381,8 @@ where
             framed,
             local,
             peer,
+            peer_availability: None,
+            peer_presence: None,
             version,
             idle_timeout: config.idle_timeout,
             request_timeout: config.request_timeout,
@@ -405,6 +428,19 @@ where
             .intersection(&self.peer.features)
             .copied()
             .collect()
+    }
+
+    /// The peer's availability of each feature it listed in its `Hello`,
+    /// from its latest `FeatureStatus`. `None` until the first one arrives.
+    #[must_use]
+    pub fn peer_availability(&self) -> Option<&FeatureStates> {
+        self.peer_availability.as_ref()
+    }
+
+    /// The peer's latest `PresenceUpdate`, once one has arrived.
+    #[must_use]
+    pub fn peer_presence(&self) -> Option<&PresenceUpdate> {
+        self.peer_presence.as_ref()
     }
 
     /// The latest measured round-trip time, once a `Ping` has been answered.
@@ -869,6 +905,15 @@ where
                 debug!(reason = ?goodbye.reason, goodbye.detail, "the peer ended the session");
                 self.ended = true;
                 self.events.push_back(SessionEvent::Goodbye(goodbye));
+            }
+            Payload::FeatureStatus(status) => {
+                let states = status::states_from(status, &self.peer.features);
+                self.peer_availability = Some(states.clone());
+                self.events.push_back(SessionEvent::FeatureStatus(states));
+            }
+            Payload::PresenceUpdate(presence) => {
+                self.peer_presence = Some(presence.clone());
+                self.events.push_back(SessionEvent::Presence(presence));
             }
             // An ErrorReply that answers nothing explains a coming Goodbye.
             Payload::ErrorReply(error) => {
