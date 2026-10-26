@@ -16,6 +16,7 @@ import dev.link2linux.android.core.model.QrPairingOffer
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
@@ -238,5 +239,25 @@ class DiscoveryControllerTest {
     @Test
     fun legacyNamesAreUnescaped() {
         assertEquals("l2l-ab12 (2)", NsdAdvertiser.unescapeName("""l2l-ab12\032(2)"""))
+    }
+
+    @Test
+    fun keepsAnnouncingAndBeaconingWithOnlyAHotspot() = runTest {
+        val controller = controller()
+        repository.save(desktop)
+        connections.listeningPort.value = 27380
+        val hotspot = LocalNetwork(
+            TetheredNetworks.idOf("wlan1"), listOf(NetworkAddress(InetAddress.getByName("192.168.43.1"), 24)), tethered = true,
+        )
+        networks.networks.value = listOf(hotspot)
+        runCurrent()
+        assertEquals(27380, advertiser.registrations.last().second)
+        assertTrue(controller.announced.value != null)
+        advanceTimeBy(1_000)
+        assertTrue(sender.sent.isNotEmpty())
+        assertEquals(
+            listOf(InetSocketAddress(InetAddress.getByName("192.168.43.1"), 27380)),
+            controller.endpoints.first(),
+        )
     }
 }
