@@ -91,6 +91,9 @@ pub struct FileService {
     pending: HashMap<u64, Pending>,
     /// Transfers to cancel on the phone once it is reachable.
     cancels: Vec<TransferId>,
+    /// Whether the feature is ready on both devices in the current session.
+    /// While it is, transfers waiting their turn do not use up their hour.
+    ready: bool,
     /// The requests of chunks of this session that got no answer in time.
     /// The phone may still hold them unanswered, and a late answer never
     /// reaches this service, so they count against the window until the
@@ -114,6 +117,7 @@ impl FileService {
             outgoing: Vec::new(),
             pending: HashMap::new(),
             cancels: Vec::new(),
+            ready: false,
             lost_chunks: Vec::new(),
             declined: HashMap::new(),
             events: broadcast::channel(256).0,
@@ -245,8 +249,9 @@ impl FileService {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let now = Instant::now();
+        self.set_ready(session.is_ready(Feature::Files), now);
         self.expire(now).await;
-        if !session.is_ready(Feature::Files) {
+        if !self.ready {
             if refusal(session).is_some() {
                 self.end_running_incoming(now).await;
             }
@@ -281,26 +286,61 @@ impl FileService {
     /// The session is gone. Running transfers are kept, for up to
     /// [`KEEP_UNFINISHED`], to go on in the next session.
     pub fn session_ended(&mut self) {
+        self.set_ready(false, Instant::now());
         self.pending.clear();
         self.lost_chunks.clear();
         self.pause_all(TransferState::Interrupted, Instant::now());
-        // A new session gets a new chance.
+        // A new session gets a new chance, and a busy phone may be asked
+        // at once.
         for transfer in &mut self.outgoing {
             transfer.held = false;
             transfer.misses = 0;
+            transfer.retry_at = None;
+        }
+    }
+
+    /// Notes whether the feature is ready in the session. The hour of the
+    /// transfers waiting their turn starts when it stops being ready.
+    fn set_ready(&mut self, ready: bool, now: Instant) {
+        if self.ready && !ready {
+            for transfer in &mut self.outgoing {
+                if transfer.state == TransferState::Waiting {
+                    transfer.since = now;
+                }
+            }
+        }
+        self.ready = ready;
+    }
+
+    /// Whether `transfer` uses up its hour: it waits while no session can
+    /// take it, or the phone stopped answering it.
+    fn kept(&self, transfer: &Outgoing) -> bool {
+        match transfer.state {
+            TransferState::Waiting => !self.ready,
+            TransferState::Interrupted => true,
+            _ => false,
         }
     }
 
     /// Ends the unfinished transfers kept for longer than
-    /// [`KEEP_UNFINISHED`], deleting what was received of them.
+    /// [`KEEP_UNFINISHED`], deleting what was received of them. Transfers to
+    /// the phone that wait their turn in a ready session are not kept but
+    /// queued, so they do not expire.
     pub async fn expire(&mut self, now: Instant) {
-        let mut changed = Vec::new();
+        // A time to ask again that has passed waits for nothing anymore.
         for transfer in &mut self.outgoing {
-            let waiting = matches!(
-                transfer.state,
-                TransferState::Waiting | TransferState::Interrupted
-            );
-            if waiting && now >= transfer.since + KEEP_UNFINISHED {
+            if transfer.retry_at.is_some_and(|at| at <= now) {
+                transfer.retry_at = None;
+            }
+        }
+        let mut changed = Vec::new();
+        let expired: Vec<bool> = self
+            .outgoing
+            .iter()
+            .map(|t| self.kept(t) && now >= t.since + KEEP_UNFINISHED)
+            .collect();
+        for (transfer, expired) in self.outgoing.iter_mut().zip(expired) {
+            if expired {
                 transfer.finish(TransferState::Failed(Failure::Expired));
                 changed.push(transfer.view());
             }
@@ -328,19 +368,26 @@ impl FileService {
     /// something to do without an event: a transfer expires, or a busy
     /// phone may be asked again.
     pub fn next_deadline(&self) -> Option<Instant> {
-        let outgoing = self.outgoing.iter().filter_map(|t| match t.state {
-            TransferState::Waiting | TransferState::Interrupted => {
-                let expiry = t.since + KEEP_UNFINISHED;
-                Some(t.retry_at.map_or(expiry, |retry| retry.min(expiry)))
-            }
-            _ => None,
-        });
+        let now = Instant::now();
+        // A time to ask a busy phone again that has passed waits for an
+        // event instead: the session, the phone's status or a free place.
+        let retries = self
+            .outgoing
+            .iter()
+            .filter(|t| t.state == TransferState::Waiting)
+            .filter_map(|t| t.retry_at)
+            .filter(|at| *at > now);
+        let expiries = self
+            .outgoing
+            .iter()
+            .filter(|t| self.kept(t))
+            .map(|t| t.since + KEEP_UNFINISHED);
         let incoming = self
             .incoming
             .iter()
             .filter(|t| t.state == TransferState::Interrupted)
             .map(|t| t.since + KEEP_UNFINISHED);
-        outgoing.chain(incoming).min()
+        retries.chain(expiries).chain(incoming).min()
     }
 
     /// Takes the events of the files feature, including

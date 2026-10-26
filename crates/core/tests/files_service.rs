@@ -194,6 +194,10 @@ enum Command {
     Transfers(oneshot::Sender<Vec<Transfer>>),
     /// The user turned files on or off here.
     Switch(Availability),
+    /// Expires what is kept, as if this much later.
+    ExpireIn(Duration),
+    /// When the service has something to do by itself.
+    Deadline(oneshot::Sender<Option<Instant>>),
 }
 
 /// A service on its session, driven the way the runtime drives it.
@@ -222,6 +226,12 @@ impl Driven {
                             }
                             Some(Command::Transfers(reply)) => {
                                 let _ = reply.send(service.transfers());
+                            }
+                            Some(Command::ExpireIn(later)) => {
+                                service.expire(Instant::now() + later).await;
+                            }
+                            Some(Command::Deadline(reply)) => {
+                                let _ = reply.send(service.next_deadline());
                             }
                             Some(Command::Switch(availability)) => {
                                 if session.set_availability(Feature::Files, availability).await.is_err() {
@@ -265,6 +275,16 @@ impl Driven {
 
     fn switch(&self, availability: Availability) {
         self.commands.send(Command::Switch(availability)).unwrap();
+    }
+
+    fn expire_in(&self, later: Duration) {
+        self.commands.send(Command::ExpireIn(later)).unwrap();
+    }
+
+    async fn deadline(&self) -> Option<Instant> {
+        let (reply, answer) = oneshot::channel();
+        self.commands.send(Command::Deadline(reply)).unwrap();
+        answer.await.unwrap()
     }
 
     async fn transfers(&self) -> Vec<Transfer> {
@@ -1335,6 +1355,89 @@ async fn chunks_that_got_no_answer_keep_their_place_in_the_window() {
     );
     assert!(sent.contains(&two.0.to_vec()), "both transfers go on");
     assert!(sent.contains(&one.0.to_vec()), "both transfers go on");
+}
+
+#[tokio::test]
+async fn a_passed_retry_never_makes_a_deadline_that_has_passed() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let path = source(sources.path(), "file", b"hello");
+    let (desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let id = desktop.send(vec![path]).await.unwrap();
+    let (seq, _) = read_offer(&mut phone).await;
+    let busy = ErrorReply {
+        code: ErrorCode::Busy.into(),
+        retry_after_ms: 50,
+        ..ErrorReply::default()
+    };
+    phone.answer(seq, Payload::ErrorReply(busy)).await;
+    desktop.settles(id, TransferState::Waiting).await;
+
+    // The phone turns files off before the retry: nothing can be offered,
+    // and the time to ask again, once passed, is no deadline.
+    let off = Payload::FeatureStatus(link2linux_protocol::v1::FeatureStatus {
+        features: vec![link2linux_protocol::v1::FeatureState {
+            feature: "files".into(),
+            availability: link2linux_protocol::v1::FeatureAvailability::Disabled.into(),
+            ..Default::default()
+        }],
+    });
+    phone.send(off, false, 0).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let deadline = desktop.deadline().await;
+    assert!(
+        deadline.is_some_and(|at| at > Instant::now() + Duration::from_secs(60)),
+        "{deadline:?}"
+    );
+
+    // Between sessions too, a tick leaves only the hour it is kept.
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    service.expire(Instant::now()).await;
+    let deadline = service.next_deadline();
+    assert!(
+        deadline.is_some_and(|at| at > Instant::now() + Duration::from_secs(60)),
+        "{deadline:?}"
+    );
+}
+
+#[tokio::test]
+async fn transfers_waiting_their_turn_keep_while_the_phone_is_there() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let (desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let mut ids = Vec::new();
+    for n in 0..5 {
+        let path = source(sources.path(), &format!("f{n}"), b"x");
+        ids.push(desktop.send(vec![path]).await.unwrap());
+    }
+    // Four run, their chunks unanswered; the fifth waits its turn.
+    for _ in 0..4 {
+        let (seq, _) = read_offer(&mut phone).await;
+        phone.answer(seq, accept(0, 0)).await;
+    }
+    let fifth = ids[4];
+    desktop.settles(fifth, TransferState::Waiting).await;
+    desktop.expire_in(2 * KEEP_UNFINISHED);
+    assert_eq!(desktop.transfer(fifth).await.state, TransferState::Waiting);
+
+    // Once the phone is gone, its hour runs.
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    service
+        .expire(Instant::now() + KEEP_UNFINISHED - Duration::from_secs(60))
+        .await;
+    let state = |service: &FileService| {
+        service
+            .transfers()
+            .into_iter()
+            .find(|t| t.id == fifth)
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(&service), TransferState::Waiting);
+    service.expire(Instant::now() + KEEP_UNFINISHED).await;
+    assert_eq!(state(&service), TransferState::Failed(Failure::Expired));
 }
 
 /// A phone running the same service, on the other end of a pipe.
