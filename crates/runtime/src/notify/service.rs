@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use link2linux_core::device::DeviceInfo;
 use link2linux_core::notifications::{
-    Answer, ImageCache, Mirror, NotificationService, NotificationSettings, ServiceError,
+    Answer, Change, ImageCache, Mirror, NotificationService, NotificationSettings, ServiceError,
 };
 use link2linux_core::outbox::{MemoryOutboxStore, Outbox};
 use link2linux_core::session::SessionEvent;
@@ -36,12 +36,11 @@ impl ServiceFactory {
     }
 }
 
-impl DriverFactory for ServiceFactory {
-    fn create(&self, device: &DeviceInfo) -> Box<dyn NotificationsDriver> {
-        // Device ids come from the phone: keep only what is safe in a
-        // file name.
-        let name: String = device
-            .id
+impl ServiceFactory {
+    /// Where the pictures of phone `device_id` are kept. Device ids come
+    /// from the phone, so only what is safe in a file name is kept.
+    fn dir_of(&self, device_id: &str) -> PathBuf {
+        let name: String = device_id
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -51,13 +50,25 @@ impl DriverFactory for ServiceFactory {
                 }
             })
             .collect();
-        let dir = self.images_dir.join(name);
+        self.images_dir.join(name)
+    }
+}
+
+impl DriverFactory for ServiceFactory {
+    fn create(&self, device: &DeviceInfo) -> Box<dyn NotificationsDriver> {
+        let dir = self.dir_of(&device.id);
         let images = ImageCache::new(&dir, IMAGE_CACHE_BYTES).unwrap_or_else(|error| {
             tracing::warn!(%error, dir = %dir.display(), "no image cache on disk; using a temporary one");
             ImageCache::new(std::env::temp_dir().join("link2linux-images"), IMAGE_CACHE_BYTES)
                 .expect("the temporary directory is writable")
         });
         Box::new(ServiceDriver::new(self.presenter.clone(), images))
+    }
+
+    fn image_path(&self, device_id: &str, sha256: &[u8]) -> Option<PathBuf> {
+        ImageCache::new(self.dir_of(device_id), IMAGE_CACHE_BYTES)
+            .ok()?
+            .get(sha256)
     }
 }
 
@@ -129,5 +140,32 @@ impl NotificationsDriver for ServiceDriver {
 
     fn session_ended(&mut self) {
         self.service.session_ended();
+    }
+
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Change> {
+        self.service.subscribe()
+    }
+
+    fn dismiss<'a>(
+        &'a mut self,
+        session: Option<&'a mut PhoneSession>,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<(), DriverError>> {
+        Box::pin(async move { self.service.dismiss(session, key).await.map_err(failed) })
+    }
+
+    fn run_action<'a>(
+        &'a mut self,
+        session: Option<&'a mut PhoneSession>,
+        key: &'a str,
+        action_id: &'a str,
+        reply: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), DriverError>> {
+        Box::pin(async move {
+            self.service
+                .run_action(session, key, action_id, reply)
+                .await
+                .map_err(failed)
+        })
     }
 }

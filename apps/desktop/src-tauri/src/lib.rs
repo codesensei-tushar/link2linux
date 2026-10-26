@@ -31,10 +31,15 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::pairing::pair_with,
             commands::pairing::answer_code,
             commands::pairing::cancel_pairing,
+            commands::notifications::list_notifications,
+            commands::notifications::dismiss_notification,
+            commands::notifications::run_notification_action,
+            commands::notifications::notification_image,
         ])
         .events(collect_events![
             events::PairingChanged,
             events::DevicesChanged,
+            events::NotificationChanged,
         ])
         // IPC types only travel from Rust to the UI for now, so one TypeScript
         // type per Rust type is enough (no separate input/output variants).

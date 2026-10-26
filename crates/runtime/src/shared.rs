@@ -1,7 +1,7 @@
 //! What every part of the runtime shares: the identity, the paired phones,
 //! the per-phone slots and the way changes reach the shell.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::candidates::Evidence;
 use crate::device::{self, Established, Inbox};
 use crate::link::{Command, lock};
+use crate::notify::dto::{self, MirroredNotification, NotificationEvent};
 use crate::notify::{DriverFactory, Presenter};
 use crate::pairing::PairingCtl;
 use crate::paths::{DataDir, desktop_name};
@@ -89,6 +90,8 @@ pub enum RuntimeError {
 
 /// One paired phone's connection state and the way to reach its task.
 pub(crate) struct Slot {
+    /// The phone's notifications as the page shows them, by key.
+    pub board: Arc<Mutex<BTreeMap<String, MirroredNotification>>>,
     pub status: DeviceStatus,
     pub last_connected_unix_ms: Option<i64>,
     pub commands: UnboundedSender<Command>,
@@ -206,6 +209,7 @@ impl Core {
         let wake = Arc::new(Notify::new());
         let cancel = self.cancel.child_token();
         let connected = initial.is_some();
+        let board = Arc::new(Mutex::new(BTreeMap::new()));
         {
             let mut slots = lock(&self.slots);
             if let Some(old) = slots.remove(&record.id) {
@@ -214,6 +218,7 @@ impl Core {
             slots.insert(
                 record.id.clone(),
                 Slot {
+                    board: board.clone(),
                     status: if connected {
                         DeviceStatus::Connected
                     } else {
@@ -233,6 +238,12 @@ impl Core {
             [Feature::Notifications],
         );
         let driver = self.drivers.create(&info);
+        self.handle.spawn(forward_changes(
+            self.clone(),
+            record.id.clone(),
+            board,
+            driver.subscribe(),
+        ));
         let inbox = Inbox {
             commands: receiver,
             wake,
@@ -327,6 +338,39 @@ impl Core {
     /// Whether the window has focus.
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
+    }
+}
+
+/// Keeps a phone's board in step with its notifications service and tells
+/// the shell about each change. Ends when the service is dropped.
+async fn forward_changes(
+    core: Arc<Core>,
+    device_id: String,
+    board: Arc<Mutex<BTreeMap<String, MirroredNotification>>>,
+    mut changes: tokio::sync::broadcast::Receiver<link2linux_core::notifications::Change>,
+) {
+    loop {
+        match changes.recv().await {
+            Ok(change) => {
+                let event = dto::event(&change);
+                {
+                    let mut board = lock(&board);
+                    match &event {
+                        NotificationEvent::Posted { notification, .. } => {
+                            board.insert(notification.key.clone(), notification.clone());
+                        }
+                        NotificationEvent::Removed { key } => {
+                            board.remove(key);
+                        }
+                    }
+                }
+                core.events.notification_changed(&device_id, &event);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(missed, "the notifications page missed some changes");
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
     }
 }
 

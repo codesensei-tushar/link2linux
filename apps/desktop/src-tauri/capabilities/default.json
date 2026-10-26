@@ -13,6 +13,10 @@
     "allow-pair-with",
     "allow-answer-code",
     "allow-cancel-pairing",
+    "allow-list-notifications",
+    "allow-dismiss-notification",
+    "allow-run-notification-action",
+    "allow-notification-image",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

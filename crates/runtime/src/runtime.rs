@@ -10,7 +10,9 @@ use crate::discovery::{pump_responses, run_discovery, watch_network};
 use crate::link::{Command, lock};
 use crate::pairing;
 use crate::shared::{Core, RuntimeConfig, RuntimeError, Shell};
-use crate::view::{BackendError, Device, PairingMethod, PairingState, PhoneTarget};
+use crate::view::{
+    BackendError, Device, MirroredNotification, PairingMethod, PairingState, PhoneTarget,
+};
 
 /// Discovery, pairing and a session with each paired phone.
 ///
@@ -125,6 +127,76 @@ impl Runtime {
         }
     }
 
+    /// The notifications mirrored from a phone, in no particular order.
+    ///
+    /// # Errors
+    ///
+    /// Refused for a phone that is not paired.
+    pub fn notifications(
+        &self,
+        device_id: &str,
+    ) -> Result<Vec<MirroredNotification>, BackendError> {
+        let slots = lock(&self.core.slots);
+        let slot = slots.get(device_id).ok_or(BackendError::NotFound)?;
+        let board = lock(&slot.board);
+        Ok(board.values().cloned().collect())
+    }
+
+    /// Dismisses a notification on the phone. It is queued, and sent when
+    /// the phone is connected.
+    ///
+    /// # Errors
+    ///
+    /// Refused for a phone that is not paired.
+    pub fn dismiss_notification(&self, device_id: &str, key: &str) -> Result<(), BackendError> {
+        self.send(
+            device_id,
+            Command::Dismiss {
+                key: key.to_owned(),
+            },
+        )
+    }
+
+    /// Runs a notification's action on the phone, with the text of a reply
+    /// for actions that take one. It is queued, and sent when the phone is
+    /// connected.
+    ///
+    /// # Errors
+    ///
+    /// Refused for a phone that is not paired.
+    pub fn run_notification_action(
+        &self,
+        device_id: &str,
+        key: &str,
+        action_id: &str,
+        reply: Option<&str>,
+    ) -> Result<(), BackendError> {
+        self.send(
+            device_id,
+            Command::Action {
+                key: key.to_owned(),
+                action_id: action_id.to_owned(),
+                reply: reply.map(str::to_owned),
+            },
+        )
+    }
+
+    /// The file of a picture a phone shared with a notification, named by
+    /// the SHA-256 of its bytes in hexadecimal, if it has arrived.
+    #[must_use]
+    pub fn notification_image(&self, device_id: &str, sha256: &str) -> Option<std::path::PathBuf> {
+        let bytes = decode_hex(sha256)?;
+        self.core.drivers.image_path(device_id, &bytes)
+    }
+
+    fn send(&self, device_id: &str, command: Command) -> Result<(), BackendError> {
+        let slots = lock(&self.core.slots);
+        let slot = slots.get(device_id).ok_or(BackendError::NotFound)?;
+        slot.commands
+            .send(command)
+            .map_err(|_| BackendError::NotFound)
+    }
+
     /// Tells the sessions whether the user can see the window, which sets
     /// how often they ping.
     pub fn set_active(&self, active: bool) {
@@ -155,5 +227,30 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+/// Reads lowercase or uppercase hexadecimal; `None` for anything else.
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_hex;
+
+    #[test]
+    fn hex_is_read_strictly() {
+        assert_eq!(decode_hex("00ffAb"), Some(vec![0, 255, 171]));
+        assert_eq!(decode_hex(""), Some(vec![]));
+        for bad in ["0", "zz", "0g", "+1", "\u{e9}\u{e9}"] {
+            assert_eq!(decode_hex(bad), None, "{bad}");
+        }
     }
 }

@@ -12,6 +12,7 @@
 
 pub mod app;
 pub mod devices;
+pub mod notifications;
 pub mod pairing;
 
 use serde::{Deserialize, Serialize};

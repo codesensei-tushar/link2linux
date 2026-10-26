@@ -2153,6 +2153,7 @@ dependencies = [
 name = "link2linux-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "link2linux-platform",
  "link2linux-runtime",
  "serde",

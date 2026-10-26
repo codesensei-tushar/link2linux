@@ -28,7 +28,7 @@ use link2linux_protocol::v1::{
 use link2linux_runtime::notify::ServiceFactory;
 use link2linux_runtime::paths::DataDir;
 use link2linux_runtime::view::{
-    Device, DeviceStatus, EventSink, PairingMethod, PairingState, PhoneTarget,
+    Device, DeviceStatus, EventSink, NotificationEvent, PairingMethod, PairingState, PhoneTarget,
 };
 use link2linux_runtime::{Runtime, RuntimeConfig, Shell};
 use support::{PhoneTls, TestPhone};
@@ -111,6 +111,7 @@ impl NotificationSink for FakeSink {
 struct Events {
     pairing: Mutex<Vec<PairingState>>,
     devices: Mutex<Vec<Vec<Device>>>,
+    notifications: Mutex<Vec<(String, NotificationEvent)>>,
     changed: Notify,
 }
 
@@ -122,6 +123,14 @@ impl EventSink for Events {
 
     fn devices_changed(&self, devices: &[Device]) {
         self.devices.lock().unwrap().push(devices.to_vec());
+        self.changed.notify_waiters();
+    }
+
+    fn notification_changed(&self, device_id: &str, event: &NotificationEvent) {
+        self.notifications
+            .lock()
+            .unwrap()
+            .push((device_id.to_owned(), event.clone()));
         self.changed.notify_waiters();
     }
 }
@@ -351,6 +360,29 @@ async fn a_phone_pairs_reconnects_and_mirrors_a_notification() {
     assert_eq!(banner.body, "Lunch?");
     assert_eq!(banner.app_name, "Chat");
 
+    // The notifications page is told, and can list it.
+    let key =
+        wait(&rig.events.changed, || {
+            rig.events.notifications.lock().unwrap().iter().find_map(
+                |(device, event)| match event {
+                    NotificationEvent::Posted {
+                        notification,
+                        alert,
+                    } => {
+                        assert_eq!((device.as_str(), *alert), ("phone-1", true));
+                        Some(notification.key.clone())
+                    }
+                    NotificationEvent::Removed { .. } => None,
+                },
+            )
+        })
+        .await;
+    assert_eq!(key, "k1");
+    let listed = rig.runtime.notifications("phone-1").unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].title, "Ana");
+    assert!(rig.runtime.notifications("nobody").is_err());
+
     // The device shows as connected.
     let connected = rig
         .events
@@ -376,6 +408,29 @@ async fn a_phone_pairs_reconnects_and_mirrors_a_notification() {
     };
     assert_eq!(dismissed.key, "k1");
     assert_eq!(dismissed.idempotency_key.len(), 16);
+    session.ack(seq).await.unwrap();
+
+    // The page can run an action, and it reaches the phone.
+    rig.runtime
+        .run_notification_action("phone-1", "k1", "mark", Some("on my way"))
+        .unwrap();
+    let (seq, action) = loop {
+        if let SessionEvent::Request {
+            seq,
+            payload: Payload::NotificationActionRequest(request),
+        } = next_event(&mut session).await
+        {
+            break (seq, request);
+        }
+    };
+    assert_eq!(
+        (
+            action.key.as_str(),
+            action.action_id.as_str(),
+            action.reply_text.as_str()
+        ),
+        ("k1", "mark", "on my way")
+    );
     session.ack(seq).await.unwrap();
 
     // Unpairing says goodbye and forgets the phone.

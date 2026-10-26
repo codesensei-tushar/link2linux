@@ -198,6 +198,20 @@ impl Supervisor {
                 }
                 Some(Command::NetworkChanged) => self.reconnector.network_changed(Instant::now()),
                 Some(Command::SetActive(_)) => {}
+                Some(Command::Dismiss { key }) => {
+                    if let Err(error) = self.driver.dismiss(None, &key).await {
+                        tracing::warn!(%error, "could not queue a dismissal");
+                    }
+                }
+                Some(Command::Action { key, action_id, reply }) => {
+                    let queued = self
+                        .driver
+                        .run_action(None, &key, &action_id, reply.as_deref())
+                        .await;
+                    if let Err(error) = queued {
+                        tracing::warn!(%error, "could not queue a notification action");
+                    }
+                }
                 Some(Command::Response(response)) => {
                     if let Err(error) = self.driver.handle_response(None, response).await {
                         tracing::warn!(%error, "notification response failed");

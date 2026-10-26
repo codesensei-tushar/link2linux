@@ -77,25 +77,40 @@ async function expectOk(result: Promise<Outcome>): Promise<void> {
   if (outcome.status === "error") throw new Error(outcome.error.message);
 }
 
-/** Stands in for the unsubscribe function when there is nothing to follow. */
-function noopUnsubscribe(): void {
-  // Nothing was subscribed.
+type DataOutcome<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
+
+async function expectData<T>(result: Promise<DataOutcome<T>>): Promise<T> {
+  const outcome = await result;
+  if (outcome.status === "error") throw new Error(outcome.error.message);
+  return outcome.data;
 }
 
 /** The real backend: typed IPC calls into src-tauri. */
 export const tauriApi: DesktopApi = {
   appInfo: () => commands.appInfo(),
   listDevices: () => commands.listDevices(),
-  // TODO(core): call the notifications commands once crates/core exposes them.
-  listNotifications: () => Promise.resolve([]),
-  // TODO(core): subscribe to the notification events once crates/core emits them.
-  subscribeNotifications: () => noopUnsubscribe,
-  // TODO(core): send the dismissal through the notifications service.
-  dismissNotification: () => Promise.resolve(),
-  // TODO(core): send the action through the notifications service.
-  runNotificationAction: () => Promise.resolve(),
-  // TODO(core): serve the images the phone shared.
-  notificationImage: () => Promise.resolve(null),
+  listNotifications: (deviceId) => expectData(commands.listNotifications(deviceId)),
+  subscribeNotifications: (deviceId, onEvent) => {
+    // `listen` is asynchronous, but the unsubscribe function is needed at once.
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void events.notificationChanged
+      .listen((event) => {
+        if (active && event.payload.deviceId === deviceId) onEvent(event.payload.event);
+      })
+      .then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  },
+  dismissNotification: (deviceId, key) => expectOk(commands.dismissNotification(deviceId, key)),
+  runNotificationAction: (deviceId, key, actionId, replyText) =>
+    expectOk(commands.runNotificationAction(deviceId, key, actionId, replyText ?? null)),
+  notificationImage: (deviceId, sha256) => expectData(commands.notificationImage(deviceId, sha256)),
   unpairDevice: (deviceId) => expectOk(commands.unpairDevice(deviceId)),
   getPairingState: () => commands.getPairingState(),
   startPairing: (method) => expectOk(commands.startPairing(method)),
