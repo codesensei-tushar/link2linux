@@ -11,17 +11,17 @@ import { TransferCard } from "./TransferCard";
 import { useTransfers } from "./use-transfers";
 import "./files.css";
 
-/** Re-renders every minute so relative times stay current. */
-function useNow(): number {
+/** Re-renders every `interval` milliseconds, so times and speeds stay current. */
+function useNow(interval: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => {
       setNow(Date.now());
-    }, 60_000);
+    }, interval);
     return () => {
       clearInterval(timer);
     };
-  }, []);
+  }, [interval]);
   return now;
 }
 
@@ -40,7 +40,10 @@ function TransferList({ phone }: { phone: Device }) {
     open,
     show,
   } = useTransfers(phone.id);
-  const now = useNow();
+  const running =
+    state.status === "ready" && state.transfers.some((t) => t.status.kind === "running");
+  // Every second while bytes move, so a speed goes when they stop.
+  const now = useNow(running ? 1_000 : 60_000);
 
   let body;
   if (state.status === "loading") {

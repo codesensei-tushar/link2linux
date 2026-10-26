@@ -7,6 +7,7 @@ import {
   formatBytes,
   nextRate,
   percentDone,
+  shownRate,
   statusText,
   transferTitle,
 } from "./list";
@@ -83,5 +84,15 @@ describe("nextRate", () => {
     expect(second.perSecond).toBe(1_000_000);
     expect(nextRate(second, 1_500_000, 3_000).perSecond).toBe(750_000);
     expect(nextRate(second, 10, 3_000).perSecond).toBeNull();
+  });
+});
+
+describe("shownRate", () => {
+  it("shows a measured rate until bytes stop coming for a few seconds", () => {
+    expect(shownRate(undefined, 0)).toBeNull();
+    expect(shownRate({ at: 1_000, done: 5, perSecond: null }, 1_000)).toBeNull();
+    const rate = { at: 1_000, done: 5, perSecond: 2_000 };
+    expect(shownRate(rate, 3_000)).toBe(2_000);
+    expect(shownRate(rate, 4_001)).toBeNull();
   });
 });

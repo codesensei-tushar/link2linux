@@ -5,7 +5,7 @@ import { relativeTime } from "@/features/notifications/relative-time";
 import type { FileTransfer } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-import { formatBytes, isFinished, statusText, transferTitle, type Rate } from "./list";
+import { formatBytes, isFinished, shownRate, statusText, transferTitle, type Rate } from "./list";
 
 export interface TransferCardProps {
   transfer: FileTransfer;
@@ -40,10 +40,8 @@ export function TransferCard({
     kind === "completed"
       ? formatBytes(transfer.size)
       : `${formatBytes(transfer.done)} of ${formatBytes(transfer.size)}`;
-  const speed =
-    kind === "running" && rate?.perSecond != null
-      ? `${formatBytes(Math.round(rate.perSecond))}/s`
-      : null;
+  const perSecond = kind === "running" ? shownRate(rate, now) : null;
+  const speed = perSecond === null ? null : `${formatBytes(Math.round(perSecond))}/s`;
   const details = [statusText(transfer, phoneName), amount, speed].filter(Boolean).join(" · ");
   const saved = transfer.files.flatMap((file, index) => (file.saved ? [{ file, index }] : []));
   const [firstSaved] = saved;

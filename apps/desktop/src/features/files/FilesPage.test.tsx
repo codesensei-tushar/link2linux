@@ -97,6 +97,71 @@ describe("FilesPage", () => {
     expect(screen.getByRole("article")).not.toHaveTextContent("MB/s");
   });
 
+  it("drops the speed when bytes stop, and measures afresh after a pause", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(10_000);
+    const running = testTransfer({ id: "t", size: 8_000_000, done: 0, files: [photo] });
+    const api = renderPage([running]);
+    const card = await screen.findByRole("article", { name: "From Pixel: photo.jpg" });
+
+    api.emitTransfer({ type: "progress", id: "t", done: 1_000_000 });
+    vi.setSystemTime(11_000);
+    api.emitTransfer({ type: "progress", id: "t", done: 2_000_000 });
+    expect(card).toHaveTextContent("1.0 MB/s");
+
+    // Nothing comes for a while: the page ticks and the speed goes.
+    vi.setSystemTime(20_000);
+    await waitFor(
+      () => {
+        expect(card).not.toHaveTextContent("MB/s");
+      },
+      { timeout: 3_000 },
+    );
+
+    // After a pause, the speed is measured from the new bytes only.
+    const paused = { ...running, done: 2_000_000 };
+    api.emitTransfer({ type: "changed", transfer: { ...paused, status: { kind: "interrupted" } } });
+    vi.setSystemTime(100_000);
+    api.emitTransfer({ type: "changed", transfer: paused });
+    expect(card).not.toHaveTextContent("B/s");
+    vi.setSystemTime(101_000);
+    api.emitTransfer({ type: "progress", id: "t", done: 3_000_000 });
+    expect(card).toHaveTextContent("Receiving… 37% · 3.0 MB of 8.0 MB · 1.0 MB/s");
+  });
+
+  it("announces every ending, also with the same words", async () => {
+    const api = renderPage([]);
+    await screen.findByText("No transfers yet");
+    const status = screen.getByRole("status");
+    const arrived = (id: string) => {
+      api.emitTransfer({
+        type: "changed",
+        transfer: testTransfer({ id, status: { kind: "completed" }, files: [photo] }),
+      });
+    };
+    arrived("one");
+    const first = status.textContent;
+    arrived("two");
+    expect(status).toHaveTextContent("Received photo.jpg");
+    expect(status.textContent).not.toBe(first);
+  });
+
+  it("keeps a removed transfer out of the list, unless it starts again", async () => {
+    const done = testTransfer({ id: "t", status: { kind: "completed" }, files: [photo] });
+    const api = renderPage([done]);
+    await screen.findByRole("article", { name: "From Pixel: photo.jpg" });
+    api.emitTransfer({ type: "removed", id: "t" });
+    api.emitTransfer({
+      type: "changed",
+      transfer: { ...done, status: { kind: "cancelled", byPhone: false } },
+    });
+    api.emitTransfer({ type: "progress", id: "t", done: 1 });
+    expect(screen.queryByRole("article")).toBeNull();
+
+    api.emitTransfer({ type: "changed", transfer: { ...done, status: { kind: "running" } } });
+    expect(screen.getByRole("article", { name: "From Pixel: photo.jpg" })).toBeInTheDocument();
+  });
+
   it("opens, shows, cancels and removes transfers", async () => {
     const api = renderPage([
       testTransfer({ id: "running", files: [{ ...photo, name: "big.iso", saved: false }] }),
