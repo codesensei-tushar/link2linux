@@ -32,6 +32,8 @@
     <string name="feature_pairing_camera_denied_title">The camera is off for link2linux</string>
     <string name="feature_pairing_camera_denied_body">You can turn it on in the phone\'s settings, or pair without the camera by comparing a short code.</string>
     <string name="feature_pairing_camera_settings">Open settings</string>
+    <string name="feature_pairing_camera_unavailable_title">The camera didn\'t start</string>
+    <string name="feature_pairing_camera_unavailable_body">This phone\'s camera can\'t scan right now. You can pair without it by comparing a short code.</string>
 
     <string name="feature_pairing_waiting_title">Waiting for %1$s</string>
     <string name="feature_pairing_waiting_body">Keep this screen open and stay on the same network as your computer. This ends in %1$d s.</string>

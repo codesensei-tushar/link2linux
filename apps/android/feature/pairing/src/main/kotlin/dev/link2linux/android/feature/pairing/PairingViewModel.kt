@@ -133,9 +133,10 @@ class PairingViewModel internal constructor(
         scanning.value = true
     }
 
-    /** The scanner read [text]. Only a valid, current pairing code starts an attempt. */
+    /** The scanner read [text]. Only a valid, current pairing code starts an attempt, and only while scanning. */
     fun onQrScanned(text: String) {
-        if (controller.state.value != PairingState.Idle) return
+        // The scanner can deliver a frame it read just before the user cancelled.
+        if (!scanning.value || controller.state.value != PairingState.Idle) return
         when (val result = QrOfferParser.parse(text)) {
             is QrParseResult.Parsed -> {
                 scanError.value = null

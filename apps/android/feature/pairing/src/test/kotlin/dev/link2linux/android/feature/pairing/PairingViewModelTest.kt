@@ -107,6 +107,19 @@ class PairingViewModelTest {
     }
 
     @Test
+    fun aCodeReadAfterCancelStartsNothing() = runTest {
+        val vm = viewModel()
+        vm.startScan()
+        vm.cancel()
+        // A frame the scanner read just before it closed.
+        vm.onQrScanned(validCode)
+        assertEquals(0, controller.qrOffers.size)
+        assertEquals(PairingScreenState.Home, vm.uiState.value.screen)
+        vm.onQrScanned("https://example.com")
+        assertNull(vm.uiState.value.scanError)
+    }
+
+    @Test
     fun aCodeScannedWhileAnAttemptRunsIsIgnored() = runTest {
         val vm = viewModel()
         controller.state.value = PairingState.Verifying(PairingMethod.QR_CODE, "Desk")
