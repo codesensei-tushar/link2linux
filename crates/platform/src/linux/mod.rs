@@ -6,11 +6,13 @@
 //! already works.
 
 pub mod ble;
+pub mod clipboard;
 pub mod notifications;
 pub mod process;
 pub mod secrets;
 pub mod session_lock;
 
+pub use clipboard::LinuxClipboard;
 pub use notifications::DbusNotifications;
 pub use process::deny_memory_access;
 pub use secrets::SecretServiceStore;
@@ -20,40 +22,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{CallAudio, Clipboard, ClipboardAccess, ClipboardText, FileStore, PlatformError};
-
-/// The desktop clipboard: Wayland data-control where the compositor offers
-/// it, X11 selections otherwise.
-#[derive(Debug, Default)]
-pub struct LinuxClipboard;
-
-impl LinuxClipboard {
-    /// The clipboard of the desktop session the app runs in. Never fails
-    /// and never blocks: without a way to reach the clipboard in the
-    /// background, its access is [`ClipboardAccess::FocusOnly`].
-    #[must_use]
-    pub fn open() -> Self {
-        Self
-    }
-}
-
-impl Clipboard for LinuxClipboard {
-    fn access(&self) -> ClipboardAccess {
-        ClipboardAccess::FocusOnly
-    }
-
-    async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
-        Err(PlatformError::Unsupported("clipboard"))
-    }
-
-    async fn write(&self, _text: &ClipboardText) -> Result<(), PlatformError> {
-        Err(PlatformError::Unsupported("clipboard"))
-    }
-
-    async fn changed(&self) -> Result<(), PlatformError> {
-        Err(PlatformError::Unsupported("clipboard"))
-    }
-}
+use crate::{CallAudio, FileStore, PlatformError};
 
 /// Files in the XDG user directories, opened through the desktop's default
 /// applications.
@@ -148,10 +117,6 @@ mod tests {
 
     #[tokio::test]
     async fn stubs_report_unsupported() {
-        assert!(matches!(
-            LinuxClipboard.read().await,
-            Err(PlatformError::Unsupported(_))
-        ));
         assert!(matches!(
             BluezCallAudio.connect("00:11:22:33:44:55").await,
             Err(PlatformError::Unsupported(_))

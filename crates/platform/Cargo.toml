@@ -20,6 +20,8 @@ futures-util.workspace = true
 oo7.workspace = true
 rustix.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
+wl-clipboard-rs.workspace = true
+x11rb.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
