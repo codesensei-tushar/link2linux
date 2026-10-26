@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime};
 
 use link2linux_protocol::Payload;
@@ -30,6 +31,43 @@ use crate::session::{Availability, Session, SessionError, SessionEvent};
 /// chunks are queued: well below the 1 MiB at which the session stops
 /// reading, so it keeps reading the phone's chunks while it sends its own.
 const MAX_QUEUED_BYTES: usize = 512 * 1024;
+
+/// The bytes still to come of the transfers from phones that were accepted
+/// and are not finished, across every [`FileService`] that shares it: they
+/// all save into the same directory, so each one's room-to-spare check must
+/// count what the others will still write.
+#[derive(Debug, Default)]
+pub struct IncomingBytes {
+    services: Mutex<Vec<Weak<AtomicU64>>>,
+}
+
+impl IncomingBytes {
+    /// A new, empty account.
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// A counter for one service, which that service keeps up to date.
+    fn register(&self) -> Arc<AtomicU64> {
+        let counter = Arc::new(AtomicU64::new(0));
+        let mut services = self.services.lock().unwrap_or_else(|e| e.into_inner());
+        services.retain(|service| service.strong_count() > 0);
+        services.push(Arc::downgrade(&counter));
+        counter
+    }
+
+    /// What every service other than the one owning `mine` still expects.
+    fn others(&self, mine: &Arc<AtomicU64>) -> u64 {
+        let services = self.services.lock().unwrap_or_else(|e| e.into_inner());
+        services
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|service| !Arc::ptr_eq(service, mine))
+            .map(|service| service.load(Ordering::Relaxed))
+            .fold(0, u64::saturating_add)
+    }
+}
 
 /// Room a transfer from the phone leaves free on the disk.
 const SPARE_SPACE: u64 = 64 * 1024 * 1024;
@@ -90,6 +128,10 @@ pub struct FileService {
     /// Where received files go.
     dir: PathBuf,
     free_space: FreeSpace,
+    /// What all phones' services still expect to receive, and this one's
+    /// own share of it.
+    shared: Arc<IncomingBytes>,
+    mine: Arc<AtomicU64>,
     incoming: Vec<Incoming>,
     outgoing: Vec<Outgoing>,
     pending: HashMap<u64, Pending>,
@@ -119,9 +161,12 @@ impl FileService {
     /// A service that saves received files in `dir`, normally the user's
     /// Downloads. The directory is made when the first offer arrives.
     pub fn new(dir: PathBuf) -> Self {
+        let shared = IncomingBytes::new();
         Self {
             dir,
             free_space: Arc::new(disk::free_space),
+            mine: shared.register(),
+            shared,
             incoming: Vec::new(),
             outgoing: Vec::new(),
             pending: HashMap::new(),
@@ -132,6 +177,30 @@ impl FileService {
             completed: HashMap::new(),
             events: broadcast::channel(256).0,
         }
+    }
+
+    /// Counts this service's accepted transfers in `shared`, and those of
+    /// the other services on it, in its room-to-spare check.
+    #[must_use]
+    pub fn with_shared_incoming(mut self, shared: &Arc<IncomingBytes>) -> Self {
+        self.mine = shared.register();
+        self.shared = shared.clone();
+        self
+    }
+
+    /// Publishes this service's bytes still to come, for the other services.
+    fn share_remaining(&self) {
+        self.mine.store(self.remaining_bytes(), Ordering::Relaxed);
+    }
+
+    /// The bytes still to come of the transfers accepted here, also of
+    /// those kept for the phone to resume.
+    fn remaining_bytes(&self) -> u64 {
+        self.incoming
+            .iter()
+            .filter(|t| !t.state.is_finished())
+            .map(Incoming::remaining)
+            .fold(0, u64::saturating_add)
     }
 
     /// Replaces how free space is measured, for tests.
@@ -223,6 +292,7 @@ impl FileService {
         }
         tracing::info!(transfer = %id, "cancelled a transfer");
         self.prune();
+        self.share_remaining();
         true
     }
 
@@ -237,6 +307,7 @@ impl FileService {
                 transfer.live = false;
             }
         }
+        self.share_remaining();
     }
 
     /// Removes a finished transfer from the list. Returns whether there
@@ -392,6 +463,7 @@ impl FileService {
                 self.publish(TransferEvent::Changed(view));
             }
             self.prune();
+            self.share_remaining();
         }
     }
 
@@ -497,6 +569,7 @@ impl FileService {
         if let Err(error) = self.run(session).await {
             tracing::debug!(%error, "files could not go on in this session");
         }
+        self.share_remaining();
         Ok(rest)
     }
 
@@ -577,17 +650,16 @@ impl FileService {
             });
         }
         // The bytes still to come of every transfer accepted before, also of
-        // those kept for the phone to resume, count too.
+        // those kept for the phone to resume and of the other phones'
+        // transfers into the same directory, count too.
         let accepted = self
-            .incoming
-            .iter()
-            .filter(|t| !t.state.is_finished())
-            .map(Incoming::remaining);
+            .remaining_bytes()
+            .saturating_add(self.shared.others(&self.mine));
         let needed = offer
             .files
             .iter()
             .map(|file| file.size)
-            .chain(accepted)
+            .chain([accepted])
             .fold(SPARE_SPACE, u64::saturating_add);
         let (dir, free_space) = (self.dir.clone(), self.free_space.clone());
         let free = blocking(move || {
@@ -613,6 +685,7 @@ impl FileService {
         tracing::info!(transfer = %id, files = offer.files.len(), "receiving files");
         self.publish(TransferEvent::Changed(transfer.view()));
         self.incoming.push(transfer);
+        self.share_remaining();
         Payload::FileAccept(FileAccept {
             file_index: 0,
             offset: 0,

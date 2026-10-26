@@ -15,7 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub use link2linux_core::files::shown_name;
-use link2linux_core::files::{FileService, SendError, Transfer, TransferId, check_sendable};
+use link2linux_core::files::{
+    FileService, IncomingBytes, SendError, Transfer, TransferId, check_sendable,
+};
 use link2linux_core::session::Availability;
 use link2linux_platform::{FileStore, PlatformError};
 
@@ -104,6 +106,8 @@ pub struct FilesFactory {
     downloads: Option<PathBuf>,
     switch: Arc<FilesSwitch>,
     boards: Mutex<HashMap<String, Board>>,
+    /// What every phone's transfers still have to write into Downloads.
+    incoming: Arc<IncomingBytes>,
 }
 
 impl FilesFactory {
@@ -136,6 +140,7 @@ impl FilesFactory {
             downloads,
             switch,
             boards: Mutex::default(),
+            incoming: IncomingBytes::new(),
         }
     }
 
@@ -166,7 +171,7 @@ impl FilesFactory {
         // never written to.
         let dir = self.downloads.clone().unwrap_or_default();
         FilesDriver::new(DriverParts {
-            service: FileService::new(dir),
+            service: FileService::new(dir).with_shared_incoming(&self.incoming),
             device_id: device_id.to_owned(),
             phone_name: phone_name.to_owned(),
             board,

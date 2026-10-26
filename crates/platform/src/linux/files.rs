@@ -163,10 +163,53 @@ fn absolute(path: &Path) -> Result<&Path, PlatformError> {
 /// File name extensions of files that can run code when opened, in lower
 /// case: programs, libraries, scripts, launchers and Windows executables.
 const RUNNABLE_EXTENSIONS: &[&str] = &[
-    "sh", "bash", "zsh", "fish", "csh", "ksh", "py", "pyw", "pl", "pm", "rb", "php", "lua", "tcl",
-    "js", "mjs", "jar", "so", "desktop", "appimage", "run", "bin", "elf", "exe", "dll", "msi",
-    "bat", "cmd", "com", "scr", "ps1", "vbs", "vbe", "wsf", "lnk", "reg", "cpl", "pif", "hta",
-    "jse", "wsh", "msp", "apk", "deb", "rpm", "flatpakref", "flatpakrepo",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "csh",
+    "ksh",
+    "py",
+    "pyw",
+    "pl",
+    "pm",
+    "rb",
+    "php",
+    "lua",
+    "tcl",
+    "js",
+    "mjs",
+    "jar",
+    "so",
+    "desktop",
+    "appimage",
+    "run",
+    "bin",
+    "elf",
+    "exe",
+    "dll",
+    "msi",
+    "bat",
+    "cmd",
+    "com",
+    "scr",
+    "ps1",
+    "vbs",
+    "vbe",
+    "wsf",
+    "lnk",
+    "reg",
+    "cpl",
+    "pif",
+    "hta",
+    "jse",
+    "wsh",
+    "msp",
+    "apk",
+    "deb",
+    "rpm",
+    "flatpakref",
+    "flatpakrepo",
 ];
 
 /// Whether opening the file at `path` could run code: its extension is on
@@ -186,11 +229,7 @@ fn can_run_code(path: &Path) -> bool {
         .any(|part| RUNNABLE_EXTENSIONS.contains(&part))
 }
 
-async fn open_with_portal(
-    bus: &Connection,
-    path: &Path,
-    ask: bool,
-) -> Result<(), PlatformError> {
+async fn open_with_portal(bus: &Connection, path: &Path, ask: bool) -> Result<(), PlatformError> {
     let path = path.to_owned();
     let file = tokio::task::spawn_blocking(move || File::open(path))
         .await

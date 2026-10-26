@@ -7,13 +7,13 @@ mod session_common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use aws_lc_rs::digest;
 use futures_util::{SinkExt, StreamExt};
 use link2linux_core::files::{
-    CHUNK_LEN, Direction, Failure, FileService, KEEP_UNFINISHED, SendError, Transfer,
-    TransferEvent, TransferId, TransferState,
+    CHUNK_LEN, Direction, Failure, FileService, IncomingBytes, KEEP_UNFINISHED, SendError,
+    Transfer, TransferEvent, TransferId, TransferState,
 };
 use link2linux_core::session::{Availability, SessionEvent, SessionStart};
 use link2linux_core::{Feature, Session, SessionConfig};
@@ -760,6 +760,39 @@ async fn kept_transfers_count_against_the_room_and_a_resume_is_never_busy() {
 }
 
 #[tokio::test]
+async fn room_to_spare_counts_what_other_phones_have_yet_to_write() {
+    let downloads = tempfile::tempdir().unwrap();
+    let free = 100 * 1024 * 1024;
+    let shared = IncomingBytes::new();
+    let on = |downloads: &Path| {
+        service(downloads)
+            .with_free_space(move |_| Ok(free))
+            .with_shared_incoming(&shared)
+    };
+    let (_one, mut first) = desktop_with(on(downloads.path())).await;
+    let (_two, mut second) = desktop_with(on(downloads.path())).await;
+    let size = |id: u8, size: u64| {
+        Payload::FileOffer(FileOffer {
+            transfer_id: vec![id; 16],
+            files: vec![FileInfo {
+                name: "big".into(),
+                size,
+                ..FileInfo::default()
+            }],
+            ..FileOffer::default()
+        })
+    };
+    // 30 MiB from the first phone leave 6 MiB over after the 64 MiB, so the
+    // second phone's 10 MiB do not fit, though its own service holds nothing.
+    assert_eq!(first.ask(size(1, 30 << 20)).await, accept(0, 0));
+    assert_eq!(
+        code_of(&second.ask(size(2, 10 << 20)).await),
+        ErrorCode::NoSpace
+    );
+    assert_eq!(second.ask(size(3, 5 << 20)).await, accept(0, 0));
+}
+
+#[tokio::test]
 async fn turning_files_off_ends_what_the_phone_sends() {
     let downloads = tempfile::tempdir().unwrap();
     let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
@@ -857,11 +890,22 @@ async fn unfinished_transfers_from_the_phone_expire_after_an_hour() {
 fn leftovers_of_an_earlier_run_are_removed() {
     let downloads = tempfile::tempdir().unwrap();
     let leftover = format!(".link2linux-{}-0.part", "ab".repeat(16));
-    fs::write(downloads.path().join(&leftover), b"partial").unwrap();
+    let long_ago = SystemTime::now() - Duration::from_secs(3 * 60 * 60);
+    let path = downloads.path().join(&leftover);
+    fs::write(&path, b"partial").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(long_ago)
+        .unwrap();
     fs::write(downloads.path().join("mine.txt"), b"mine").unwrap();
+    // Another instance may be writing this one just now.
+    let busy = format!(".link2linux-{}-0.part", "cd".repeat(16));
+    fs::write(downloads.path().join(&busy), b"partial").unwrap();
     let removed = link2linux_core::files::remove_leftovers(downloads.path()).unwrap();
     assert_eq!(removed, 1);
-    assert_eq!(names_in(downloads.path()), ["mine.txt"]);
+    assert_eq!(names_in(downloads.path()), [busy.as_str(), "mine.txt"]);
 }
 
 /// Reads the desktop's offer and checks it names `id`, when given.

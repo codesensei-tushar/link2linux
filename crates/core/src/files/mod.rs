@@ -50,7 +50,7 @@ pub use outgoing::{SendError, check_sendable};
 pub fn shown_name(name: &str) -> String {
     names::shown(name)
 }
-pub use service::{FileService, ServiceError};
+pub use service::{FileService, IncomingBytes, ServiceError};
 
 /// The most bytes of a file one chunk carries.
 pub const CHUNK_LEN: usize = 256 * 1024;
