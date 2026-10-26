@@ -17,6 +17,8 @@
     "allow-dismiss-notification",
     "allow-run-notification-action",
     "allow-notification-image",
+    "allow-get-settings",
+    "allow-set-settings",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

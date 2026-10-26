@@ -45,6 +45,13 @@ export const commands = {
 	 *  can put in an `<img>`, or nothing while it has not arrived.
 	 */
 	notificationImage: (deviceId: string, sha256: string) => typedError<string | null, CommandError>(__TAURI_INVOKE("notification_image", { deviceId, sha256 })),
+	/**  The desktop app's settings. */
+	getSettings: () => __TAURI_INVOKE<Settings>("get_settings"),
+	/**
+	 *  Changes the settings. They apply at once and are kept for the next
+	 *  start.
+	 */
+	setSettings: (settings: Settings) => typedError<null, CommandError>(__TAURI_INVOKE("set_settings", { settings })),
 };
 
 /** Events */
@@ -76,7 +83,7 @@ export type CommandError = {
 	message: string,
 };
 
-export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound";
+export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved";
 
 export type ConversationMessageInfo = {
 	/**  Empty for messages the phone's user sent. */
@@ -287,6 +294,19 @@ export type PhoneTarget =
  *  `[fd00::2]:27380`. The default port is 27380.
  */
 { kind: "address"; address: string };
+
+/**
+ *  What the user chose for the desktop app. Settings missing from the file
+ *  take their defaults, so older files keep working.
+ */
+export type Settings = {
+	/**
+	 *  Pop-ups show the notification's text, not just the app's name. Off
+	 *  by default, because pop-ups pass through the desktop's notification
+	 *  service, where other programs can read them.
+	 */
+	showNotificationText?: boolean,
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

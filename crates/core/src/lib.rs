@@ -37,7 +37,7 @@ pub mod identity;
 pub mod key_storage;
 pub mod outbox;
 pub mod pairing;
-mod secure_file;
+pub mod secure_file;
 pub mod session;
 pub mod sync;
 pub mod transport;

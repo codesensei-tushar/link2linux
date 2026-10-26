@@ -16,6 +16,7 @@ mod pairing;
 pub mod paths;
 pub mod qr;
 mod runtime;
+pub mod settings;
 mod shared;
 pub mod view;
 

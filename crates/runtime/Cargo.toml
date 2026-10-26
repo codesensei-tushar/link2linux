@@ -16,6 +16,7 @@ link2linux-platform.workspace = true
 link2linux-protocol.workspace = true
 qrcode = { version = "0.14.1", default-features = false }
 serde.workspace = true
+serde_json.workspace = true
 specta = { version = "=2.0.0-rc.26", features = ["derive"] }
 specta-typescript = "0.0.13"
 thiserror.workspace = true

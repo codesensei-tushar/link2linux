@@ -1,5 +1,5 @@
 //! Files only the user may read: the desktop's private key, when no keyring
-//! holds it, and its pairing records.
+//! holds it, its pairing records and its settings.
 //!
 //! Writes are atomic: the content goes to a new file in the same directory,
 //! created with mode 0600, is flushed to disk, and then renamed over the
@@ -19,7 +19,11 @@ const DIR_MODE: u32 = 0o700;
 
 /// Replaces the file at `path` with `contents`, atomically and with mode
 /// 0600. Missing parent directories are created with mode 0700.
-pub(crate) fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
+///
+/// # Errors
+///
+/// Fails when the directory or the file cannot be written.
+pub fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -61,7 +65,11 @@ pub(crate) fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
 ///
 /// A file that others may read or write is tightened to mode 0600 first,
 /// with a warning, since it holds secrets.
-pub(crate) fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
+///
+/// # Errors
+///
+/// Fails when the file exists but cannot be read.
+pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -79,7 +87,11 @@ pub(crate) fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
 ///
 /// This is best effort: a copy-on-write file system, a journal or an SSD
 /// may still keep the old content somewhere on the disk.
-pub(crate) fn erase(path: &Path) -> io::Result<()> {
+///
+/// # Errors
+///
+/// Fails when the file cannot be overwritten or removed.
+pub fn erase(path: &Path) -> io::Result<()> {
     let mut file = match OpenOptions::new().write(true).open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),

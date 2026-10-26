@@ -6,7 +6,8 @@
 //! notification service, Bluetooth advertising) and forwards the trait's
 //! calls.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use link2linux_platform::PresenceAdvertiser;
 use link2linux_platform::linux::ble::BluezPresence;
@@ -17,7 +18,7 @@ use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
     Backend, BackendError, Device, EventSink, MirroredNotification, PairingMethod, PairingState,
-    PhoneTarget,
+    PhoneTarget, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -26,6 +27,9 @@ const APP_ID: &str = "dev.link2linux.desktop";
 /// [`Backend`] over the real runtime.
 pub struct LiveBackend {
     runtime: Arc<Runtime>,
+    popups: Arc<PrivatePopups>,
+    settings: Mutex<Settings>,
+    settings_path: PathBuf,
 }
 
 impl LiveBackend {
@@ -47,13 +51,15 @@ impl LiveBackend {
         let identity = tauri::async_runtime::block_on(
             data_dir.load_identity(&SecretServiceStore::new(APP_ID)),
         )?;
+        let settings_path = data_dir.settings();
+        let settings = Settings::load(&settings_path);
         let popups = Arc::new(PrivatePopups::new(
             Arc::new(DbusNotifications::new()),
-            false,
+            settings.show_notification_text,
             open_window,
         ));
         follow_lock(popups.clone());
-        let presenter: Arc<dyn Presenter> = popups;
+        let presenter: Arc<dyn Presenter> = popups.clone();
         let shell = Shell {
             identity,
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), data_dir.images())),
@@ -64,7 +70,12 @@ impl LiveBackend {
         let handle = tauri::async_runtime::handle().inner().clone();
         let runtime = Arc::new(Runtime::start(handle, &config, shell)?);
         advertise(runtime.clone());
-        Ok(Self { runtime })
+        Ok(Self {
+            runtime,
+            popups,
+            settings: Mutex::new(settings),
+            settings_path,
+        })
     }
 }
 
@@ -159,5 +170,18 @@ impl Backend for LiveBackend {
 
     fn notification_image(&self, device_id: &str, sha256: &str) -> Option<std::path::PathBuf> {
         self.runtime.notification_image(device_id, sha256)
+    }
+
+    fn settings(&self) -> Settings {
+        *self.settings.lock().expect("not poisoned")
+    }
+
+    fn set_settings(&self, settings: Settings) -> Result<(), BackendError> {
+        *self.settings.lock().expect("not poisoned") = settings;
+        self.popups.set_show_text(settings.show_notification_text);
+        settings.save(&self.settings_path).map_err(|error| {
+            tracing::warn!(%error, "could not save the settings");
+            BackendError::NotSaved
+        })
     }
 }

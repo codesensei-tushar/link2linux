@@ -1177,7 +1177,7 @@ place.
   programs of the same user can read it, and stays in the desktop's
   notification history. So by default the desktop's banners name only the
   app, and the content shows in the desktop app's own window, which a click
-  on the banner opens.
+  on the banner opens. The user can let banners show the text.
 - `visibility` is a hint for the desktop's own privacy settings. While the
   desktop's screen is locked, its banners never show content, and
   `SECRET` notifications get no banner at all.

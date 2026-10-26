@@ -35,6 +35,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::notifications::dismiss_notification,
             commands::notifications::run_notification_action,
             commands::notifications::notification_image,
+            commands::settings::get_settings,
+            commands::settings::set_settings,
         ])
         .events(collect_events![
             events::PairingChanged,

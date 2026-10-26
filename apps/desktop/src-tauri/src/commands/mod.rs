@@ -14,6 +14,7 @@ pub mod app;
 pub mod devices;
 pub mod notifications;
 pub mod pairing;
+pub mod settings;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -35,6 +36,7 @@ pub enum CommandErrorCode {
     WrongState,
     InvalidAddress,
     NotFound,
+    NotSaved,
 }
 
 impl From<BackendError> for CommandError {
@@ -43,6 +45,7 @@ impl From<BackendError> for CommandError {
             BackendError::WrongState => CommandErrorCode::WrongState,
             BackendError::InvalidAddress => CommandErrorCode::InvalidAddress,
             BackendError::NotFound => CommandErrorCode::NotFound,
+            BackendError::NotSaved => CommandErrorCode::NotSaved,
         };
         Self {
             code,
