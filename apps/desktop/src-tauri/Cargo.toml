@@ -22,6 +22,9 @@ base64.workspace = true
 # The same version Tauri builds on.
 gtk = "=0.18.2"
 tauri = { version = "2.12.5", features = [] }
+# The native file chooser for "Send files", used from Rust only, so the
+# webview never names the files to send.
+tauri-plugin-dialog = "=2.8.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 link2linux-platform.workspace = true
