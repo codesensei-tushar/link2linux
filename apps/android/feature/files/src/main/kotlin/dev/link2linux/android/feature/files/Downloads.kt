@@ -1,5 +1,6 @@
 package dev.link2linux.android.feature.files
 
+import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
@@ -46,11 +47,17 @@ internal object Downloads {
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: OCTET_STREAM
     }
 
-    /** Bytes that may be written to shared storage, leaving the system's own reserve. */
+    /**
+     * Bytes that may be written to shared storage now. Android's allocatable
+     * bytes leave the system's reserve but also count other apps' caches,
+     * which only an app that asks for them to be cleared gets back, so the
+     * space free right now caps them: the receiver's spare must stay free.
+     */
+    @SuppressLint("UsableSpace")
     fun freeBytes(context: Context): Long {
         val directory = context.getExternalFilesDir(null) ?: throw IOException("Shared storage is not mounted")
         val storage = context.getSystemService(StorageManager::class.java)
-        return storage.getAllocatableBytes(storage.getUuidForPath(directory))
+        return minOf(storage.getAllocatableBytes(storage.getUuidForPath(directory)), directory.usableSpace)
     }
 
     /** Runs [block], turning what storage throws into the engine's exceptions. */
