@@ -11,12 +11,12 @@ use std::path::PathBuf;
 
 use link2linux_platform::{
     CloseReason, DesktopAction, DesktopNotification, InlineReply, NotificationCapabilities,
-    NotificationResponse, Urgency,
+    NotificationResponse, Urgency, Visibility,
 };
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
     NotificationActionRequest, NotificationCategory, NotificationContent,
-    NotificationDismissRequest, NotificationImportance, PhoneNotification,
+    NotificationDismissRequest, NotificationImportance, NotificationVisibility, PhoneNotification,
 };
 
 /// Shown instead of content the phone's OS withheld, such as a one-time code.
@@ -164,6 +164,7 @@ pub fn to_desktop(
         image_path: image.filter(|_| !app_only),
         inline_reply,
         quiet,
+        visibility: visibility(notification.visibility()),
     }
 }
 
@@ -265,6 +266,18 @@ fn truncate(text: &str, max: usize) -> String {
     text[..end].to_owned()
 }
 
+/// The desktop's form of the visibility the app gave, which counts as
+/// private when it gave none.
+fn visibility(value: NotificationVisibility) -> Visibility {
+    match value {
+        NotificationVisibility::Public => Visibility::Public,
+        NotificationVisibility::Secret => Visibility::Secret,
+        NotificationVisibility::Private | NotificationVisibility::Unspecified => {
+            Visibility::Private
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +365,7 @@ mod tests {
         assert_eq!(banner.urgency, Urgency::Normal);
         assert_eq!(banner.image_path, Some("/c/ana.png".into()));
         assert!(!banner.quiet);
+        assert_eq!(banner.visibility, Visibility::Private);
     }
 
     #[test]

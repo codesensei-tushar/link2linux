@@ -8,9 +8,11 @@
 pub mod ble;
 pub mod notifications;
 pub mod secrets;
+pub mod session_lock;
 
 pub use notifications::DbusNotifications;
 pub use secrets::SecretServiceStore;
+pub use session_lock::SessionLock;
 
 use std::env;
 use std::fs;

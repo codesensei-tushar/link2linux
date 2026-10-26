@@ -76,6 +76,22 @@ pub struct DesktopNotification {
     /// Update the notification without a sound, for quiet changes such as
     /// progress.
     pub quiet: bool,
+    /// How private the phone's app marked it.
+    pub visibility: Visibility,
+}
+
+/// How private the app that posted a notification marked it, for the
+/// desktop to honor while its screen is locked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visibility {
+    /// It may be shown in full.
+    Public,
+    /// Show that it exists, but not its content, on a locked screen. Also
+    /// what an app that said nothing gets.
+    #[default]
+    Private,
+    /// Do not show it at all on a locked screen.
+    Secret,
 }
 
 /// How urgent a [`DesktopNotification`] is.
