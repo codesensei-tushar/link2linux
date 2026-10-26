@@ -31,14 +31,21 @@ export function PhoneChoiceDialog({ names, phones, onChoose, onCancel }: PhoneCh
   const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
     const dialog = dialogRef.current;
     if (event.key === "Escape") {
+      // Closes the dialog and nothing else that listens for Escape.
       event.preventDefault();
+      event.stopPropagation();
       onCancel();
     } else if (event.key === "Tab" && dialog) {
-      // Keep focus inside the dialog.
-      const buttons = [...dialog.querySelectorAll("button")];
+      // Keep focus inside the dialog, and the error toast that may show
+      // over it, so its Close button stays reachable.
+      const toast = document.querySelector(".file-drop__toast");
+      const buttons = [
+        ...dialog.querySelectorAll("button"),
+        ...(toast?.querySelectorAll("button") ?? []),
+      ];
       const first = buttons[0];
       const last = buttons.at(-1);
-      const inside = dialog.contains(document.activeElement);
+      const inside = buttons.some((button) => button === document.activeElement);
       if (!inside || (event.shiftKey && document.activeElement === first)) {
         event.preventDefault();
         (event.shiftKey ? last : first)?.focus();
@@ -53,9 +60,9 @@ export function PhoneChoiceDialog({ names, phones, onChoose, onCancel }: PhoneCh
     const listener = (event: KeyboardEvent) => {
       onKeyDown(event);
     };
-    document.addEventListener("keydown", listener);
+    document.addEventListener("keydown", listener, true);
     return () => {
-      document.removeEventListener("keydown", listener);
+      document.removeEventListener("keydown", listener, true);
     };
   }, []);
 

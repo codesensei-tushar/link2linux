@@ -1,10 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DevicesProvider } from "@/features/pairing/DevicesProvider";
+import { DevicesContext } from "@/features/pairing/devices-context";
 import { DesktopApiContext, type Device } from "@/lib/api";
+import type { AsyncState } from "@/lib/use-async";
 import { createFakeApi, testDevice, type FakeApi } from "@/test/fake-api";
 
 import { FileDropOverlay } from "./FileDropOverlay";
@@ -176,12 +178,91 @@ describe("FileDropOverlay", () => {
   });
 
   it("takes the overlay down when the window hears from the user, and asks to pair first", async () => {
-    const api = await renderOverlay([]);
-    await screen.findByText("Somewhere else");
-    api.emitFileDrag(true);
-    expect(await screen.findByText("Pair a phone to send files")).toBeInTheDocument();
-    // The drag ended without the desktop saying so.
-    fireEvent.pointerMove(window);
-    expect(screen.queryByText("Pair a phone to send files")).toBeNull();
+    let now = 10_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const api = await renderOverlay([]);
+      await screen.findByText("Somewhere else");
+      api.emitFileDrag(true);
+      expect(await screen.findByText("Pair a phone to send files")).toBeInTheDocument();
+      // A stray event right after the drag entered says nothing about it.
+      fireEvent.pointerMove(window);
+      fireEvent.blur(window);
+      expect(screen.getByText("Pair a phone to send files")).toBeInTheDocument();
+      // The drag ended without the desktop saying so.
+      now += 400;
+      fireEvent.pointerMove(window);
+      expect(screen.queryByText("Pair a phone to send files")).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("closes the question, with a message, when the phone list stops being ready", async () => {
+    const api = createFakeApi();
+    const phones = [
+      testDevice({ id: "a", name: "Pixel", status: "connected" }),
+      testDevice({ id: "b", name: "Galaxy", status: "connected" }),
+    ];
+    const tree = (devices: AsyncState<Device[]>) => (
+      <DesktopApiContext value={api}>
+        <DevicesContext value={{ devices, reload: () => undefined }}>
+          <MemoryRouter>
+            <FileDropOverlay />
+          </MemoryRouter>
+        </DevicesContext>
+      </DesktopApiContext>
+    );
+    const { rerender } = render(tree({ status: "ready", data: phones }));
+    await waitFor(() => {
+      expect(api.listenerCount()).toBeGreaterThanOrEqual(2);
+    });
+    api.emitFilesDropped({ dropId: 20, names: ["a.txt"] });
+    await screen.findByRole("dialog");
+    rerender(tree({ status: "loading" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Your phones can't be listed right now, so the files weren't sent.",
+    );
+    // The list coming back does not bring the question back.
+    rerender(tree({ status: "ready", data: phones }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps the error toast reachable by keyboard while the question is open", async () => {
+    const api = createFakeApi();
+    const onEscape = vi.fn();
+    const listener = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onEscape();
+    };
+    window.addEventListener("keydown", listener);
+    try {
+      await renderOverlay(
+        [
+          testDevice({ id: "a", name: "Pixel", status: "connected" }),
+          testDevice({ id: "b", name: "Galaxy", status: "connected" }),
+        ],
+        api,
+      );
+      await screen.findByText("Somewhere else");
+      api.emitFilesDropped({ dropId: 21, names: ["a.txt"] });
+      await screen.findByRole("dialog");
+      api.emitFilesDropped({ dropId: 22, names: ["b.txt"] });
+      await screen.findByText("Only the newest files you dropped are kept.");
+      // Tab goes through the dialog's buttons, then the toast's Close.
+      const order = ["Pixel", "Galaxy", "Cancel", "Close"];
+      for (const name of order) {
+        expect(screen.getByRole("button", { name })).toHaveFocus();
+        await userEvent.tab();
+      }
+      expect(screen.getByRole("button", { name: "Pixel" })).toHaveFocus();
+
+      // Escape closes the question and goes no further.
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(onEscape).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", listener);
+    }
   });
 });
