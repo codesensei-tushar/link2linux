@@ -1178,6 +1178,10 @@ place.
   notification history. So by default the desktop's banners name only the
   app, and the content shows in the desktop app's own window, which a click
   on the banner opens. The user can let banners show the text.
+- Banners go to the notification service under the desktop app's own
+  name. A phone app chooses its own label, which must not let it pass for
+  one of the desktop's apps in the service's rules and history; the phone
+  app's name is in the banner's summary instead.
 - `visibility` is a hint for the desktop's own privacy settings. While the
   desktop's screen is locked, its banners never show content, and
   `SECRET` notifications get no banner at all.
@@ -1299,7 +1303,12 @@ locked.
 | `reply_text` | 8 KiB |
 
 The phone truncates longer text values at a character boundary. `key`,
-`group` and action ids are never truncated.
+`group` and action ids are never truncated. The desktop holds what it
+receives to the same limits: it truncates longer text, drops extra
+messages, actions and reply choices, and actions whose `id` is over 256
+bytes, and treats a longer `key` or `group` as a protocol error. It also
+keeps at most 1000 notifications per phone, and ignores new ones past
+that.
 
 ## Security considerations
 

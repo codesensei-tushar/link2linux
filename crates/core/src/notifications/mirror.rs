@@ -7,6 +7,11 @@
 //! [`Mirror::apply_posted`] and [`Mirror::apply_removed`]. Each call returns
 //! the [`Change`]s to show. Only the last batch's cursor is kept, so a sync
 //! cut short by a dropped connection starts again from the old cursor.
+//!
+//! What the phone sends is held to the protocol's limits ("Limits" and
+//! "Keys") before it is kept, so a phone that ignores them cannot grow the
+//! desktop's memory or push huge strings on to the desktop's notification
+//! service.
 
 use std::collections::BTreeMap;
 
@@ -49,7 +54,25 @@ pub enum MirrorError {
     /// A posted notification without the notification, or without a key.
     #[error("a notification without a key")]
     MissingKey,
+    /// A key or group longer than the phone may send.
+    #[error("a notification key or group over {MAX_KEY_BYTES} bytes")]
+    KeyTooLong,
 }
+
+/// The longest `key` or `group`; the phone hashes longer ones.
+pub const MAX_KEY_BYTES: usize = 256;
+/// The most notifications kept for one phone. Android lets each app show
+/// 50 at a time, so a real phone stays far below this. Past it, new keys
+/// are dropped; ones already kept still update.
+pub const MAX_ITEMS: usize = 1000;
+
+const NAME_BYTES: usize = 256;
+const SHORT_TEXT_BYTES: usize = 1024;
+const LONG_TEXT_BYTES: usize = 8 * 1024;
+const MAX_MESSAGES: usize = 10;
+const MAX_ACTIONS: usize = 8;
+const MAX_CHOICES: usize = 5;
+const ACTION_ID_BYTES: usize = 256;
 
 /// The phone's notifications as the desktop knows them.
 #[derive(Debug, Clone, Default)]
@@ -116,22 +139,22 @@ impl Mirror {
         batch: NotificationSyncBatch,
     ) -> Result<Vec<Change>, MirrorError> {
         let run = self.run.as_mut().ok_or(MirrorError::UnexpectedBatch)?;
-        if batch.notifications.iter().any(|n| n.key.is_empty()) {
-            return Err(MirrorError::MissingKey);
-        }
-        run.batch(
-            batch.reset,
-            batch.notifications.iter().map(|n| n.key.clone()),
-        );
+        let notifications = batch
+            .notifications
+            .into_iter()
+            .map(within_limits)
+            .collect::<Result<Vec<_>, _>>()?;
+        run.batch(batch.reset, notifications.iter().map(|n| n.key.clone()));
         let mut changes = Vec::new();
         for key in batch.removed_keys {
             if self.items.remove(&key).is_some() {
                 changes.push(removed(key, NotificationRemovalReason::Unspecified));
             }
         }
-        for notification in batch.notifications {
-            self.items
-                .insert(notification.key.clone(), notification.clone());
+        for notification in notifications {
+            if !self.keep(&notification) {
+                continue;
+            }
             changes.push(Change::Posted {
                 notification: Box::new(notification),
                 alert: false,
@@ -166,15 +189,13 @@ impl Mirror {
         if !self.live {
             return Err(MirrorError::EventBeforeSync);
         }
-        let notification = posted.notification.ok_or(MirrorError::MissingKey)?;
-        if notification.key.is_empty() {
-            return Err(MirrorError::MissingKey);
-        }
+        let notification = within_limits(posted.notification.ok_or(MirrorError::MissingKey)?)?;
         if self.cursor.advance(notification.revision) == Advance::Stale {
             return Ok(None);
         }
-        self.items
-            .insert(notification.key.clone(), notification.clone());
+        if !self.keep(&notification) {
+            return Ok(None);
+        }
         Ok(Some(Change::Posted {
             notification: Box::new(notification),
             alert: posted.alert,
@@ -197,6 +218,67 @@ impl Mirror {
             .items
             .remove(&event.key)
             .map(|_| removed(event.key, reason)))
+    }
+}
+
+impl Mirror {
+    /// Keeps `notification`, unless it is new and the mirror is full.
+    fn keep(&mut self, notification: &PhoneNotification) -> bool {
+        if self.items.len() >= MAX_ITEMS && !self.items.contains_key(&notification.key) {
+            return false;
+        }
+        self.items
+            .insert(notification.key.clone(), notification.clone());
+        true
+    }
+}
+
+/// `notification` cut to the protocol's limits: text at a character
+/// boundary, extra messages, actions and reply choices dropped. Keys are
+/// never cut, since they identify things, so an over-long one is an error.
+fn within_limits(mut n: PhoneNotification) -> Result<PhoneNotification, MirrorError> {
+    if n.key.is_empty() {
+        return Err(MirrorError::MissingKey);
+    }
+    if n.key.len() > MAX_KEY_BYTES || n.group.len() > MAX_KEY_BYTES {
+        return Err(MirrorError::KeyTooLong);
+    }
+    truncate(&mut n.app_id, NAME_BYTES);
+    truncate(&mut n.app_name, NAME_BYTES);
+    truncate(&mut n.title, SHORT_TEXT_BYTES);
+    truncate(&mut n.sub_text, SHORT_TEXT_BYTES);
+    truncate(&mut n.conversation_title, SHORT_TEXT_BYTES);
+    truncate(&mut n.text, LONG_TEXT_BYTES);
+    // The latest messages are the last ones.
+    let extra = n.messages.len().saturating_sub(MAX_MESSAGES);
+    n.messages.drain(..extra);
+    for message in &mut n.messages {
+        truncate(&mut message.sender, NAME_BYTES);
+        truncate(&mut message.text, LONG_TEXT_BYTES);
+    }
+    // An action id is never cut either: one that is too long cannot be
+    // asked for, so the action goes.
+    n.actions
+        .retain(|action| !action.id.is_empty() && action.id.len() <= ACTION_ID_BYTES);
+    n.actions.truncate(MAX_ACTIONS);
+    for action in &mut n.actions {
+        truncate(&mut action.label, SHORT_TEXT_BYTES);
+        action.reply_choices.truncate(MAX_CHOICES);
+        for choice in &mut action.reply_choices {
+            truncate(choice, NAME_BYTES);
+        }
+    }
+    Ok(n)
+}
+
+/// Cuts `text` to at most `max` bytes, at a character boundary.
+fn truncate(text: &mut String, max: usize) {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
     }
 }
 
@@ -363,6 +445,92 @@ mod tests {
         assert_eq!(
             mirror.apply_posted(early),
             Err(MirrorError::EventBeforeSync)
+        );
+    }
+
+    #[test]
+    fn what_the_phone_sends_is_held_to_the_protocol_limits() {
+        let mut mirror = Mirror::default();
+        mirror.sync_request();
+        mirror
+            .apply_batch(batch(true, vec![], &[], false, cursor(1, 0)))
+            .unwrap();
+        let action = |id: String| v1::NotificationAction {
+            id,
+            label: "é".repeat(4000),
+            reply_choices: vec!["yes".into(); 20],
+            ..v1::NotificationAction::default()
+        };
+        let mut big = note("big", 1);
+        big.title = "é".repeat(1_000_000);
+        big.app_name = "x".repeat(3 * 1024 * 1024);
+        big.text = "t".repeat(100_000);
+        big.messages = (0..30)
+            .map(|i| v1::ConversationMessage {
+                text: format!("message {i}"),
+                ..v1::ConversationMessage::default()
+            })
+            .collect();
+        big.actions = (0..20).map(|i| action(format!("a:{i}"))).collect();
+        big.actions.insert(0, action("x".repeat(300)));
+        let Some(Change::Posted { notification, .. }) = mirror
+            .apply_posted(NotificationPosted {
+                notification: Some(big),
+                alert: true,
+            })
+            .unwrap()
+        else {
+            panic!("posted");
+        };
+        // 1024 bytes of two-byte characters, cut at a boundary.
+        assert_eq!(notification.title.len(), 1024);
+        assert_eq!(notification.app_name.len(), 256);
+        assert_eq!(notification.text.len(), 8 * 1024);
+        assert_eq!(notification.messages.len(), 10);
+        assert_eq!(
+            notification.messages[0].text, "message 20",
+            "the latest stay"
+        );
+        assert_eq!(notification.actions.len(), 8);
+        assert_eq!(
+            notification.actions[0].id, "a:0",
+            "an over-long id is dropped"
+        );
+        assert_eq!(notification.actions[0].label.len(), 1024);
+        assert_eq!(notification.actions[0].reply_choices.len(), 5);
+        assert_eq!(mirror.get("big"), Some(&*notification));
+    }
+
+    #[test]
+    fn over_long_keys_are_refused_and_the_mirror_stays_bounded() {
+        let mut mirror = Mirror::default();
+        mirror.sync_request();
+        let mut long_group = note("a", 1);
+        long_group.group = "g".repeat(257);
+        assert_eq!(
+            mirror.apply_batch(batch(true, vec![long_group], &[], false, cursor(1, 1))),
+            Err(MirrorError::KeyTooLong)
+        );
+        let many = (0..MAX_ITEMS as u64 + 5)
+            .map(|i| note(&format!("k{i}"), i + 1))
+            .collect();
+        mirror
+            .apply_batch(batch(true, many, &[], false, cursor(1, 2000)))
+            .unwrap();
+        assert_eq!(mirror.items().count(), MAX_ITEMS);
+        let posted = |key: &str, revision| NotificationPosted {
+            notification: Some(note(key, revision)),
+            alert: true,
+        };
+        assert_eq!(mirror.apply_posted(posted("new", 2001)).unwrap(), None);
+        assert!(
+            mirror.apply_posted(posted("k0", 2002)).unwrap().is_some(),
+            "a kept notification still updates"
+        );
+        assert_eq!(mirror.items().count(), MAX_ITEMS);
+        assert_eq!(
+            mirror.apply_posted(posted(&"k".repeat(257), 2003)),
+            Err(MirrorError::KeyTooLong)
         );
     }
 

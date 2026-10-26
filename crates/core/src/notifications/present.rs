@@ -112,11 +112,13 @@ pub fn to_desktop(
         notification.app_name.clone()
     };
     let app_only = app_only(notification);
+    // The pop-up goes out under this app's name (a phone app picks its own
+    // label, which must not pass for a desktop app's), so the summary names
+    // the phone app.
     let summary = [&notification.conversation_title, &notification.title]
         .into_iter()
         .find(|s| !s.is_empty() && !app_only)
-        .cloned()
-        .unwrap_or_else(|| app_name.clone());
+        .map_or_else(|| app_name.clone(), |title| format!("{app_name} · {title}"));
     let withheld = withheld_text(notification);
     let body = match withheld {
         Some(text) => text.to_owned(),
@@ -345,7 +347,7 @@ mod tests {
     fn a_conversation_shows_its_latest_messages_and_a_reply_field() {
         let banner = to_desktop(&chat(), false, caps(true), Some("/c/ana.png".into()));
         assert_eq!(banner.app_name, "Chat");
-        assert_eq!(banner.summary, "Book club");
+        assert_eq!(banner.summary, "Chat · Book club");
         assert_eq!(banner.body, "Bo: Is it at 8?\nYou: Yes\nAna: Running late");
         assert_eq!(
             banner.inline_reply,

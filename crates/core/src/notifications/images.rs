@@ -7,11 +7,17 @@
 //! the desktop's notification service can show, or only in memory. Either
 //! way the cache stays under a byte budget by dropping the images used
 //! longest ago.
+//!
+//! Before an image is kept, its header must show the format it was sent as
+//! and a size the phone may send. The images reach decoders outside this
+//! app, in the window's web view and in the desktop's notification
+//! service, which pick a decoder by sniffing the bytes, so nothing but a
+//! plain PNG, JPEG or WebP of a sensible size gets that far.
 
 use std::collections::HashMap;
 use std::fs::{self, DirBuilder};
 use std::io::{self, Write};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -21,14 +27,19 @@ use link2linux_protocol::v1::{ImageData, ImageFormat, ImageRequest};
 /// The largest image the phone may send, in bytes.
 pub const MAX_IMAGE_BYTES: usize = 1024 * 1024;
 
+/// The longest side, in pixels, of an image the phone may send: pictures
+/// are at most 1024 pixels on the longer side, icons less.
+pub const MAX_IMAGE_EDGE: u32 = 1024;
+
 /// Why an image was not stored.
 #[derive(Debug, thiserror::Error)]
 pub enum ImageError {
     /// The bytes do not hash to the SHA-256 they came with.
     #[error("the image does not match its SHA-256")]
     Mismatch,
-    /// More than [`MAX_IMAGE_BYTES`], or an unknown format.
-    #[error("the image is too large or has an unknown format")]
+    /// More than [`MAX_IMAGE_BYTES`] or [`MAX_IMAGE_EDGE`], an unknown
+    /// format, or bytes that are not the format they came as.
+    #[error("the image is too large or not in the format it came as")]
     Invalid,
     /// The cache directory could not be written.
     #[error(transparent)]
@@ -168,6 +179,10 @@ impl ImageCache {
         if image.data.len() > MAX_IMAGE_BYTES {
             return Err(ImageError::Invalid);
         }
+        let (width, height) = dimensions(image.format(), &image.data).ok_or(ImageError::Invalid)?;
+        if width == 0 || height == 0 || width.max(height) > MAX_IMAGE_EDGE {
+            return Err(ImageError::Invalid);
+        }
         let stem = hex(&image.sha256).ok_or(ImageError::Mismatch)?;
         if digest::digest(&digest::SHA256, &image.data).as_ref() != image.sha256.as_slice() {
             return Err(ImageError::Mismatch);
@@ -178,8 +193,16 @@ impl ImageCache {
                 if !path.is_file() {
                     // Write next to the final name and rename, so a reader
                     // never sees half an image.
+                    // Readable by the user only, like the directory: the
+                    // pictures can be contact photos.
                     let partial = dir.join(format!("{stem}.{extension}.partial"));
-                    fs::File::create(&partial)?.write_all(&image.data)?;
+                    let _ = fs::remove_file(&partial);
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(&partial)?
+                        .write_all(&image.data)?;
                     fs::rename(&partial, &path)?;
                 }
                 trim_files(dir, &path, self.max_bytes)?;
@@ -242,6 +265,111 @@ impl Memory {
     }
 }
 
+/// The width and height in the header of `data`, if it is an image of
+/// `format`. Only the header is read; nothing is decoded.
+fn dimensions(format: ImageFormat, data: &[u8]) -> Option<(u32, u32)> {
+    match format {
+        ImageFormat::Png => png_size(data),
+        ImageFormat::Jpeg => jpeg_size(data),
+        ImageFormat::Webp => webp_size(data),
+        ImageFormat::Unspecified => None,
+    }
+}
+
+/// A PNG starts with its signature and then the IHDR chunk, which holds
+/// the width and height.
+fn png_size(data: &[u8]) -> Option<(u32, u32)> {
+    let rest = data.strip_prefix(b"\x89PNG\r\n\x1a\n")?;
+    if rest.get(..8)? != b"\0\0\0\x0dIHDR" {
+        return None;
+    }
+    Some((be32(rest.get(8..12)?), be32(rest.get(12..16)?)))
+}
+
+/// A JPEG's size is in its frame header (a SOFn segment), which comes
+/// after the start of image and any number of other segments.
+fn jpeg_size(data: &[u8]) -> Option<(u32, u32)> {
+    if data.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut at = 2;
+    loop {
+        if *data.get(at)? != 0xFF {
+            return None;
+        }
+        // A marker may follow any number of fill bytes.
+        while *data.get(at)? == 0xFF {
+            at += 1;
+        }
+        let marker = *data.get(at)?;
+        // Every segment before the frame header has a length, which counts
+        // itself; the end of the image or a scan here means there is none.
+        if matches!(marker, 0x00 | 0x01 | 0xD0..=0xDA) {
+            return None;
+        }
+        let length = usize::from(be16(data.get(at + 1..at + 3)?));
+        if length < 2 {
+            return None;
+        }
+        // SOF0 to SOF15, apart from DHT, JPG and DAC, which share the range.
+        if matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            let height = be16(data.get(at + 4..at + 6)?);
+            let width = be16(data.get(at + 6..at + 8)?);
+            return Some((u32::from(width), u32::from(height)));
+        }
+        at += 1 + length;
+    }
+}
+
+/// A WebP is a RIFF file whose first chunk is a lossy (`VP8 `), lossless
+/// (`VP8L`) or extended (`VP8X`) header, each with the size in its own
+/// layout.
+fn webp_size(data: &[u8]) -> Option<(u32, u32)> {
+    if data.get(..4)? != b"RIFF" || data.get(8..12)? != b"WEBP" {
+        return None;
+    }
+    let chunk = data.get(20..)?;
+    match data.get(12..16)? {
+        b"VP8 " => {
+            if chunk.get(3..6)? != [0x9D, 0x01, 0x2A] {
+                return None;
+            }
+            let width = u32::from(le16(chunk.get(6..8)?) & 0x3FFF);
+            let height = u32::from(le16(chunk.get(8..10)?) & 0x3FFF);
+            Some((width, height))
+        }
+        b"VP8L" => {
+            if *chunk.first()? != 0x2F {
+                return None;
+            }
+            let bits = u32::from_le_bytes(chunk.get(1..5)?.try_into().ok()?);
+            Some(((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1))
+        }
+        b"VP8X" => {
+            let width = le24(chunk.get(4..7)?) + 1;
+            let height = le24(chunk.get(7..10)?) + 1;
+            Some((width, height))
+        }
+        _ => None,
+    }
+}
+
+fn be32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes(bytes.try_into().expect("four bytes"))
+}
+
+fn be16(bytes: &[u8]) -> u16 {
+    u16::from_be_bytes(bytes.try_into().expect("two bytes"))
+}
+
+fn le16(bytes: &[u8]) -> u16 {
+    u16::from_le_bytes(bytes.try_into().expect("two bytes"))
+}
+
+fn le24(bytes: &[u8]) -> u32 {
+    u32::from(bytes[0]) | u32::from(bytes[1]) << 8 | u32::from(bytes[2]) << 16
+}
+
 /// The file of the image with this SHA-256 in `dir`, if there is one.
 fn file_of(dir: &Path, sha256: &[u8]) -> Option<PathBuf> {
     let stem = hex(sha256)?;
@@ -290,6 +418,7 @@ fn hex(sha256: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, SystemTime};
 
     /// A fresh directory under the system's temporary directory, removed
@@ -315,29 +444,54 @@ mod tests {
     }
 
     fn image(bytes: &[u8]) -> ImageData {
+        image_as(ImageFormat::Png, bytes)
+    }
+
+    fn image_as(format: ImageFormat, bytes: &[u8]) -> ImageData {
         ImageData {
             sha256: digest::digest(&digest::SHA256, bytes).as_ref().to_vec(),
-            format: ImageFormat::Png.into(),
+            format: format.into(),
             data: bytes.to_vec(),
         }
+    }
+
+    /// A PNG header of `width` by `height`, then `rest`. 33 bytes plus
+    /// `rest`; the stored bytes are never decoded, only their header read.
+    fn png_of(width: u32, height: u32, rest: &[u8]) -> Vec<u8> {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(width.to_be_bytes());
+        png.extend(height.to_be_bytes());
+        png.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        png.extend(rest);
+        png
+    }
+
+    fn png(rest: &[u8]) -> Vec<u8> {
+        png_of(128, 128, rest)
     }
 
     #[test]
     fn stores_a_matching_image_once_and_finds_it_again() {
         let dir = TempDir::new();
         let cache = ImageCache::new(&dir.0, 1 << 20).unwrap();
-        let icon = image(b"png bytes");
+        let bytes = png(b"png bytes");
+        let icon = image(&bytes);
         assert_eq!(cache.get(&icon.sha256), None);
         assert!(!cache.contains(&icon.sha256));
         cache.store(&icon).unwrap();
         let path = cache.get(&icon.sha256).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"png bytes");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
         assert!(path.to_string_lossy().ends_with(".png"));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "only the user can read it"
+        );
         assert!(cache.contains(&icon.sha256));
         assert_eq!(
             cache.read(&icon.sha256),
             Some(CachedImage {
-                data: b"png bytes".to_vec(),
+                data: bytes.clone(),
                 extension: "png"
             })
         );
@@ -354,13 +508,13 @@ mod tests {
     fn refuses_bytes_that_do_not_match_or_are_invalid() {
         let dir = TempDir::new();
         let cache = ImageCache::new(&dir.0, 1 << 20).unwrap();
-        let mut forged = image(b"real");
-        forged.data = b"forged".to_vec();
+        let mut forged = image(&png(b"real"));
+        forged.data = png(b"forged");
         assert!(matches!(cache.store(&forged), Err(ImageError::Mismatch)));
-        let mut short = image(b"x");
+        let mut short = image(&png(b"x"));
         short.sha256.truncate(31);
         assert!(matches!(cache.store(&short), Err(ImageError::Mismatch)));
-        let mut unknown = image(b"x");
+        let mut unknown = image(&png(b"x"));
         unknown.format = ImageFormat::Unspecified.into();
         assert!(matches!(cache.store(&unknown), Err(ImageError::Invalid)));
         let huge = image(&vec![0; MAX_IMAGE_BYTES + 1]);
@@ -373,12 +527,76 @@ mod tests {
     }
 
     #[test]
+    fn refuses_bytes_that_are_not_the_image_they_claim_to_be() {
+        let dir = TempDir::new();
+        let cache = ImageCache::new(&dir.0, 1 << 20).unwrap();
+        let refused = |format, bytes: &[u8]| {
+            matches!(
+                cache.store(&image_as(format, bytes)),
+                Err(ImageError::Invalid)
+            )
+        };
+        let jpeg = |width: u16, height: u16| {
+            let mut jpeg = vec![
+                0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xFF, 0xC2, 0, 11, 8,
+            ];
+            jpeg.extend(height.to_be_bytes());
+            jpeg.extend(width.to_be_bytes());
+            jpeg.extend([1, 1, 0x11, 0]);
+            jpeg
+        };
+        let webp = |kind: &[u8], chunk: &[u8]| {
+            let mut webp = b"RIFF\0\0\0\0WEBP".to_vec();
+            webp.extend(kind);
+            webp.extend([0; 4]);
+            webp.extend(chunk);
+            webp
+        };
+        assert!(refused(ImageFormat::Png, b"GIF89a\x01\0\x01\0"), "a GIF");
+        assert!(refused(ImageFormat::Png, b"II*\0\x08\0\0\0"), "a TIFF");
+        assert!(refused(ImageFormat::Png, &jpeg(64, 64)), "a JPEG");
+        assert!(refused(ImageFormat::Jpeg, &png(b"")), "a PNG");
+        assert!(refused(ImageFormat::Png, &png_of(20_000, 20_000, b"")));
+        assert!(refused(ImageFormat::Png, &png_of(0, 16, b"")));
+        assert!(refused(ImageFormat::Jpeg, &jpeg(1025, 10)));
+        assert!(refused(ImageFormat::Jpeg, &[0xFF, 0xD8, 0xFF, 0xDA, 0, 2]));
+        assert!(refused(
+            ImageFormat::Webp,
+            &webp(b"VP8X", &[0, 0, 0, 0, 0xFF, 0x07, 0, 0, 1, 0])
+        ));
+        assert!(
+            refused(ImageFormat::Png, &png(b"")[..20]),
+            "a cut-off header"
+        );
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+
+        cache.store(&image(&png_of(1024, 1, b""))).unwrap();
+        cache
+            .store(&image_as(ImageFormat::Jpeg, &jpeg(1024, 768)))
+            .unwrap();
+        // 1024 by 768, extended; 1 by 1, lossless; 640 by 480, lossy.
+        let accepted = [
+            webp(b"VP8X", &[0, 0, 0, 0, 0xFF, 0x03, 0, 0xFF, 0x02, 0]),
+            webp(b"VP8L", &[0x2F, 0, 0, 0, 0]),
+            webp(
+                b"VP8 ",
+                &[0, 0, 0, 0x9D, 0x01, 0x2A, 0x80, 0x02, 0xE0, 0x01],
+            ),
+        ];
+        for bytes in accepted {
+            cache.store(&image_as(ImageFormat::Webp, &bytes)).unwrap();
+        }
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 5);
+    }
+
+    #[test]
     fn keeps_to_its_budget_by_removing_the_least_recently_used() {
         let dir = TempDir::new();
-        let cache = ImageCache::new(&dir.0, 25).unwrap();
-        let a = image(&[b'a'; 10]);
-        let b = image(&[b'b'; 10]);
-        let c = image(&[b'c'; 10]);
+        // Room for two images of 43 bytes, not three.
+        let cache = ImageCache::new(&dir.0, 100).unwrap();
+        let a = image(&png(&[b'a'; 10]));
+        let b = image(&png(&[b'b'; 10]));
+        let c = image(&png(&[b'c'; 10]));
         cache.store(&a).unwrap();
         cache.store(&b).unwrap();
         let path_a = cache.get(&a.sha256).unwrap();
@@ -412,11 +630,11 @@ mod tests {
 
     #[test]
     fn a_cache_in_memory_writes_no_files_and_keeps_to_its_budget() {
-        let cache = ImageCache::in_memory(25);
+        let cache = ImageCache::in_memory(100);
         let shared = cache.clone();
-        let a = image(&[b'a'; 10]);
-        let b = image(&[b'b'; 10]);
-        let c = image(&[b'c'; 10]);
+        let a = image(&png(&[b'a'; 10]));
+        let b = image(&png(&[b'b'; 10]));
+        let c = image(&png(&[b'c'; 10]));
         cache.store(&a).unwrap();
         cache.store(&b).unwrap();
         assert!(shared.contains(&a.sha256), "copies share the images");
@@ -428,8 +646,8 @@ mod tests {
         assert!(!cache.contains(&b.sha256));
         assert!(cache.contains(&a.sha256) && cache.contains(&c.sha256));
 
-        let mut forged = image(b"real");
-        forged.data = b"forged".to_vec();
+        let mut forged = image(&png(b"real"));
+        forged.data = png(b"forged");
         assert!(matches!(cache.store(&forged), Err(ImageError::Mismatch)));
 
         cache.clear().unwrap();

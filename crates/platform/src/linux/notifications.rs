@@ -26,6 +26,11 @@ const SERVICE: &str = "desktop notifications";
 /// The desktop file the notifications belong to, so the desktop shows the
 /// app's name and icon and groups them.
 const DESKTOP_ENTRY: &str = "dev.link2linux.desktop";
+/// The application name every pop-up is sent under. A phone app chooses
+/// its own label, so sending that instead would let it pass for one of the
+/// desktop's apps in the notification service's rules and history; the
+/// phone app's name is in the summary.
+const APP_NAME: &str = "link2linux";
 /// The action key KDE Plasma reserves for its reply field.
 const INLINE_REPLY_KEY: &str = "inline-reply";
 const CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -253,7 +258,7 @@ impl NotificationSink for DbusNotifications {
         let id = live
             .proxy
             .notify(
-                &notification.app_name,
+                APP_NAME,
                 replaces.map_or(0, |id| id.0),
                 "",
                 &notification.summary,
@@ -365,6 +370,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct Shown {
+        app_name: String,
         replaces: u32,
         summary: String,
         body: String,
@@ -383,7 +389,7 @@ mod tests {
         #[allow(clippy::too_many_arguments)]
         fn notify(
             &mut self,
-            _app_name: String,
+            app_name: String,
             replaces_id: u32,
             _app_icon: String,
             summary: String,
@@ -393,6 +399,7 @@ mod tests {
             _expire_timeout: i32,
         ) -> u32 {
             self.shown.lock().unwrap().push(Shown {
+                app_name,
                 replaces: replaces_id,
                 summary,
                 body,
@@ -515,6 +522,10 @@ mod tests {
         assert_eq!(id, NotificationId(1));
         let shown = m.shown.lock().unwrap();
         let shown = &shown[0];
+        assert_eq!(
+            shown.app_name, "link2linux",
+            "never the phone app's own label"
+        );
         assert_eq!(shown.summary, "Ana");
         assert_eq!(
             shown.body,

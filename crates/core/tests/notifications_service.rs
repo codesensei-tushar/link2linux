@@ -207,7 +207,7 @@ async fn syncs_then_shows_alerting_notifications_and_closes_removed_ones() {
     let id = {
         let desktop = s.desktop.lock().unwrap();
         assert_eq!(desktop.shown.len(), 1);
-        assert_eq!(desktop.shown[0].0.summary, "from new");
+        assert_eq!(desktop.shown[0].0.summary, "Chat · from new");
         NotificationId(1)
     };
 
@@ -295,7 +295,9 @@ async fn the_users_dismissal_goes_to_the_phone_until_it_answers() {
 #[tokio::test]
 async fn fetches_a_banner_image_and_shows_it_when_it_arrives() {
     let mut s = synced_setup(vec![]).await;
-    let bytes = b"a photo".to_vec();
+    // A PNG header (64 by 64), which is all the cache reads.
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\x40\0\0\0\x40".to_vec();
+    bytes.extend(b"a photo");
     let sha256 = digest::digest(&digest::SHA256, &bytes).as_ref().to_vec();
     let mut with_photo = note("photo", 2);
     with_photo.large_icon = Some(ImageRef {
