@@ -13,12 +13,17 @@
 //! place, and the messages are in `pairing.proto`; the handshake comes next.
 
 pub mod crypto;
+mod qr;
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::SystemTime;
 
 pub use self::crypto::PairingSecret;
+pub use self::qr::{
+    DEFAULT_BEACON_PORT, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, QR_PAYLOAD_VERSION, QR_URI_PREFIX,
+    QrError, QrPayload,
+};
 use crate::device::DeviceKind;
 pub use crate::identity::CertificateFingerprint;
 

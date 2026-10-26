@@ -2,12 +2,13 @@
 //! vector the Android app checks too.
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
 
 use link2linux_core::CertificateFingerprint;
-use link2linux_core::pairing::PairingSecret;
 use link2linux_core::pairing::crypto::{self, Role};
+use link2linux_core::pairing::{PairingSecret, QrPayload};
 
 const VECTOR: &str = include_str!("../../../proto/testdata/v1/pairing.txt");
 
@@ -47,6 +48,29 @@ fn fingerprints_and_exporter_context() {
         to_hex(&crypto::exporter_context(&desktop, &phone)),
         v["exporter_context"]
     );
+}
+
+/// The QR code of the vector: its secret, the vector's desktop key, and
+/// the name and addresses `pairing.sh` writes into the URI.
+fn qr_payload(v: &BTreeMap<&str, &str>) -> QrPayload {
+    QrPayload {
+        desktop: CertificateFingerprint::of_spki(&hex(v["spki_desktop"])).unwrap(),
+        secret: PairingSecret::from_bytes(array(v["secret"])),
+        name: "Büro workstation".into(),
+        addresses: ["192.168.1.20:27381", "[fd00::20]:27381"]
+            .iter()
+            .map(|address| address.parse::<SocketAddr>().unwrap())
+            .collect(),
+        bluetooth_address: Some(array(v["bt_address"])),
+    }
+}
+
+#[test]
+fn qr_code_uri() {
+    let v = vector();
+    let payload = qr_payload(&v);
+    assert_eq!(payload.to_uri(), v["qr_uri"]);
+    assert_eq!(QrPayload::parse(v["qr_uri"]).unwrap(), payload);
 }
 
 #[test]
