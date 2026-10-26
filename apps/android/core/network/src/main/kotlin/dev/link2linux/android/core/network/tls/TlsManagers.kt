@@ -1,5 +1,6 @@
 package dev.link2linux.android.core.network.tls
 
+import android.annotation.SuppressLint
 import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.security.IdentityKeySource
 import dev.link2linux.android.core.security.Spki
@@ -32,7 +33,11 @@ fun interface PeerKeyPolicy {
  *
  * [getAcceptedIssuers] is empty, so the certificate request names no
  * certificate authorities.
+ *
+ * Lint warns about any custom trust manager because most of them disable
+ * checking. This one is stricter than CA validation: it pins the key.
  */
+@SuppressLint("CustomX509TrustManager")
 class SpkiPinTrustManager(private val policy: PeerKeyPolicy) : X509ExtendedTrustManager() {
 
     override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = check(chain)

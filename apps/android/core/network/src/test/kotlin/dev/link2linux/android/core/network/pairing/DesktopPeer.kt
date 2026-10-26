@@ -29,9 +29,11 @@ class DesktopPeer(private val socket: SSLSocket, private val desktop: TestDeskto
 
     val phoneKey: KeyFingerprint get() = checkNotNull(desktop.seenPhone)
 
-    fun send(fill: Envelope.Builder.() -> Unit) {
+    /** Sends one envelope and returns its seq. */
+    fun send(fill: Envelope.Builder.() -> Unit): Long {
         codec.write(Envelope.newBuilder().apply(fill).setSeq(++seq).build(), output)
         output.flush()
+        return seq
     }
 
     /** The phone's next envelope, or null when it closed the connection. */

@@ -20,12 +20,14 @@ import dev.link2linux.android.core.security.PairingCrypto
 import dev.link2linux.android.core.security.PairingCrypto.Role
 import dev.link2linux.android.core.testing.TestCertificates
 import dev.link2linux.protocol.v1.Envelope.PayloadCase
+import dev.link2linux.protocol.v1.ErrorCode
 import dev.link2linux.protocol.v1.Goodbye
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.KeyRotation
 import dev.link2linux.protocol.v1.PairingMethod
 import dev.link2linux.protocol.v1.PairingOutcome
 import dev.link2linux.protocol.v1.PairingProof
+import dev.link2linux.protocol.v1.PresenceUpdate
 import dev.link2linux.protocol.v1.SasNonce
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -256,6 +258,36 @@ class PairingServiceTest {
         val desktop = TestDesktop()
         pairedRecord(desktop)
         val peer = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED, deviceId = "someone-else")
+        assertEquals(GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR, io { peer.read()!!.goodbye.reason })
+    }
+
+    @Test
+    fun aSessionAnswersUnknownRequestsAndTracksTheBluetoothAddress() = runBlocking {
+        val desktop = TestDesktop()
+        pairedRecord(desktop)
+        val peer = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED)
+        peer.readSessionStart()
+
+        val answer = io {
+            peer.send { presenceUpdate = PresenceUpdate.newBuilder().setBleAddress(bytes(byteArrayOf(0x0c, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e))).build() }
+            // A request with a payload this version does not know.
+            val request = peer.send { expectsReply = true }
+            peer.read()!!.also { assertEquals(request, it.replyTo) }
+        }
+
+        assertEquals(ErrorCode.ERROR_CODE_UNSUPPORTED, answer.errorReply.code)
+        assertEquals("0C:1A:2B:3C:4D:5E", devices.find(desktop.fingerprint!!)?.bluetoothAddress)
+    }
+
+    @Test
+    fun aPairingMessageInASessionIsAProtocolError() = runBlocking {
+        val desktop = TestDesktop()
+        pairedRecord(desktop)
+        val peer = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED)
+        peer.readSessionStart()
+
+        io { peer.sendResult(PairingOutcome.PAIRING_OUTCOME_ACCEPTED) }
+
         assertEquals(GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR, io { peer.read()!!.goodbye.reason })
     }
 
