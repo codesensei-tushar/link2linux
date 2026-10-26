@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use link2linux_core::session::{Reply, RequestError};
-use link2linux_core::{Session, SessionConfig, SessionError, SessionEvent};
+use link2linux_core::{Feature, Session, SessionConfig, SessionError, SessionEvent};
 use link2linux_protocol::v1::{
     Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason, ImageData, ImageRequest,
     NotificationDismissRequest, NotificationSyncBatch, NotificationSyncRequest,
@@ -55,6 +55,7 @@ async fn notifying() -> (Session<DuplexStream>, RawPeer) {
         matches!(event, Some(SessionEvent::FeatureStatus(_))),
         "{event:?}"
     );
+    assert!(session.is_ready(Feature::Notifications));
     (session, peer)
 }
 

@@ -10,11 +10,12 @@
 //! none, each side sends `Goodbye` with `GOODBYE_REASON_VERSION_MISMATCH`
 //! and gives up. A peer that sends anything else first is refused.
 //!
-//! Right after the `Hello`s, each side reports how ready each of its
-//! features is (`FeatureStatus`, see [`Availability`]), then how to find
-//! it while it is offline (`PresenceUpdate`), from its [`SessionStart`].
-//! The peer's come out as [`SessionEvent::FeatureStatus`] and
-//! [`SessionEvent::Presence`].
+//! Right after the `Hello`s, each side sends `FeatureStatus`, how ready each
+//! of its features is (see [`Availability`]), then `PresenceUpdate`, and
+//! sends them again whenever they change ([`Session::set_availability`],
+//! [`Session::set_presence`]). The peer's come out as
+//! [`SessionEvent::FeatureStatus`] and [`SessionEvent::Presence`]. A request
+//! of a feature only goes out while the feature is ready on both sides.
 //!
 //! After that, [`Session::next_event`] drives the session. It answers the
 //! peer's `Ping`s, sends a `Ping` of its own every
@@ -257,6 +258,10 @@ pub enum SessionError {
     /// this session.
     #[error("{0} is not active in this session")]
     FeatureNotActive(Feature),
+    /// This side tried to send a request of a feature that is not ready on
+    /// both devices.
+    #[error("{0} is not ready on both devices")]
+    FeatureNotReady(Feature),
     /// [`Session::reply`] named a request the peer has not sent.
     #[error("the peer sent no message {0} to answer")]
     NoSuchRequest(u64),
@@ -512,6 +517,62 @@ where
         self.peer_presence.as_ref()
     }
 
+    /// Whether `feature` can be used now: it is active, and ready on this
+    /// device and, by its latest `FeatureStatus`, on the peer.
+    #[must_use]
+    pub fn is_ready(&self, feature: Feature) -> bool {
+        let ready =
+            |states: &FeatureStates| states.get(&feature).is_some_and(Availability::is_ready);
+        self.is_active(feature)
+            && ready(&self.availability)
+            && self.peer_availability.as_ref().is_some_and(ready)
+    }
+
+    /// Reports a new availability for one of this device's features, and
+    /// sends a complete `FeatureStatus` if it changed. Features this device
+    /// did not list in its `Hello` are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::Ended`] once the session is over, and on
+    /// framing or I/O errors.
+    pub async fn set_availability(
+        &mut self,
+        feature: Feature,
+        availability: Availability,
+    ) -> Result<(), SessionError> {
+        if self.ended {
+            return Err(SessionError::Ended);
+        }
+        match self.availability.get_mut(&feature) {
+            Some(current) if *current != availability => *current = availability,
+            _ => return Ok(()),
+        }
+        self.enqueue(Payload::FeatureStatus(status::status_for(
+            &self.local.features,
+            &self.availability,
+        )))?;
+        self.flush().await
+    }
+
+    /// Sends a new `PresenceUpdate` if it differs from the last one.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::Ended`] once the session is over, and on
+    /// framing or I/O errors.
+    pub async fn set_presence(&mut self, presence: PresenceUpdate) -> Result<(), SessionError> {
+        if self.ended {
+            return Err(SessionError::Ended);
+        }
+        if presence == self.presence {
+            return Ok(());
+        }
+        self.presence = presence;
+        self.enqueue(Payload::PresenceUpdate(self.presence.clone()))?;
+        self.flush().await
+    }
+
     /// The latest measured round-trip time, once a `Ping` has been answered.
     #[must_use]
     pub fn rtt(&self) -> Option<Duration> {
@@ -535,10 +596,10 @@ where
     ///
     /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, with
     /// [`SessionError::NotAllowed`] for a `Goodbye` (see
-    /// [`Session::goodbye`]), a `FeatureStatus` or `PresenceUpdate` (the
-    /// session sends those itself), a request (see
-    /// [`Session::send_request`]) or an answer (see [`Session::reply`]),
-    /// with
+    /// [`Session::goodbye`]), a `FeatureStatus` or `PresenceUpdate` (see
+    /// [`Session::set_availability`] and [`Session::set_presence`]), a
+    /// request (see [`Session::send_request`]) or an answer (see
+    /// [`Session::reply`]), with
     /// [`SessionError::FeatureNotActive`] for a message of a feature that is
     /// not active, with [`SessionError::Ended`] once the session is over,
     /// and on framing or I/O errors.
@@ -596,7 +657,8 @@ where
     ///
     /// Fails with [`SessionError::NotAllowed`] when `payload` is not a
     /// request, with [`SessionError::FeatureNotActive`] for a request of a
-    /// feature that is not active, with [`SessionError::Ended`] once the
+    /// feature that is not active, with [`SessionError::FeatureNotReady`]
+    /// for one that is not ready on both devices, with [`SessionError::Ended`] once the
     /// session is over, and on framing or I/O errors.
     pub async fn start_request(&mut self, payload: Payload) -> Result<u64, SessionError> {
         let rules = rules::of(&payload);
@@ -604,6 +666,11 @@ where
             return Err(SessionError::NotAllowed(rules.name));
         };
         self.check_can_send(rules)?;
+        if let Some(feature) = rules.feature
+            && !self.is_ready(feature)
+        {
+            return Err(SessionError::FeatureNotReady(feature));
+        }
         let seq = self.enqueue_envelope(Envelope {
             expects_reply: true,
             payload: Some(payload),
@@ -950,6 +1017,34 @@ where
         {
             let detail = format!("{feature} is not active in this session");
             return self.queue_error_reply(seq, ErrorCode::Unsupported, &detail);
+        }
+        // A feature this side reported as turned off or waiting for a
+        // permission is refused with the matching code.
+        let refusal = match rules.feature.and_then(|f| self.availability.get(&f)) {
+            Some(Availability::Disabled) => Some((ErrorCode::Disabled, String::new())),
+            Some(Availability::PermissionRequired(permission)) => {
+                Some((ErrorCode::PermissionRequired, permission.clone()))
+            }
+            _ => None,
+        };
+        if let Some((code, permission)) = refusal {
+            debug!(
+                seq,
+                ?code,
+                "refusing a request of a feature that is not ready"
+            );
+            let error = ErrorReply {
+                code: code.into(),
+                detail: format!("{} is not ready on this device", rules.name),
+                permission,
+                ..ErrorReply::default()
+            };
+            self.enqueue_envelope(Envelope {
+                reply_to: seq,
+                payload: Some(Payload::ErrorReply(error)),
+                ..Envelope::default()
+            })?;
+            return Ok(());
         }
         self.events
             .push_back(SessionEvent::Request { seq, payload });
