@@ -94,6 +94,22 @@ class PairingCryptoTest {
         assertEquals("979 999", PairingCrypto.sasCode(ekmSas, v.bytes("n_d"), v.bytes("n_p")).formatted)
     }
 
+    @Test
+    fun secondSasVectorKeepsItsLeadingZero() {
+        val nD = v.bytes("n_d_2")
+        val nP = v.bytes("n_p")
+        assertArrayEquals(v.bytes("sas_hmac_2"), PairingCrypto.sasHmac(ekmSas, nD, nP))
+        val code = PairingCrypto.sasCode(ekmSas, nD, nP)
+        assertEquals(v.text("sas_code_2"), code.formatted.replace(" ", ""))
+        assertEquals("010 917", code.formatted)
+    }
+
+    @Test
+    fun thePhonesProofVerifiesAndTheTamperedOneDoesNot() {
+        assertTrue(PairingCrypto.verifyProof(secret, Role.PHONE, ekmPair, v.bytes("proof_phone")))
+        assertFalse(PairingCrypto.verifyProof(secret, Role.PHONE, ekmPair, v.bytes("bad_proof_phone")))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun aShortNonceIsRefused() {
         PairingCrypto.sasCommitment(ekmSas, ByteArray(16))
