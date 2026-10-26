@@ -1,5 +1,5 @@
 import { Smartphone } from "lucide-react";
-import { useEffect, useId, useRef, type KeyboardEvent } from "react";
+import { useEffect, useEffectEvent, useId, useRef } from "react";
 
 import { Button } from "@/components/ui";
 import type { Device } from "@/lib/api";
@@ -26,27 +26,41 @@ export function PhoneChoiceDialog({ names, phones, onChoose, onCancel }: PhoneCh
     };
   }, []);
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+  // Listens on the document: the phone whose button has focus can go
+  // away, and focus with it.
+  const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    const dialog = dialogRef.current;
     if (event.key === "Escape") {
-      event.stopPropagation();
+      event.preventDefault();
       onCancel();
-    } else if (event.key === "Tab") {
+    } else if (event.key === "Tab" && dialog) {
       // Keep focus inside the dialog.
-      const buttons = [...(dialogRef.current?.querySelectorAll("button") ?? [])];
+      const buttons = [...dialog.querySelectorAll("button")];
       const first = buttons[0];
       const last = buttons.at(-1);
-      if (event.shiftKey && document.activeElement === first) {
+      const inside = dialog.contains(document.activeElement);
+      if (!inside || (event.shiftKey && document.activeElement === first)) {
         event.preventDefault();
-        last?.focus();
+        (event.shiftKey ? last : first)?.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault();
         first?.focus();
       }
     }
-  };
+  });
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      onKeyDown(event);
+    };
+    document.addEventListener("keydown", listener);
+    return () => {
+      document.removeEventListener("keydown", listener);
+    };
+  }, []);
 
   return (
-    <div className="dialog-backdrop" onKeyDown={onKeyDown} role="presentation">
+    <div className="dialog-backdrop" role="presentation">
       <div
         ref={dialogRef}
         className="dialog"

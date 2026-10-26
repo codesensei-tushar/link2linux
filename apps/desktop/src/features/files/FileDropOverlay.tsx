@@ -25,7 +25,8 @@ function obviousTarget(phones: Device[]): Device | undefined {
 /**
  * Files dropped anywhere on the window go to a phone. While files are dragged
  * over the window it says so; after a drop it sends them to the obvious phone,
- * or asks which one, then opens the files page to show the transfer.
+ * or asks which one, then opens the files page to show the transfer. It says
+ * why when a drop goes nowhere.
  */
 export function FileDropOverlay() {
   const api = useDesktopApi();
@@ -34,7 +35,7 @@ export function FileDropOverlay() {
   const phones = devices.status === "ready" ? targets(devices.data) : [];
   const [over, setOver] = useState(false);
   const [asking, setAsking] = useState<FilesDropped | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const sendTo = (dropped: FilesDropped, phone: Device) => {
     setAsking(null);
@@ -43,7 +44,7 @@ export function FileDropOverlay() {
         void navigate("/files", { state: { deviceId: phone.id } });
       },
       (cause: unknown) => {
-        setError(`Couldn't send the files: ${errorMessage(cause)}`);
+        setNotice(`Couldn't send the files: ${errorMessage(cause)}`);
       },
     );
   };
@@ -51,10 +52,20 @@ export function FileDropOverlay() {
   // Reads the phones as they are when the drop happens.
   const onDrop = useEffectEvent((dropped: FilesDropped) => {
     setOver(false);
-    setError(null);
+    // The desktop keeps only the newest drop.
+    setNotice(asking ? "Only the newest files you dropped are kept." : null);
+    setAsking(null);
+    if (devices.status === "loading") {
+      setNotice("Still looking for your phones. Drop the files again in a moment.");
+      return;
+    }
+    if (devices.status === "error") {
+      setNotice("Your phones couldn't be listed, so the files weren't sent.");
+      return;
+    }
     const target = obviousTarget(phones);
     if (target) sendTo(dropped, target);
-    else if (phones.length === 0) setError("Pair a phone to send files to it.");
+    else if (phones.length === 0) setNotice("Pair a phone to send files to it.");
     else setAsking(dropped);
   });
 
@@ -79,18 +90,42 @@ export function FileDropOverlay() {
     };
   }, [api]);
 
+  // The window hears nothing while files are dragged over it, so anything
+  // it hears means the drag is over, even when the desktop did not say.
+  useEffect(() => {
+    if (!over) return;
+    const clear = () => {
+      setOver(false);
+    };
+    const kinds = ["pointermove", "keydown", "blur"] as const;
+    kinds.forEach((kind) => {
+      window.addEventListener(kind, clear);
+    });
+    return () => {
+      kinds.forEach((kind) => {
+        window.removeEventListener(kind, clear);
+      });
+    };
+  }, [over]);
+
   const target = obviousTarget(phones);
+  let hint = "Drop to send to one of your phones";
+  if (target) hint = `Drop to send to ${target.name}`;
+  else if (devices.status === "ready" && phones.length === 0) hint = "Pair a phone to send files";
+  // Every phone went away while the question was open.
+  const gone = asking !== null && devices.status === "ready" && phones.length === 0;
+  const message = gone ? "Your phones are gone, so the files weren't sent." : notice;
   return (
     <>
       {over && (
         <div className="file-drop" aria-hidden="true">
           <div className="file-drop__panel">
             <Upload className="file-drop__icon" />
-            <p>{target ? `Drop to send to ${target.name}` : "Drop to send to your phone"}</p>
+            <p>{hint}</p>
           </div>
         </div>
       )}
-      {asking && (
+      {asking && phones.length > 0 && (
         <PhoneChoiceDialog
           names={asking.names}
           phones={phones}
@@ -102,14 +137,15 @@ export function FileDropOverlay() {
           }}
         />
       )}
-      {error && (
+      {message && (
         <Callout tone="warning" role="alert" className="file-drop__toast">
-          <span>{error}</span>
+          <span>{message}</span>
           <Button
             size="sm"
             variant="ghost"
             onClick={() => {
-              setError(null);
+              setNotice(null);
+              if (gone) setAsking(null);
             }}
           >
             Close
