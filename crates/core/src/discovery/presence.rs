@@ -70,6 +70,57 @@ pub fn decode_value(text: &str) -> Option<[u8; 8]> {
     bytes.try_into().ok()
 }
 
+/// A secret: a phone's 32-byte `presence_key` for this desktop, or the 16-byte
+/// secret of a QR offer. Its `Debug` output hides the
+/// bytes and the memory is cleared on drop.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretBytes(Vec<u8>);
+
+impl SecretBytes {
+    /// Wraps the key bytes.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// The key bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretBytes(..)")
+    }
+}
+
+impl Drop for SecretBytes {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+/// The presence key of one paired phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedKey {
+    /// The phone's device id in the pairing store.
+    pub phone_id: String,
+    /// The `presence_key` the phone made for this desktop.
+    pub presence_key: SecretBytes,
+}
+
+/// Everything needed to recognize phones: the keys of all paired phones
+/// and the secret of the QR offer being shown, if any.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiscoveryKeys {
+    /// Paired phones.
+    pub paired: Vec<PairedKey>,
+    /// The active QR offer's secret.
+    pub offer_secret: Option<SecretBytes>,
+}
+
 /// What a phone's TXT record says. Fields that are missing or malformed
 /// are left out, and unknown keys are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
