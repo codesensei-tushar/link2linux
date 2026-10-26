@@ -18,6 +18,7 @@ dependencies {
     implementation(projects.core.data)
     implementation(projects.core.designsystem)
     implementation(projects.core.model)
+    implementation(projects.core.network)
     implementation(projects.feature.calls)
     implementation(projects.feature.clipboard)
     implementation(projects.feature.files)
