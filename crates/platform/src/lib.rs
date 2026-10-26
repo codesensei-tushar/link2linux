@@ -19,6 +19,12 @@ use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+mod presence;
+
+pub use presence::{
+    AddressKind, BluetoothAddress, MAX_ADVERTISED_NAME_BYTES, PRESENCE_SERVICE_UUID,
+    ParseAddressError, PresenceAdapter, PresenceAdvertiser, truncate_device_name,
+};
 
 /// Why a platform call failed.
 #[derive(Debug, thiserror::Error)]
