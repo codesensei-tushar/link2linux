@@ -10,6 +10,9 @@ pub mod candidates;
 pub mod dial;
 pub mod link;
 pub mod notify;
+// Nothing calls into this until the runtime that starts it is added.
+#[allow(dead_code, unused_imports)]
+mod pairing;
 pub mod paths;
 pub mod qr;
 pub mod view;
