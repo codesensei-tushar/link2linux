@@ -33,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Unverified without a device: every field here, against real notifications.
  */
 internal class SnapshotExtractor(private val context: Context) {
-    private class AppInfo(val name: String, val icon: ImageSource)
+    private class AppInfo(val name: String, val icon: ImageSource?)
 
     private val apps = ConcurrentHashMap<String, AppInfo>()
 
@@ -113,7 +113,7 @@ internal class SnapshotExtractor(private val context: Context) {
             }
         val name = info?.let { runCatching { it.loadLabel(pm).toString() }.getOrNull() }
             ?.takeIf { it.isNotBlank() } ?: sbn.packageName
-        AppInfo(name, DrawableImageSource({ info?.let { runCatching { it.loadIcon(pm) }.getOrNull() } }, "app:${sbn.packageName}"))
+        AppInfo(name, info?.let { AppIconImageSource(context, it, "app:${sbn.packageName}") })
     }
 
     private fun conversation(style: NotificationCompat.MessagingStyle): ConversationSnapshot {

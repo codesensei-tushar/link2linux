@@ -17,12 +17,14 @@ import java.text.Normalizer
  * is a sign-in or confirmation link, which is as good as a code. Long mixed
  * tokens (11 to 40 letters and digits) count only next to a strong keyword
  * such as "one-time" or "do not share". Letter-only codes count only in
- * capitals, in text that is not all capitals, and not among words of an
- * offer. Numbers that read as something else are not
- * tokens: phone numbers, dates, times, amounts, percentages, counts, years
- * away from a keyword, and numbers labelled as an order, a tracking number, a
- * card and the like. It leans towards catching codes, since a false positive
- * only hides one notification's text on the computer.
+ * capitals, right after a word that names a code ("code: FRVXW", "código es
+ * HMKQ"), in text that is not all capitals, and not among words of an
+ * offer, so "the code returns JSON" stays as it is. Numbers that read as
+ * something else are not tokens: phone numbers, dates, times, amounts,
+ * percentages, counts, years away from a keyword, numbers labelled as an
+ * order, a tracking number, a card and the like, and hashes such as a commit.
+ * It leans towards catching codes, since a false positive only hides one
+ * notification's text on the computer.
  */
 class OneTimeCodeDetector {
     private val keywords = STRONG.map { Keyword.of(it, strong = true) } + WEAK.map { Keyword.of(it, strong = false) }
@@ -67,8 +69,8 @@ class OneTimeCodeDetector {
 
     /**
      * A token that may be a code. [strongOnly] counts only next to a strong
-     * keyword; [codeWordOnly] also next to a weak one that names a code
-     * ("code", "código"), not one like "login".
+     * keyword; [codeWordOnly] only right after a strong keyword or a weak one
+     * that names a code ("code", "código"), not one like "login".
      */
     private class Candidate(
         val start: Int,
@@ -119,7 +121,7 @@ class OneTimeCodeDetector {
                     when {
                         isMixedCode(shown, s, w) -> found += Candidate(w.start, w.end)
                         mixedCase && isLetterCode(shown, s, w) -> found += Candidate(w.start, w.end, codeWordOnly = true)
-                        isLongToken(s, w) -> found += Candidate(w.start, w.end, strongOnly = true)
+                        isLongToken(shown, s, w) -> found += Candidate(w.start, w.end, strongOnly = true)
                     }
                     k++
                 }
@@ -166,7 +168,7 @@ class OneTimeCodeDetector {
     }
 
     private fun isMixedCode(shown: String, s: String, w: Word): Boolean {
-        if (w.length !in 4..10 || w.digits == 0 || w.numeric || s.getOrNull(w.end) == '@') return false
+        if (w.length !in 4..10 || w.digits == 0 || w.numeric || s.getOrNull(w.end) == '@' || isHash(shown, w)) return false
         val lower = s.substring(w.start, w.end)
         // 2nd, 1080p, 30mins; iphone15, covid19; promo codes such as save20 and welcome100.
         if (ORDINAL_OR_MEASURE.matches(lower) || WORD_AND_NUMBER.matches(lower)) return false
@@ -183,8 +185,13 @@ class OneTimeCodeDetector {
     }
 
     /** A recovery code or a token: 11 to 40 characters with at least two letters and two digits. */
-    private fun isLongToken(s: String, w: Word): Boolean =
-        w.length in 11..40 && w.digits >= 2 && w.length - w.digits >= 2 && s.getOrNull(w.end) != '@' && s.getOrNull(w.start - 1) != '@'
+    private fun isLongToken(shown: String, s: String, w: Word): Boolean =
+        w.length in 11..40 && w.digits >= 2 && w.length - w.digits >= 2 && s.getOrNull(w.end) != '@' &&
+            s.getOrNull(w.start - 1) != '@' && !isHash(shown, w)
+
+    /** A commit or a checksum, "fixed in a3f9c2e": seven or more lower-case hex digits. */
+    private fun isHash(shown: String, w: Word): Boolean =
+        w.length >= 7 && shown.substring(w.start, w.end).all { it in '0'..'9' || it in 'a'..'f' }
 
     /** Words of an offer near [at]: a capitalized "code" there is a promotion, "Use code WELCOME at checkout". */
     private fun offered(s: String, at: Int): Boolean {
@@ -249,6 +256,8 @@ class OneTimeCodeDetector {
                     val near = when {
                         // "Happy 2026" is not a code, "code: 2026" is.
                         c.yearLike -> FIELD_BREAK !in gap && gap.length <= YEAR_REACH
+                        // "code: FRVXW" is a code, "the code returns JSON" and "README, the code" are not.
+                        c.codeWordOnly -> end <= c.start && CODE_LINK.matches(gap)
                         k.strong -> gap.length <= STRONG_REACH
                         else -> gap.length <= WEAK_REACH
                     }
@@ -316,7 +325,7 @@ class OneTimeCodeDetector {
             "https?://\\S*?[?&#](?:[a-z_]*token|code|otp|auth|magic|login|signin|key|ticket)=[a-z0-9._~%-]{16,}",
         )
 
-        /** Capitals that are words, not codes: "Your verification is COMPLETE". */
+        /** Capitals that are words or names of formats, not codes: "Your verification is COMPLETE", "the code is JSON". */
         val CAPITAL_WORDS = setOf(
             "your", "this", "that", "here", "with", "from", "have", "will", "only", "more", "free", "sale", "offer",
             "deal", "deals", "save", "shop", "help", "info", "stop", "start", "done", "ready", "sent", "paid", "open",
@@ -324,6 +333,8 @@ class OneTimeCodeDetector {
             "confirmed", "approved", "declined", "expired", "urgent", "alert", "notice", "important", "warning",
             "error", "today", "now", "call", "reply", "click", "link", "login", "account", "bank", "card", "otp",
             "code", "test", "demo", "note", "news", "live", "best", "final", "last", "next", "total", "amount",
+            "json", "yaml", "toml", "html", "http", "https", "readme", "todo", "fixme", "null", "none", "true", "false",
+            "ascii", "utf",
         )
 
         /** Words around a capitalized code that make it a promotion: "Use code WELCOME at checkout". */
@@ -333,8 +344,18 @@ class OneTimeCodeDetector {
             "earn", "bonus", "reward", "rewards", "points", "coins", "gift",
         )
 
-        /** Weak keywords that name a code, the only ones a letter-only token may sit next to. */
+        /** Weak keywords that name a code; with the strong ones, the only keywords a letter-only token may follow. */
         val CODE_WORDS = listOf("code", "código", "codice", "kode", "kod", "код", "कोड", "コード", "코드", "代码", "رمز", "كود")
+
+        /**
+         * All that may stand between a keyword and a letter-only code after it:
+         * signs, and a verb or particle that says "is", as in "code: FRVXW",
+         * "code is FRVXW", "código es HMKQ", "認証コードは FRVXW". Matched in
+         * folded, lower-case text, where "è" and "é" read as "e".
+         */
+        val CODE_LINK = Regex(
+            "[\\s:=\"'«»“”(\\[–—-]*(?:(?:\\s(?:is|es|est|ist|lautet|e|adalah)|は|が|는|은|是|为|為)[\\s:=\"'«»“”(\\[–—-]*)?",
+        )
 
         val ORDINAL_OR_MEASURE = Regex("\\d+(st|nd|rd|th|am|pm|[kmgt]b|px|ms|s|m|h|d|km|kg|g|hz|fps|mph|p|k|x|mins?|hrs?|secs?|yrs?)")
         val WORD_AND_NUMBER = Regex("[a-z]{4,}\\d+|[a-z]{3}\\d{1,3}")

@@ -20,6 +20,8 @@ class NotificationEngineIsolationTest {
             waiting += { done(ImageRenderers.renderSafely(source, kind)) }
         }
 
+        val idle get() = waiting.isEmpty()
+
         fun finishAll() {
             val now = waiting.toList()
             waiting.clear()
@@ -28,7 +30,36 @@ class NotificationEngineIsolationTest {
     }
 
     private class Picture(private val fill: Byte) : ImageSource {
-        override fun render(kind: ImageKind) = EncodedImage(ImageFormat.IMAGE_FORMAT_PNG, ByteArray(64) { fill }, 8, 8)
+        var renders = 0
+
+        override fun render(kind: ImageKind): EncodedImage {
+            renders++
+            return EncodedImage(ImageFormat.IMAGE_FORMAT_PNG, ByteArray(64) { fill }, 8, 8)
+        }
+    }
+
+    @Test
+    fun `a picture that arrives while shared pictures fill the cache is rendered once and sent`() = runTest {
+        val renderer = ManualRenderer()
+        val h = EngineHarness(this, images = ImageStore(softLimitBytes = 100, hardLimitBytes = 10_000, renderer = renderer))
+        h.connect()
+        h.attach()
+        h.sync()
+        h.post(snap("a").copy(largeIcon = Picture(1)))
+        renderer.finishAll()
+        h.idle()
+
+        val picture = Picture(2)
+        h.post(snap("b").copy(largeIcon = picture))
+        repeat(5) {
+            renderer.finishAll()
+            h.idle()
+        }
+
+        assertEquals(1, picture.renders)
+        assertTrue(renderer.idle)
+        assertTrue(h.transport.posted.last { it.notification.key == "b" }.notification.hasLargeIcon())
+        assertTrue(h.transport.posted.last { it.notification.key == "a" }.notification.hasLargeIcon())
     }
 
     @Test

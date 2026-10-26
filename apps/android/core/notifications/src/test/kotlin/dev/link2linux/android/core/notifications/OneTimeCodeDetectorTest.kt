@@ -131,9 +131,45 @@ class OneTimeCodeDetectorTest {
             "Sign in with this link: https://x.example/l?token=Zx81kq0PzQ7mN2bVc9Lr",
             "Tap to log in: https://app.example.com/magic?code=8f3K2LqZ7xT4mW9pR1sV&utm_source=email",
             "Confirm your email address\nhttps://accounts.example.org/verify?access_token=eyJhbGciOiJIUzI1NiJ9.e30",
+            "Your Steam Guard code is: FRVXW",
+            "Your OTP is KQZTRW",
+            "Votre code est KQZTR. Ne le partagez avec personne.",
+            "Ihr Code lautet HMKQZ",
+            "Steamの認証コードは FRVXW です",
         ),
         code = true,
     )
+
+    @Test
+    fun `chat and work messages that mention code are left alone`() = assertEach(
+        listOf(
+            "I pushed the code, can you check the README?",
+            "the code returns JSON now",
+            "LGTM, the code looks fine",
+            "which codec? HEVC or AVC",
+            "Verification done on staging, LGTM",
+            "the codebase still uses HTTP for that",
+            "Don't share this yet, NASA announces it tomorrow",
+            "the codes are in the WIKI",
+            "Two-factor auth is now required on AZURE",
+            "Do not share the slides outside ACME",
+            "OTP login works now, the bug was in AUTH",
+            "Code review: please look at the NGINX config first",
+            "Our code of conduct is in the README",
+            "the code is JSON now, not YAML",
+            "Ann: the codec is HEVC, not AVC",
+            "Fixed in a3f9c2e, the code compiles again",
+            "Verification failed for commit 3f9a8b7c6d5e4f1a, can you rerun the job?",
+            "the passcode screen in the iOS app crashes on IPAD",
+        ),
+        code = false,
+    )
+
+    @Test
+    fun `a letter-only code needs the word that names it in the same field`() {
+        assertTrue(detector.containsCode(listOf("Steam", "Your code: FRVXW")))
+        assertFalse(detector.containsCode(listOf("#code", "JSON parsing is broken again")))
+    }
 
     @Test
     fun `capitals, long numbers and links that are no codes are left alone`() = assertEach(

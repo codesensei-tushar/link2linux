@@ -62,7 +62,10 @@ object ImageRenderers {
  *
  * [intern] never waits for a render: an image that is not ready yet is
  * rendered by [renderer], and [onRendered] says when it is, so the caller can
- * ask again.
+ * ask again. A new image is kept until that caller has had it, so it can pin
+ * it. One evicted before then anyway is not rendered again at once, which
+ * could go round for good while pinned images fill the cache: that answer
+ * goes without it, and the next one asked for renders it afresh.
  */
 class ImageStore(
     private val softLimitBytes: Long = 16L * 1024 * 1024,
@@ -73,7 +76,10 @@ class ImageStore(
     private class Entry(val image: EncodedImage)
 
     /** A render that [intern] started: not finished yet, or finished with this reference (null for no image). */
-    private class Outcome(@Volatile var done: Boolean = false, @Volatile var ref: ImageRef? = null)
+    private class Outcome(@Volatile var done: Boolean = false, @Volatile var ref: ImageRef? = null) {
+        /** Whether [intern] has returned [ref], so a notification may have pinned it. Guarded by the lock. */
+        var handedOut = false
+    }
 
     /** Called on the renderer's thread when an image [intern] could not return yet has finished rendering. */
     @Volatile
@@ -111,8 +117,14 @@ class ImageStore(
             when {
                 known == null -> Unit
                 !known.done || ref == null -> return null // still rendering, or no image
-                entries[ref.sha256] != null -> return ref
-                else -> Unit // evicted since: render it again
+                entries[ref.sha256] != null -> return ref.also { known.handedOut = true }
+                // Evicted before any notification could pin it. Rendering it again for the mapping that asks now could
+                // go round for good; it goes without it, and the next time it is asked for it is rendered afresh.
+                !known.handedOut -> {
+                    forSource.remove(kind)
+                    return null
+                }
+                else -> Unit // evicted since it was sent: render it again
             }
             Outcome().also { forSource[kind] = it }
         }
@@ -123,7 +135,10 @@ class ImageStore(
             if (returned.get()) onRendered()
         }
         returned.set(true)
-        return outcome.ref.takeIf { outcome.done }
+        if (!outcome.done) return null
+        return synchronized(lock) {
+            outcome.ref?.takeIf { entries[it.sha256] != null }?.also { outcome.handedOut = true }
+        }
     }
 
     /** Whether [source] as [kind] is still rendering, so [intern] has no answer for it yet. */
@@ -147,7 +162,8 @@ class ImageStore(
             if (entries[hash] == null) {
                 entries[hash] = Entry(image)
                 totalBytes += image.data.size
-                evict()
+                // Not this image: no notification has pinned it yet, and the one that asked for it is about to.
+                evict(spare = hash)
             }
             if (memoKey != null) memo[memoKey] = ref
         }
@@ -174,13 +190,13 @@ class ImageStore(
 
     val sizeBytes: Long get() = synchronized(lock) { totalBytes }
 
-    private fun evict() {
+    private fun evict(spare: ByteString? = null) {
         // Unpinned images go first, least recently used first.
         if (totalBytes > softLimitBytes) {
             val it = entries.entries.iterator()
             while (it.hasNext() && totalBytes > softLimitBytes) {
                 val e = it.next()
-                if (e.key !in pinned) {
+                if (e.key !in pinned && e.key != spare) {
                     totalBytes -= e.value.image.data.size
                     it.remove()
                 }
