@@ -20,6 +20,7 @@
 pub mod crypto;
 mod qr;
 pub mod records;
+mod store;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -31,6 +32,7 @@ pub use self::qr::{
     DEFAULT_BEACON_PORT, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, QR_PAYLOAD_VERSION, QR_URI_PREFIX,
     QrError, QrPayload,
 };
+pub use self::store::FileTrustStore;
 use crate::device::DeviceKind;
 pub use crate::identity::CertificateFingerprint;
 use crate::transport::PeerPin;
