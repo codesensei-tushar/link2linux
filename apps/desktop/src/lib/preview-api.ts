@@ -44,6 +44,7 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     desktopName: "This computer",
     expiresInMs: 272_000,
     lifetimeMs: 300_000,
+    lastFailure: null,
   };
   const phones = [
     { id: "a", name: "Pixel 9", address: "192.168.1.42:27380" },

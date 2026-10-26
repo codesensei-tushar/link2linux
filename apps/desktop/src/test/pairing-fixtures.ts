@@ -13,6 +13,7 @@ export function qrOffer(overrides: Partial<Step<"qrOffer">> = {}): Step<"qrOffer
     desktopName: "Desk",
     expiresInMs: 272_000,
     lifetimeMs: 300_000,
+    lastFailure: null,
     ...overrides,
   };
 }

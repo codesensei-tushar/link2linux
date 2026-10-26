@@ -2,10 +2,13 @@
 //! the phones found in pairing mode, and how errors map to what the user
 //! reads.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use link2linux_core::discovery::LocalAddress;
+use link2linux_core::discovery::onlink::is_on_link;
 use link2linux_core::pairing::{OfferStatus, PairingError, PairingOutcome, QrOffer};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
@@ -30,12 +33,10 @@ pub const SAS_MAX_ATTEMPTS: u8 = 3;
 #[derive(Debug)]
 pub enum Phase {
     Idle,
+    /// The QR code ([`PairingCtl::code`]) is showing.
     Qr {
-        uri: String,
-        svg: String,
-        expires: Instant,
-        /// Which offer of [`MAX_OFFERS`] this is.
-        offer: u8,
+        /// Why the last connection the user asked for ended.
+        last_failure: Option<PairingFailure>,
     },
     Searching {
         last_failure: Option<PairingFailure>,
@@ -61,6 +62,17 @@ pub enum Phase {
     },
 }
 
+/// The QR code of an activation. It stays while connections run, since a
+/// failed one does not end the offer.
+#[derive(Debug)]
+pub struct Code {
+    pub uri: String,
+    pub svg: String,
+    pub expires: Instant,
+    /// Which offer of [`MAX_OFFERS`] this is.
+    pub number: u8,
+}
+
 impl Phase {
     /// Whether a new activation may start.
     pub fn is_startable(&self) -> bool {
@@ -81,8 +93,11 @@ pub struct PairingCtl {
     pub token: CancellationToken,
     /// The QR offer being shown.
     pub offer: Option<Arc<Mutex<QrOffer>>>,
-    /// A pairing connection is open.
-    pub dialing: bool,
+    /// Its code.
+    pub code: Option<Code>,
+    /// The addresses pairing connections are open to. A QR offer may have
+    /// several, a code comparison one.
+    pub dialing: BTreeSet<IpAddr>,
 }
 
 impl Default for PairingCtl {
@@ -94,7 +109,8 @@ impl Default for PairingCtl {
             answer: None,
             token: CancellationToken::new(),
             offer: None,
-            dialing: false,
+            code: None,
+            dialing: BTreeSet::new(),
         }
     }
 }
@@ -107,7 +123,8 @@ impl PairingCtl {
         self.token = CancellationToken::new();
         self.answer = None;
         self.offer = None;
-        self.dialing = false;
+        self.code = None;
+        self.dialing.clear();
     }
 
     /// What the UI is shown at `now`.
@@ -117,15 +134,19 @@ impl PairingCtl {
         };
         match &self.phase {
             Phase::Idle => PairingState::Idle,
-            Phase::Qr {
-                uri, svg, expires, ..
-            } => PairingState::QrOffer {
-                uri: uri.clone(),
-                svg: svg.clone(),
-                desktop_name: desktop_name.to_owned(),
-                expires_in_ms: left(*expires),
-                lifetime_ms: u32::try_from(link2linux_core::pairing::OFFER_LIFETIME.as_millis())
+            Phase::Qr { last_failure } => match &self.code {
+                Some(code) => PairingState::QrOffer {
+                    uri: code.uri.clone(),
+                    svg: code.svg.clone(),
+                    desktop_name: desktop_name.to_owned(),
+                    expires_in_ms: left(code.expires),
+                    lifetime_ms: u32::try_from(
+                        link2linux_core::pairing::OFFER_LIFETIME.as_millis(),
+                    )
                     .unwrap_or(u32::MAX),
+                    last_failure: *last_failure,
+                },
+                None => PairingState::Idle,
             },
             Phase::Searching { last_failure } => PairingState::Searching {
                 phones: phones.phones(),
@@ -160,6 +181,32 @@ impl PairingCtl {
                 reason: *reason,
             },
         }
+    }
+
+    /// The addresses of a phone that announced the QR offer's tag that get
+    /// a pairing connection: on-link ones, unless a connection to them is
+    /// open or a peer there failed for this offer. Connections to others
+    /// may be running, since anyone can copy the tag.
+    pub fn offer_targets(
+        &self,
+        addresses: &[SocketAddr],
+        locals: &[LocalAddress],
+    ) -> Vec<SocketAddr> {
+        let Some(offer) = &self.offer else {
+            return Vec::new();
+        };
+        let Ok(offer) = offer.lock() else {
+            return Vec::new();
+        };
+        addresses
+            .iter()
+            .copied()
+            .filter(|address| {
+                is_on_link(*address, locals)
+                    && !self.dialing.contains(&address.ip())
+                    && offer.may_dial(address.ip())
+            })
+            .collect()
     }
 
     /// A code comparison attempt ended. Go back to the list while attempts
@@ -370,12 +417,42 @@ mod tests {
     }
 
     #[test]
+    fn sightings_of_the_offer_are_dialed_while_others_connect() {
+        use link2linux_core::identity::CertificateFingerprint;
+
+        let at = |last: u8| SocketAddr::from(([192, 168, 1, last], 27380));
+        let locals = [LocalAddress {
+            ip: IpAddr::from([192, 168, 1, 2]),
+            prefix_len: 24,
+            interface_index: None,
+        }];
+        let mut ctl = PairingCtl::default();
+        assert!(ctl.offer_targets(&[at(9)], &locals).is_empty());
+
+        let offer = QrOffer::new(CertificateFingerprint([1; 32]), "Desk", Vec::new(), None);
+        ctl.offer = Some(Arc::new(Mutex::new(offer)));
+        // One peer is still connecting, another failed: a third is dialed.
+        ctl.dialing.insert(at(9).ip());
+        let failed = CertificateFingerprint([2; 32]);
+        if let Some(offer) = &ctl.offer {
+            offer
+                .lock()
+                .unwrap()
+                .record_failed_proof(failed, at(10).ip());
+        }
+        let off_link = SocketAddr::from(([10, 0, 0, 7], 27380));
+        let seen = [at(9), at(10), at(11), off_link];
+        assert_eq!(ctl.offer_targets(&seen, &locals), [at(11)]);
+    }
+
+    #[test]
     fn a_reset_starts_a_new_generation_and_cancels_the_old_tasks() {
         let mut ctl = PairingCtl::default();
         let old = ctl.token.clone();
-        ctl.dialing = true;
+        ctl.dialing.insert(IpAddr::from([192, 168, 1, 9]));
         ctl.reset();
         assert!(old.is_cancelled() && !ctl.token.is_cancelled());
-        assert_eq!((ctl.generation, ctl.dialing), (1, false));
+        assert_eq!(ctl.generation, 1);
+        assert!(ctl.dialing.is_empty());
     }
 }

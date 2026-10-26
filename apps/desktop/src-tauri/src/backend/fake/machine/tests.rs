@@ -58,11 +58,13 @@ fn qr_pairing_runs_through_every_step() {
         desktop_name,
         expires_in_ms,
         lifetime_ms,
+        last_failure,
     } = m.pairing(at(1_000))
     else {
         panic!("expected a QR offer");
     };
     assert!(uri.starts_with("link2linux://pair?v=1&f="));
+    assert_eq!(last_failure, None);
     assert!(svg.contains("<svg"));
     assert_eq!(desktop_name, "Desk");
     assert_eq!((expires_in_ms, lifetime_ms), (299_000, OFFER_LIFETIME_MS));

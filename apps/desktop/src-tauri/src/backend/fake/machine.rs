@@ -119,6 +119,7 @@ impl Machine {
                 desktop_name: self.desktop_name.clone(),
                 expires_in_ms: left(*expires),
                 lifetime_ms: OFFER_LIFETIME_MS,
+                last_failure: None,
             },
             Phase::Searching { last_failure, .. } => PairingState::Searching {
                 phones: self.phones.clone(),

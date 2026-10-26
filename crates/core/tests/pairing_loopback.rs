@@ -356,6 +356,58 @@ async fn a_wrong_secret_fails_and_blocks_only_that_phone() {
 }
 
 #[tokio::test]
+async fn a_peer_that_hangs_up_before_its_proof_is_blocked_too() {
+    let desktop = Desktop::new();
+    let offer = desktop.offer();
+    let secret = offer.lock().unwrap().secret().clone();
+    let impostor = TestPhone::bind(loopback(2), "impostor").await;
+
+    // It completes TLS and Hello, then leaves without a proof.
+    let desktop_side = async {
+        let (mut wire, binding, peer) = desktop
+            .dial_to_pair(impostor.addr(), PairingMethod::QrCode)
+            .await;
+        let timeouts = PairingTimeouts::default();
+        let mut prompt = confirming();
+        let store = &desktop.store;
+        pair_by_qr(
+            &mut wire,
+            &binding,
+            &peer,
+            &offer,
+            store,
+            &mut prompt,
+            &timeouts,
+        )
+        .await
+    };
+    let impostor_side = async {
+        let mut connection = impostor.accept(PhoneTls::sas_mode()).await.unwrap();
+        connection.wire.hello(impostor.hello()).await.unwrap();
+        connection.wire.finish().await;
+    };
+    let (result, ()) = tokio::join!(desktop_side, impostor_side);
+    assert!(
+        matches!(
+            result,
+            Err(PairingError::Closed | PairingError::Connection(_))
+        ),
+        "{result:?}"
+    );
+    {
+        let offer = offer.lock().unwrap();
+        assert_eq!(offer.failed_proofs(), 1);
+        assert_eq!(offer.status(Instant::now()), OfferStatus::Active);
+        assert!(offer.is_blocked(&impostor.fingerprint(), loopback(2)));
+    }
+
+    // The phone that scanned the code still pairs with it.
+    let phone = TestPhone::bind(LOCALHOST, "phone-1").await;
+    let (result, _) = qr_attempt(&desktop, &phone, &offer, &secret, &mut confirming()).await;
+    assert_eq!(result.unwrap().device.fingerprint, phone.fingerprint());
+}
+
+#[tokio::test]
 async fn too_many_failed_proofs_withdraw_the_offer() {
     let desktop = Desktop::new();
     let offer = desktop.offer();

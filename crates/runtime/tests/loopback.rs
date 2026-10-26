@@ -1,8 +1,8 @@
 //! The runtime against a stand-in phone over real TLS on the loopback
 //! interface: pairing by QR code, reconnecting as a paired phone,
 //! mirroring a notification to the desktop and dismissing it again,
-//! unpairing, and telling the phone's refusal of this desktop's key from a
-//! forged one.
+//! unpairing, telling the phone's refusal of this desktop's key from a
+//! forged one, and keeping a QR code up after an impostor failed.
 
 #[path = "../../core/tests/support/mod.rs"]
 mod support;
@@ -24,7 +24,7 @@ use link2linux_platform::{
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
     GoodbyeReason, NotificationCategory, NotificationContent, NotificationImportance,
-    NotificationPosted, NotificationSyncBatch, PhoneNotification, SyncCursor,
+    NotificationPosted, NotificationSyncBatch, PairingProof, PhoneNotification, SyncCursor,
 };
 use link2linux_runtime::notify::ServiceFactory;
 use link2linux_runtime::paths::DataDir;
@@ -158,6 +158,13 @@ impl Events {
     }
 }
 
+/// Waits for something the desktop is expected to do, such as dialing.
+async fn within<T>(expected: impl Future<Output = T>) -> T {
+    tokio::time::timeout(WAIT, expected)
+        .await
+        .expect("timed out waiting for the desktop")
+}
+
 /// Waits until `check` finds something, woken by `changed`.
 async fn wait<T>(changed: &Notify, check: impl Fn() -> Option<T>) -> T {
     let result = tokio::time::timeout(WAIT, async {
@@ -213,8 +220,8 @@ fn start() -> Rig {
     }
 }
 
-/// Pairs the stand-in phone by QR code and returns the desktop's key.
-async fn pair(rig: &Rig, phone: &Arc<TestPhone>) -> (CertificateFingerprint, Device) {
+/// Shows a QR code and returns what a phone reads from it.
+async fn show_code(rig: &Rig) -> QrPayload {
     rig.runtime.start_pairing(PairingMethod::QrCode).unwrap();
     let uri = rig
         .events
@@ -226,7 +233,12 @@ async fn pair(rig: &Rig, phone: &Arc<TestPhone>) -> (CertificateFingerprint, Dev
             _ => None,
         })
         .await;
-    let payload = QrPayload::parse(&uri).unwrap();
+    QrPayload::parse(&uri).unwrap()
+}
+
+/// Pairs the stand-in phone by QR code and returns the desktop's key.
+async fn pair(rig: &Rig, phone: &Arc<TestPhone>) -> (CertificateFingerprint, Device) {
+    let payload = show_code(rig).await;
 
     let scanned = phone.clone();
     let desktop = payload.desktop;
@@ -287,7 +299,7 @@ async fn phone_session(
 /// confirms the record. The phone then ends it as a restarting phone does.
 async fn pair_and_confirm(rig: &Rig, phone: &Arc<TestPhone>) -> CertificateFingerprint {
     let (desktop, _) = pair(rig, phone).await;
-    let mut session = phone_session(phone, desktop).await;
+    let mut session = within(phone_session(phone, desktop)).await;
     // The desktop asks for the notifications once the phone's
     // FeatureStatus is in, and confirms the record right after.
     loop {
@@ -561,10 +573,7 @@ async fn an_alert_from_whoever_holds_the_address_keeps_the_pairing() {
     // The next dials reach a host that answers with a plaintext alert. Each
     // is an ordinary failed attempt, after which the desktop dials again.
     for _ in 0..2 {
-        tokio::time::timeout(WAIT, phone.forge_refusal())
-            .await
-            .expect("the desktop dials again")
-            .unwrap();
+        within(phone.forge_refusal()).await.unwrap();
     }
     let listed = rig.runtime.devices();
     assert_eq!(listed.len(), 1);
@@ -572,7 +581,7 @@ async fn an_alert_from_whoever_holds_the_address_keeps_the_pairing() {
 
     // The phone itself still gets a session.
     rig.runtime.reconnect("phone-3");
-    phone_session(&phone, desktop).await;
+    within(phone_session(&phone, desktop)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -584,7 +593,11 @@ async fn a_phone_that_refuses_the_key_after_the_handshake_removed_the_pairing() 
     // The phone forgot this desktop: its TLS stack refuses the key once the
     // handshake has checked the phone's.
     let stranger = Identity::generate().unwrap().fingerprint();
-    assert!(phone.accept(PhoneTls::pinned(stranger)).await.is_err());
+    assert!(
+        within(phone.accept(PhoneTls::pinned(stranger)))
+            .await
+            .is_err()
+    );
     let devices = rig
         .events
         .devices_where(|devices| devices.iter().any(|d| d.status == DeviceStatus::Revoked))
@@ -602,7 +615,11 @@ async fn an_unfinished_pairing_the_phone_refuses_is_deleted() {
     pair(&rig, &phone).await;
 
     let stranger = Identity::generate().unwrap().fingerprint();
-    assert!(phone.accept(PhoneTls::pinned(stranger)).await.is_err());
+    assert!(
+        within(phone.accept(PhoneTls::pinned(stranger)))
+            .await
+            .is_err()
+    );
     rig.events.devices_where(<[Device]>::is_empty).await;
     assert!(rig.runtime.devices().is_empty());
 }
@@ -621,10 +638,8 @@ async fn a_code_pairing_never_replaces_a_phone_with_the_same_id_on_its_own() {
     rig.runtime.start_pairing(PairingMethod::Sas).unwrap();
     let side = claimant.clone();
     let phone_side = tokio::spawn(async move {
-        let mut connection = side.accept(PhoneTls::sas_mode()).await.unwrap();
-        connection
-            .pair_by_sas(&side, false, SasDecision::Confirmed)
-            .await
+        let mut connection = within(side.accept(PhoneTls::sas_mode())).await.unwrap();
+        within(connection.pair_by_sas(&side, false, SasDecision::Confirmed)).await
     });
     rig.runtime
         .pair_with(PhoneTarget::Address {
@@ -654,9 +669,84 @@ async fn a_code_pairing_never_replaces_a_phone_with_the_same_id_on_its_own() {
 
     // The paired phone keeps its record and its task, which dials it.
     rig.runtime.reconnect("phone-6");
-    tokio::time::timeout(WAIT, phone_session(&phone, desktop))
+    within(phone_session(&phone, desktop)).await;
+}
+
+/// Another loopback address, so a test phone can stand at its own address.
+fn loopback(last: u8) -> IpAddr {
+    Ipv4Addr::new(127, 0, 0, last).into()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_attempt_leaves_the_code_to_the_phone_that_scanned_it() {
+    use link2linux_core::pairing::PairingOutcome;
+    use link2linux_runtime::view::PairingFailure;
+
+    let rig = start();
+    let payload = show_code(&rig).await;
+
+    // A host at another address answers and sends a proof without the
+    // secret.
+    let impostor = TestPhone::bind(loopback(2), "impostor").await;
+    rig.runtime
+        .pair_with(PhoneTarget::Address {
+            address: impostor.addr().to_string(),
+        })
+        .unwrap();
+    let mut forged = within(impostor.accept(PhoneTls::sas_mode())).await.unwrap();
+    within(forged.wire.hello(impostor.hello())).await.unwrap();
+    let proof = PairingProof { mac: vec![0; 32] };
+    forged
+        .wire
+        .send_payload(Payload::PairingProof(proof))
         .await
-        .expect("the desktop dials the paired phone");
+        .unwrap();
+    within(forged.wire.finish()).await;
+
+    // The same code stays up, with the reason that attempt failed.
+    let (svg, reason) = rig
+        .events
+        .pairing_matching(|state| match state {
+            PairingState::QrOffer {
+                svg,
+                last_failure: Some(reason),
+                ..
+            } => Some((svg.clone(), *reason)),
+            _ => None,
+        })
+        .await;
+    assert_eq!(reason, PairingFailure::VerificationFailed);
+    let PairingState::QrOffer { svg: first, .. } = rig.events.pairing.lock().unwrap()[0].clone()
+    else {
+        panic!("the first state is the code");
+    };
+    assert_eq!(svg, first);
+
+    // The phone that scanned it pairs with it.
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "phone-7").await);
+    let scanned = phone.clone();
+    let phone_side = tokio::spawn(async move {
+        let accepted = scanned.accept(PhoneTls::pinned(payload.desktop));
+        let mut connection = within(accepted).await.unwrap();
+        let report = within(connection.pair_by_qr(&scanned, &payload.secret)).await;
+        within(connection.wire.finish()).await;
+        report
+    });
+    rig.runtime
+        .pair_with(PhoneTarget::Address {
+            address: phone.addr().to_string(),
+        })
+        .unwrap();
+    let device = rig
+        .events
+        .pairing_matching(|state| match state {
+            PairingState::Paired { device } => Some(device.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(device.id, "phone-7");
+    let report = phone_side.await.unwrap();
+    assert_eq!(report.desktop_outcome, Some(PairingOutcome::Accepted));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -675,13 +765,20 @@ async fn nothing_is_paired_with_a_phone_that_is_not_there() {
     let reason = rig
         .events
         .pairing_matching(|state| match state {
-            PairingState::Failed { reason, .. } => Some(*reason),
+            PairingState::QrOffer {
+                last_failure: Some(reason),
+                ..
+            } => Some(*reason),
             _ => None,
         })
         .await;
     assert_eq!(reason, PairingFailure::PhoneNotFound);
     assert!(rig.runtime.devices().is_empty());
-    // Dismissing the failure returns to idle.
+    // The code stays up for the phone that scans it; cancelling ends it.
+    assert!(matches!(
+        rig.runtime.pairing(),
+        PairingState::QrOffer { .. }
+    ));
     rig.runtime.cancel_pairing();
     assert_eq!(rig.runtime.pairing(), PairingState::Idle);
 }

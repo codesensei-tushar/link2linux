@@ -275,7 +275,12 @@ desktopName: string;
 /**  Time left until this offer is replaced. */
 expiresInMs: number; 
 /**  Length of the offer, for drawing progress. */
-lifetimeMs: number } | 
+lifetimeMs: number; 
+/**
+ *  Why the last connection the user asked for, to a typed address,
+ *  ended. A failed connection does not end the offer.
+ */
+lastFailure: PairingFailure | null } | 
 /**  Looking for phones in pairing mode (code comparison). */
 { step: "searching"; phones: DiscoveredPhone[]; 
 /**  Attempts left before the user has to start again. */
