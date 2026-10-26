@@ -1184,7 +1184,9 @@ place.
   app's name is in the banner's summary instead.
 - `visibility` is a hint for the desktop's own privacy settings. While the
   desktop's screen is locked, its banners never show content, and
-  `SECRET` notifications get no banner at all.
+  `SECRET` notifications get no banner at all. A desktop that cannot tell
+  whether its screen is locked treats it as locked, and when the screen
+  locks it takes the content off its banners still on screen.
 
 ### Actions and replies
 
