@@ -10,9 +10,9 @@
 //! stays unconfirmed until the phone's first `FeatureStatus`
 //! ([`records::confirm`](super::records::confirm)).
 //!
-//! On every failure these functions have already sent the
-//! `PairingResult` (or `Goodbye`) the protocol asks for; the caller only
-//! closes the connection.
+//! On a failure these functions have already sent the `PairingResult` the
+//! protocol asks for, if any. The caller ends the connection, with a
+//! `Goodbye` when [`PairingError::goodbye_reason`] names one.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    Goodbye, GoodbyeReason, PairingMethod, PairingOutcome, PairingProof, PairingResult, SasNonce,
+    PairingMethod, PairingOutcome, PairingProof, PairingResult, SasNonce,
 };
 use tokio::time::{self, Instant};
 use tracing::debug;
@@ -249,7 +249,7 @@ where
     P: PairingPrompt,
     S: TrustStore + ?Sized,
 {
-    check_start(channel, binding, phone, PairingMethod::QrCode).await?;
+    check_start(binding, phone, PairingMethod::QrCode)?;
     let checked = {
         let offer = lock(offer)?;
         match offer.status(Instant::now()) {
@@ -368,7 +368,7 @@ where
     P: PairingPrompt,
     S: TrustStore + ?Sized,
 {
-    check_start(channel, binding, phone, PairingMethod::Sas).await?;
+    check_start(binding, phone, PairingMethod::Sas)?;
 
     // 1. The phone commits to its nonce.
     let commitment = match sas_step(channel, timeouts).await? {
@@ -452,8 +452,7 @@ pub async fn refuse<C: PairingChannel>(
 }
 
 /// Checks what every pairing needs before it starts.
-async fn check_start<C: PairingChannel>(
-    channel: &mut C,
+fn check_start(
     binding: &PairingBinding,
     phone: &DeviceInfo,
     method: PairingMethod,
@@ -467,7 +466,7 @@ async fn check_start<C: PairingChannel>(
     }
     if phone.kind != DeviceKind::Phone {
         let detail = "the peer's Hello does not announce a phone".to_owned();
-        return Err(protocol_error(channel, detail).await);
+        return Err(PairingError::Protocol(detail));
     }
     Ok(())
 }
@@ -489,7 +488,7 @@ async fn sas_out_of_order<C: PairingChannel>(channel: &mut C, payload: &Payload)
     match payload {
         Payload::PairingResult(result) => PairingError::Rejected(result.outcome()),
         Payload::SasCommit(_) | Payload::SasNonce(_) | Payload::PairingProof(_) => {
-            let error = PairingError::Protocol(format!("{} out of order", payload_name(payload)));
+            let error = PairingError::OutOfOrder(payload_name(payload));
             abort(channel, PairingOutcome::VerificationFailed, error).await
         }
         other => unexpected(channel, other).await,
@@ -507,13 +506,10 @@ async fn unexpected<C: PairingChannel>(channel: &mut C, payload: &Payload) -> Pa
         | Payload::PairingResult(_)
         | Payload::SasCommit(_)
         | Payload::SasNonce(_) => {
-            let error = PairingError::Protocol(format!("{} out of order", payload_name(payload)));
+            let error = PairingError::OutOfOrder(payload_name(payload));
             abort(channel, PairingOutcome::VerificationFailed, error).await
         }
-        other => {
-            let detail = format!("{} during pairing", payload_name(other));
-            protocol_error(channel, detail).await
-        }
+        other => PairingError::Protocol(format!("{} during pairing", payload_name(other))),
     }
 }
 
@@ -564,8 +560,7 @@ fn store_pairing<S: TrustStore + ?Sized>(
     })
 }
 
-/// Sends the desktop's acceptance once the pairing is stored, or ends the
-/// connection if storing it failed.
+/// Sends the desktop's acceptance once the pairing is stored.
 async fn finish<C: PairingChannel>(
     channel: &mut C,
     stored: Result<PairingSuccess, PairingError>,
@@ -580,14 +575,7 @@ async fn finish<C: PairingChannel>(
         Err(error @ PairingError::OfferUnavailable(_)) => {
             Err(abort(channel, PairingOutcome::NotExpected, error).await)
         }
-        Err(error) => {
-            let goodbye = Goodbye {
-                reason: GoodbyeReason::Unspecified.into(),
-                detail: "the desktop could not store the pairing".into(),
-            };
-            let _ = send(channel, Payload::Goodbye(goodbye)).await;
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }
 
@@ -601,18 +589,6 @@ async fn abort<C: PairingChannel>(
         debug!(%send_error, "could not send the pairing result");
     }
     error
-}
-
-/// Sends `Goodbye` with `GOODBYE_REASON_PROTOCOL_ERROR`.
-async fn protocol_error<C: PairingChannel>(channel: &mut C, detail: String) -> PairingError {
-    let goodbye = Goodbye {
-        reason: GoodbyeReason::ProtocolError.into(),
-        detail: detail.clone(),
-    };
-    if let Err(send_error) = send(channel, Payload::Goodbye(goodbye)).await {
-        debug!(%send_error, "could not send Goodbye");
-    }
-    PairingError::Protocol(detail)
 }
 
 async fn send<C: PairingChannel>(channel: &mut C, payload: Payload) -> Result<(), PairingError> {
@@ -650,7 +626,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use link2linux_protocol::Ping;
-    use link2linux_protocol::v1::SasCommit;
+    use link2linux_protocol::v1::{GoodbyeReason, SasCommit};
 
     use super::*;
     use crate::pairing::MemoryTrustStore;
@@ -784,14 +760,14 @@ mod tests {
     async fn feature_messages_during_pairing_are_protocol_errors() {
         let mut channel = Script::playing([Payload::Ping(Ping { nonce: 1 })]);
         let result = qr(&mut channel, &phone()).await;
+        let error = result.as_ref().unwrap_err();
+        assert_eq!(error.goodbye_reason(), Some(GoodbyeReason::ProtocolError));
         assert!(
             matches!(result, Err(PairingError::Protocol(_))),
             "{result:?}"
         );
-        let Some(Payload::Goodbye(goodbye)) = channel.sent.last() else {
-            panic!("expected Goodbye, sent {:?}", channel.sent);
-        };
-        assert_eq!(goodbye.reason(), GoodbyeReason::ProtocolError);
+        // The session sends the Goodbye; the driver sent only its proof.
+        assert!(matches!(channel.sent[..], [Payload::PairingProof(_)]));
     }
 
     #[tokio::test]
@@ -803,7 +779,7 @@ mod tests {
             matches!(result, Err(PairingError::Protocol(_))),
             "{result:?}"
         );
-        assert!(matches!(channel.sent[..], [Payload::Goodbye(_)]));
+        assert!(channel.sent.is_empty());
     }
 
     #[tokio::test]
@@ -811,7 +787,7 @@ mod tests {
         let mut channel = Script::playing([reveal()]);
         let result = sas(&mut channel).await;
         assert!(
-            matches!(result, Err(PairingError::Protocol(_))),
+            matches!(result, Err(PairingError::OutOfOrder("SasNonce"))),
             "{result:?}"
         );
         assert_eq!(
@@ -825,7 +801,7 @@ mod tests {
         let mut channel = Script::playing([commit(), reveal(), commit()]);
         let result = sas(&mut channel).await;
         assert!(
-            matches!(result, Err(PairingError::Protocol(_))),
+            matches!(result, Err(PairingError::OutOfOrder("SasCommit"))),
             "{result:?}"
         );
         assert!(matches!(channel.sent[0], Payload::SasNonce(_)));

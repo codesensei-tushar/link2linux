@@ -41,6 +41,7 @@ pub use self::store::FileTrustStore;
 use crate::device::DeviceKind;
 pub use crate::identity::CertificateFingerprint;
 use crate::transport::PeerPin;
+use link2linux_protocol::v1::GoodbyeReason;
 pub use link2linux_protocol::v1::{PairingMethod, PairingOutcome};
 
 /// The six-digit code both screens show while pairing without a QR code.
@@ -190,8 +191,11 @@ pub enum PairingError {
     /// This peer failed a proof for the current QR offer before.
     #[error("this peer already failed to pair with the current QR code")]
     Blocked,
-    /// The peer broke the pairing protocol.
-    #[error("pairing protocol error: {0}")]
+    /// The peer sent this pairing message out of order, or twice.
+    #[error("the phone sent {0} out of order")]
+    OutOfOrder(&'static str),
+    /// The peer broke the protocol of the connection.
+    #[error("protocol error: {0}")]
     Protocol(String),
     /// The peer closed the connection.
     #[error("the connection closed during pairing")]
@@ -209,6 +213,23 @@ pub enum PairingError {
     /// The trust store could not be read or written.
     #[error("trust store error: {0}")]
     Store(String),
+}
+
+impl PairingError {
+    /// The reason of the `Goodbye` that ends the connection after this
+    /// error, when the pairing exchange has not told the peer already:
+    /// [`GoodbyeReason::ProtocolError`] when the peer broke the protocol,
+    /// and [`GoodbyeReason::Unspecified`] when the trust store failed here.
+    /// `None` when a `PairingResult` went out or the connection is gone;
+    /// the caller then just closes it.
+    #[must_use]
+    pub fn goodbye_reason(&self) -> Option<GoodbyeReason> {
+        match self {
+            Self::Protocol(_) => Some(GoodbyeReason::ProtocolError),
+            Self::Store(_) => Some(GoodbyeReason::Unspecified),
+            _ => None,
+        }
+    }
 }
 
 /// Persistent storage for paired devices, keyed by fingerprint.
