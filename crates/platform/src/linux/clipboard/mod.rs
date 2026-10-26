@@ -110,7 +110,8 @@ impl LinuxClipboard {
     /// X11: a display server that is missing or refuses the connection
     /// fails at once, but one that accepts it and does not answer is given
     /// up on after 2 seconds each, so up to 4 seconds in all. Call it at
-    /// startup or from a blocking task, not on an async runtime's thread.
+    /// startup or from a blocking task, such as tokio's `spawn_blocking`,
+    /// not on an async runtime's thread.
     #[must_use]
     pub fn open() -> Self {
         Self::open_with(true, None)
@@ -829,6 +830,131 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(other.read().await.unwrap(), None);
+    }
+
+    /// An app that takes the clipboard of the X server on `display` and
+    /// never answers anyone who pastes, while the connection lives.
+    fn stall_clipboard(display: &str) -> x11rb::rust_connection::RustConnection {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConnectionExt as _, CreateWindowAux, WindowClass};
+
+        let (conn, screen) = x11rb::connect(Some(display)).expect("the X server");
+        let window = conn.generate_id().unwrap();
+        let root = conn.setup().roots[screen].root;
+        conn.create_window(
+            0,
+            window,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap();
+        let clipboard = conn
+            .intern_atom(false, b"CLIPBOARD")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        conn.set_selection_owner(window, clipboard, x11rb::CURRENT_TIME)
+            .unwrap();
+        let owner = conn
+            .get_selection_owner(clipboard)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!(owner.owner, window);
+        conn
+    }
+
+    /// Starts its own Xvfb, so it never reaches the desktop session:
+    /// `cargo test -p link2linux-platform -- --ignored own_xvfb`
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_dropping_mid_read_does_not_wait() {
+        let server = PrivateX::start();
+        let _staller = stall_clipboard(&server.display);
+        let clipboard = LinuxClipboard::open_with(false, Some(&server.display));
+        // A read gives up on the app that never answers.
+        let started = std::time::Instant::now();
+        assert!(clipboard.read().await.is_err());
+        assert!(started.elapsed() < TRANSFER_TIMEOUT + Duration::from_millis(500));
+        // Dropped while its reader waits on that app.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), clipboard.read())
+                .await
+                .is_err()
+        );
+        let started = std::time::Instant::now();
+        drop(clipboard);
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    /// The X displays [`exits_with_busy_clipboard_threads`] uses.
+    const EXIT_SERVING: &str = "L2L_TEST_EXIT_SERVING_DISPLAY";
+    const EXIT_STALLED: &str = "L2L_TEST_EXIT_STALLED_DISPLAY";
+
+    /// Starts its own Xvfb servers, so it never reaches the desktop
+    /// session: `cargo test -p link2linux-platform -- --ignored own_xvfb`
+    #[test]
+    #[ignore = "starts its own Xvfb"]
+    fn own_xvfb_busy_threads_do_not_hold_the_process_open() {
+        let serving = PrivateX::start();
+        let stalled = PrivateX::start();
+        let started = std::time::Instant::now();
+        let exited = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "linux::clipboard::tests::exits_with_busy_clipboard_threads",
+            ])
+            .env(EXIT_SERVING, &serving.display)
+            .env(EXIT_STALLED, &stalled.display)
+            .output()
+            .unwrap();
+        let report = String::from_utf8_lossy(&exited.stdout);
+        assert!(exited.status.success(), "{report}");
+        assert!(report.contains("1 passed"), "{report}");
+        // The reader it left waits up to TRANSFER_TIMEOUT more on the app
+        // that never answers; the process did not wait for it.
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Run by [`own_xvfb_busy_threads_do_not_hold_the_process_open`], in a
+    /// process of its own, and does nothing otherwise: leaves one
+    /// clipboard's owner thread serving its selection and another's reader
+    /// waiting on an app that never answers, as at an app's exit, and ends.
+    #[tokio::test]
+    #[ignore = "run by own_xvfb_busy_threads_do_not_hold_the_process_open"]
+    async fn exits_with_busy_clipboard_threads() {
+        let (Ok(serving), Ok(stalled)) = (std::env::var(EXIT_SERVING), std::env::var(EXIT_STALLED))
+        else {
+            return;
+        };
+        let holder = LinuxClipboard::open_with(false, Some(&serving));
+        let text = ClipboardText {
+            text: "held".into(),
+            sensitive: false,
+        };
+        holder.write(&text).await.unwrap();
+        let staller = stall_clipboard(&stalled);
+        let reader = LinuxClipboard::open_with(false, Some(&stalled));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), reader.read())
+                .await
+                .is_err()
+        );
+        // Not dropped, as when the app exits.
+        std::mem::forget((holder, reader, staller));
     }
 
     #[tokio::test]
