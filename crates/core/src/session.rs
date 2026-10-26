@@ -17,17 +17,20 @@
 //! [`SessionConfig::idle_timeout`]. Feature messages come out as
 //! [`SessionEvent::Message`] and go in through [`Session::send`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
+use std::future::poll_fn;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{self, Instant, Interval, MissedTickBehavior};
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Encoder, Framed};
 use tracing::debug;
 
 use crate::device::{DeviceInfo, Feature};
@@ -128,6 +131,9 @@ pub enum SessionError {
     /// Nothing arrived from the peer for this long.
     #[error("no message from the peer for {0:?}")]
     IdleTimeout(Duration),
+    /// The session has already ended.
+    #[error("the session has ended")]
+    Ended,
 }
 
 /// An established session with a peer device.
@@ -153,6 +159,13 @@ pub struct Session<S> {
     /// Nonce and send time of the `Ping` awaiting its `Pong`.
     pending_ping: Option<(u64, Instant)>,
     rtt: Option<Duration>,
+    /// Events taken off the stream that `next_event` has not returned yet.
+    events: VecDeque<SessionEvent>,
+    /// Whether frames were queued since the last completed flush.
+    unflushed: bool,
+    /// Whether the session is over: the peer closed the stream, or the
+    /// session failed.
+    ended: bool,
 }
 
 impl<S> Session<S>
@@ -198,41 +211,38 @@ where
                 None => Err(SessionError::ClosedDuringHandshake),
             }
         };
-        let first = time::timeout(config.handshake_timeout, exchange)
+        let result = time::timeout(config.handshake_timeout, exchange)
             .await
-            .map_err(|_| SessionError::HandshakeTimeout(config.handshake_timeout))??;
-
-        check_seq(0, first.seq)?;
-        let Some(Payload::Hello(hello)) = first.payload else {
-            return Err(SessionError::ExpectedHello);
+            .map_err(|_| SessionError::HandshakeTimeout(config.handshake_timeout))
+            .flatten()
+            .and_then(accept_hello);
+        let (peer, version, last_peer_seq) = match result {
+            Ok(accepted) => accepted,
+            Err(err) => {
+                let SessionError::VersionMismatch { local, .. } = &err else {
+                    return Err(err);
+                };
+                let (reason, detail) = (
+                    GoodbyeReason::VersionMismatch,
+                    format!("the sender speaks protocol version {local}"),
+                );
+                let goodbye = Envelope {
+                    seq: 2,
+                    payload: Some(Payload::Goodbye(Goodbye {
+                        reason: reason.into(),
+                        detail,
+                    })),
+                    ..Envelope::default()
+                };
+                let farewell = async {
+                    framed.send(&goodbye).await?;
+                    SinkExt::<&Envelope>::close(&mut framed).await
+                };
+                // Best effort: the peer may already have hung up.
+                let _ = time::timeout(config.handshake_timeout, farewell).await;
+                return Err(err);
+            }
         };
-        let remote = VersionRange::of_hello(&hello).ok_or(SessionError::InvalidHello(
-            "no valid protocol version range",
-        ))?;
-        let Some(version) = VersionRange::SUPPORTED.negotiate(remote) else {
-            let goodbye = Envelope {
-                seq: 2,
-                payload: Some(Payload::Goodbye(Goodbye {
-                    reason: GoodbyeReason::VersionMismatch.into(),
-                    detail: format!(
-                        "this device speaks protocol version {}, the peer {remote}",
-                        VersionRange::SUPPORTED
-                    ),
-                })),
-                ..Envelope::default()
-            };
-            let farewell = async {
-                framed.send(&goodbye).await?;
-                framed.close().await
-            };
-            // Best effort: the peer may already have hung up.
-            let _ = time::timeout(config.handshake_timeout, farewell).await;
-            return Err(SessionError::VersionMismatch {
-                local: VersionRange::SUPPORTED,
-                remote,
-            });
-        };
-        let peer = peer_from(hello)?;
         debug!(peer.id, peer.name, ?peer.kind, version, "session established");
 
         let now = Instant::now();
@@ -245,12 +255,15 @@ where
             version,
             idle_timeout: config.idle_timeout,
             next_seq: 2,
-            last_peer_seq: first.seq,
+            last_peer_seq,
             last_received: now,
             ping_timer,
             next_nonce: 1,
             pending_ping: None,
             rtt: None,
+            events: VecDeque::new(),
+            unflushed: false,
+            ended: false,
         })
     }
 
@@ -289,17 +302,34 @@ where
         self.rtt
     }
 
+    /// Whether the session is over: the peer closed the stream, or the
+    /// session failed.
+    #[must_use]
+    pub fn has_ended(&self) -> bool {
+        self.ended
+    }
+
     /// Sends a feature message and returns its sequence number.
+    ///
+    /// The message is numbered and queued before the first `await`, so if
+    /// the returned future is dropped early, the message still goes out
+    /// with the next write.
     ///
     /// # Errors
     ///
-    /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, and on
-    /// framing or I/O errors.
+    /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, with
+    /// [`SessionError::Ended`] once the session is over, and on framing or
+    /// I/O errors.
     pub async fn send(&mut self, payload: Payload) -> Result<u64, SessionError> {
         if matches!(payload, Payload::Hello(_)) {
             return Err(SessionError::UnexpectedHello);
         }
-        self.send_payload(payload).await
+        if self.ended {
+            return Err(SessionError::Ended);
+        }
+        let seq = self.enqueue(payload)?;
+        self.flush().await?;
+        Ok(seq)
     }
 
     /// Sends a `Ping` now. Its `Pong` comes out of [`Session::next_event`]
@@ -308,59 +338,84 @@ where
     ///
     /// # Errors
     ///
-    /// Fails on framing or I/O errors.
+    /// Fails with [`SessionError::Ended`] once the session is over, and on
+    /// framing or I/O errors.
     pub async fn ping(&mut self) -> Result<(), SessionError> {
-        let nonce = self.next_nonce;
-        self.next_nonce = self.next_nonce.wrapping_add(1);
-        self.pending_ping = Some((nonce, Instant::now()));
-        self.send_payload(Payload::Ping(Ping { nonce })).await?;
-        Ok(())
+        if self.ended {
+            return Err(SessionError::Ended);
+        }
+        self.queue_ping()?;
+        self.flush().await
     }
 
     /// Waits for the next event, handling liveness on the way.
     ///
-    /// Returns `Ok(None)` once the peer has closed the stream. Dropping the
-    /// returned future before it completes loses no incoming message.
+    /// Returns `Ok(None)` once the peer has closed the stream.
+    ///
+    /// This method is cancel safe: dropping the returned future before it
+    /// completes loses no incoming message, and frames queued for sending
+    /// stay queued.
     ///
     /// # Errors
     ///
     /// Fails with [`SessionError::IdleTimeout`] when the peer goes silent,
     /// on protocol violations ([`SessionError::OutOfOrder`],
-    /// [`SessionError::UnexpectedHello`]), and on framing or I/O errors.
-    /// The session is unusable after an error.
+    /// [`SessionError::UnexpectedHello`], undecodable frames), and on I/O
+    /// errors. The session is over after an error.
     pub async fn next_event(&mut self) -> Result<Option<SessionEvent>, SessionError> {
         loop {
-            let idle_deadline = self.last_received + self.idle_timeout;
-            tokio::select! {
-                frame = self.framed.next() => {
-                    let Some(frame) = frame else {
-                        return Ok(None);
-                    };
-                    self.last_received = Instant::now();
-                    if let Some(event) = self.handle(frame?).await? {
-                        return Ok(Some(event));
-                    }
-                }
-                _ = self.ping_timer.tick() => self.ping().await?,
-                () = time::sleep_until(idle_deadline) => {
-                    return Err(SessionError::IdleTimeout(self.idle_timeout));
-                }
+            if let Some(event) = self.events.pop_front() {
+                return Ok(Some(event));
             }
+            if self.ended {
+                return Ok(None);
+            }
+            self.step().await?;
         }
     }
 
-    /// Flushes pending frames and shuts the stream down.
+    /// Flushes queued frames and shuts the stream down.
     ///
     /// # Errors
     ///
     /// Fails if the final flush or the shutdown fails.
     pub async fn close(mut self) -> Result<(), SessionError> {
-        self.framed.close().await?;
+        SinkExt::<&Envelope>::close(&mut self.framed).await?;
         Ok(())
     }
 
-    /// Handles one incoming envelope, returning what the caller should see.
-    async fn handle(&mut self, envelope: Envelope) -> Result<Option<SessionEvent>, SessionError> {
+    /// Waits for one thing to happen on the session (a frame arrives, the
+    /// ping timer fires, the peer goes silent) and handles it. Queued frames
+    /// are written in the meantime.
+    ///
+    /// Cancel safe: everything after an `await` point is synchronous.
+    async fn step(&mut self) -> Result<(), SessionError> {
+        let idle_deadline = self.last_received + self.idle_timeout;
+        tokio::select! {
+            io = poll_fn(|cx| poll_io(&mut self.framed, &mut self.unflushed, cx)) => match io {
+                Io::Frame(envelope) => {
+                    self.last_received = Instant::now();
+                    match self.handle(envelope) {
+                        Ok(()) => Ok(()),
+                        Err(err) => Err(self.fail(err)),
+                    }
+                }
+                Io::Closed => {
+                    debug!("the peer closed the stream");
+                    self.ended = true;
+                    Ok(())
+                }
+                Io::ReadFailed(err) | Io::WriteFailed(err) => Err(self.fail(err.into())),
+            },
+            _ = self.ping_timer.tick() => self.queue_ping(),
+            () = time::sleep_until(idle_deadline) => {
+                Err(self.fail(SessionError::IdleTimeout(self.idle_timeout)))
+            }
+        }
+    }
+
+    /// Handles one incoming envelope, queueing what the caller should see.
+    fn handle(&mut self, envelope: Envelope) -> Result<(), SessionError> {
         check_seq(self.last_peer_seq, envelope.seq)?;
         self.last_peer_seq = envelope.seq;
         match envelope.payload {
@@ -370,45 +425,120 @@ where
                     seq = envelope.seq,
                     "ignoring a message this build does not know"
                 );
-                Ok(None)
             }
-            Some(Payload::Hello(_)) => Err(SessionError::UnexpectedHello),
+            Some(Payload::Hello(_)) => return Err(SessionError::UnexpectedHello),
             Some(Payload::Ping(Ping { nonce })) => {
-                self.send_payload(Payload::Pong(Pong { nonce })).await?;
-                Ok(None)
+                self.enqueue(Payload::Pong(Pong { nonce }))?;
             }
             Some(Payload::Pong(Pong { nonce })) => match self.pending_ping {
                 Some((pending, sent_at)) if pending == nonce => {
                     self.pending_ping = None;
                     let rtt = sent_at.elapsed();
                     self.rtt = Some(rtt);
-                    Ok(Some(SessionEvent::Pong { rtt }))
+                    self.events.push_back(SessionEvent::Pong { rtt });
                 }
-                _ => {
-                    debug!(nonce, "ignoring a Pong for a superseded Ping");
-                    Ok(None)
-                }
+                _ => debug!(nonce, "ignoring a Pong for a superseded Ping"),
             },
             // Everything else is for the layers above the session.
-            Some(payload) => Ok(Some(SessionEvent::Message {
+            Some(payload) => self.events.push_back(SessionEvent::Message {
                 seq: envelope.seq,
                 payload,
-            })),
+            }),
         }
+        Ok(())
     }
 
-    /// Sends `payload` with the next sequence number.
-    async fn send_payload(&mut self, payload: Payload) -> Result<u64, SessionError> {
+    /// Ends the session after `err`.
+    fn fail(&mut self, err: SessionError) -> SessionError {
+        self.ended = true;
+        err
+    }
+
+    /// Numbers `payload` and queues it for writing, returning its sequence
+    /// number. Nothing is numbered if the envelope cannot be encoded.
+    fn enqueue(&mut self, payload: Payload) -> Result<u64, SessionError> {
         let seq = self.next_seq;
-        self.next_seq += 1;
         let envelope = Envelope {
             seq,
             payload: Some(payload),
             ..Envelope::default()
         };
-        self.framed.send(&envelope).await?;
+        let mut codec = *self.framed.codec();
+        codec.encode(&envelope, self.framed.write_buffer_mut())?;
+        self.next_seq += 1;
+        self.unflushed = true;
         Ok(seq)
     }
+
+    /// Queues a `Ping` with a new nonce.
+    fn queue_ping(&mut self) -> Result<(), SessionError> {
+        let nonce = self.next_nonce;
+        self.next_nonce = self.next_nonce.wrapping_add(1);
+        self.pending_ping = Some((nonce, Instant::now()));
+        self.enqueue(Payload::Ping(Ping { nonce }))?;
+        Ok(())
+    }
+
+    /// Writes every queued frame and flushes the stream.
+    async fn flush(&mut self) -> Result<(), SessionError> {
+        poll_fn(|cx| poll_flush(&mut self.framed, &mut self.unflushed, cx)).await?;
+        Ok(())
+    }
+}
+
+/// What [`poll_io`] saw.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "lives for one match; boxing the envelope would add an allocation per frame"
+)]
+enum Io {
+    /// A frame arrived.
+    Frame(Envelope),
+    /// The peer closed the stream.
+    Closed,
+    /// Reading failed; the stream is out of sync or broken.
+    ReadFailed(FrameError),
+    /// Writing queued frames failed.
+    WriteFailed(FrameError),
+}
+
+/// Writes queued frames while waiting for the next incoming one, so a slow
+/// write never stops the session from reading.
+fn poll_io<S>(
+    framed: &mut Framed<S, EnvelopeCodec>,
+    unflushed: &mut bool,
+    cx: &mut Context<'_>,
+) -> Poll<Io>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if let Poll::Ready(Err(err)) = poll_flush(framed, unflushed, cx) {
+        return Poll::Ready(Io::WriteFailed(err));
+    }
+    Pin::new(framed).poll_next(cx).map(|frame| match frame {
+        Some(Ok(envelope)) => Io::Frame(envelope),
+        Some(Err(err)) => Io::ReadFailed(err),
+        None => Io::Closed,
+    })
+}
+
+/// Writes queued frames and flushes the stream, if anything was queued.
+fn poll_flush<S>(
+    framed: &mut Framed<S, EnvelopeCodec>,
+    unflushed: &mut bool,
+    cx: &mut Context<'_>,
+) -> Poll<Result<(), FrameError>>
+where
+    S: AsyncWrite + Unpin,
+{
+    if !*unflushed {
+        return Poll::Ready(Ok(()));
+    }
+    let flushed = Sink::<&Envelope>::poll_flush(Pin::new(framed), cx);
+    if let Poll::Ready(Ok(())) = flushed {
+        *unflushed = false;
+    }
+    flushed
 }
 
 /// Builds this device's `Hello`.
@@ -426,6 +556,23 @@ fn hello_from(local: &DeviceInfo) -> Hello {
     };
     VersionRange::SUPPORTED.write_to(&mut hello);
     hello
+}
+
+/// Checks the peer's first envelope. Returns who the peer is, the protocol
+/// version both sides use, and the envelope's sequence number.
+fn accept_hello(first: Envelope) -> Result<(DeviceInfo, u32, u64), SessionError> {
+    check_seq(0, first.seq)?;
+    let Some(Payload::Hello(hello)) = first.payload else {
+        return Err(SessionError::ExpectedHello);
+    };
+    let remote = VersionRange::of_hello(&hello).ok_or(SessionError::InvalidHello(
+        "no valid protocol version range",
+    ))?;
+    let local = VersionRange::SUPPORTED;
+    let version = local
+        .negotiate(remote)
+        .ok_or(SessionError::VersionMismatch { local, remote })?;
+    Ok((peer_from(hello)?, version, first.seq))
 }
 
 /// Validates the peer's `Hello`, apart from its versions, and turns it into
