@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Name shown in the system's notification access list. -->
+    <string name="notifications_listener_label">link2linux</string>
+</resources>
