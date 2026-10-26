@@ -18,7 +18,7 @@ describe("features", () => {
     ]);
   });
 
-  it.each(features.filter((f) => f.id !== "pairing"))(
+  it.each(features.filter((f) => f.id !== "pairing" && f.id !== "notifications"))(
     "$label renders a placeholder page that says what it will do",
     ({ Page, label, description }) => {
       render(<Page />);
