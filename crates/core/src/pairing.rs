@@ -37,7 +37,7 @@ pub use self::qr::{
     DEFAULT_BEACON_PORT, MAX_FAILED_PROOFS, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, OFFER_LIFETIME,
     OfferStatus, QR_PAYLOAD_VERSION, QR_URI_PREFIX, QrError, QrOffer, QrPayload,
 };
-pub use self::store::FileTrustStore;
+pub use self::store::{FileTrustStore, StoreKey};
 use crate::device::DeviceKind;
 pub use crate::identity::CertificateFingerprint;
 use crate::transport::PeerPin;

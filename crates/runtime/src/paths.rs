@@ -6,8 +6,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use link2linux_core::identity::{Identity, IdentityError};
-use link2linux_core::key_storage::KeyStorage;
+use link2linux_core::key_storage::{self, KeyStorage};
 use link2linux_core::outbox::IdempotencyKey;
+use link2linux_core::pairing::StoreKey;
 use link2linux_platform::SecretStore;
 
 /// The directory under the user's data directory that holds this app's
@@ -148,6 +149,16 @@ impl DataDir {
             marker: self.identity_marker(),
         };
         storage.load_or_create(keyring).await
+    }
+
+    /// The key that seals the phones' presence keys in the pairing file:
+    /// from the keyring, or a new one kept there, one per installation
+    /// named after its device id. `None` without a keyring, or when the
+    /// device id cannot be read; the presence keys then stay in clear.
+    pub async fn load_store_key<S: SecretStore>(&self, keyring: &S) -> Option<StoreKey> {
+        let device_id = self.load_or_create_device_id().ok()?;
+        let name = format!("store-key {device_id}");
+        key_storage::load_store_key(keyring, &name, "link2linux pairing data key").await
     }
 
     /// The id the phones know this desktop by: read from the data directory,

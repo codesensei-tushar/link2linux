@@ -19,6 +19,9 @@
 //! has moved to the keyring, though, a marker file records it, and an
 //! unreachable keyring then stops the start. Making a new key instead
 //! would quietly break every pairing.
+//!
+//! The keyring also holds the [`StoreKey`] that seals the phones' presence
+//! keys in the pairing file ([`load_store_key`]).
 
 use std::io;
 use std::path::PathBuf;
@@ -27,6 +30,7 @@ use link2linux_platform::{PlatformError, SecretStore};
 use tracing::{info, warn};
 
 use crate::identity::{Identity, IdentityError};
+use crate::pairing::StoreKey;
 use crate::secure_file;
 
 /// What the marker file says, for anyone who opens it.
@@ -144,6 +148,45 @@ impl KeyStorage {
     }
 }
 
+/// The key that seals the presence keys in the pairing file, from the
+/// keyring under `name`, or a new one kept there. `None` without a keyring
+/// that takes it: the presence keys then stay in the file in clear. Losing
+/// the key loses only the presence keys, which each phone gives again at
+/// the start of its next session.
+pub async fn load_store_key<S: SecretStore>(
+    keyring: &S,
+    name: &str,
+    label: &str,
+) -> Option<StoreKey> {
+    match keyring.read(name).await {
+        Ok(Some(bytes)) => match StoreKey::from_slice(&bytes) {
+            Some(key) => return Some(key),
+            None => warn!("the keyring holds a malformed store key: making a new one"),
+        },
+        Ok(None) => {}
+        Err(error) => {
+            warn!(%error, "no keyring: keeping presence keys in the pairing file");
+            return None;
+        }
+    }
+    let key = StoreKey::generate();
+    let stored = match keyring.write(name, label, key.as_bytes()).await {
+        Ok(()) => keyring.read(name).await,
+        Err(error) => Err(error),
+    };
+    match stored {
+        Ok(Some(bytes)) if bytes.as_slice() == key.as_bytes() => Some(key),
+        Ok(_) => {
+            warn!("the keyring did not keep the store key");
+            None
+        }
+        Err(error) => {
+            warn!(%error, "could not keep the store key in the keyring");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -217,7 +260,7 @@ mod tests {
 
         async fn write(&self, name: &str, label: &str, secret: &[u8]) -> Result<(), PlatformError> {
             self.check()?;
-            assert_eq!(label, "link2linux device key");
+            assert!(label.starts_with("link2linux "), "{label}");
             if !self.drops_writes {
                 self.items
                     .lock()
@@ -229,6 +272,28 @@ mod tests {
     }
 
     const NAME: &str = "device-key";
+
+    #[tokio::test]
+    async fn the_store_key_is_made_once_and_kept_in_the_keyring() {
+        let keyring = FakeKeyring::default();
+        let label = "link2linux pairing data key";
+        let first = load_store_key(&keyring, "store-key", label).await.unwrap();
+        let again = load_store_key(&keyring, "store-key", label).await.unwrap();
+        assert_eq!(first.as_bytes(), again.as_bytes());
+
+        // Without a keyring that keeps it, presence keys stay in clear.
+        let none = FakeKeyring::unavailable();
+        assert!(load_store_key(&none, "store-key", label).await.is_none());
+        let forgetful = FakeKeyring {
+            drops_writes: true,
+            ..FakeKeyring::default()
+        };
+        assert!(
+            load_store_key(&forgetful, "store-key", label)
+                .await
+                .is_none()
+        );
+    }
 
     fn storage(dir: &Path) -> KeyStorage {
         KeyStorage {

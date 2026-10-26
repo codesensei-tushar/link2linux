@@ -1,11 +1,16 @@
 //! A [`TrustStore`] kept in a JSON file that only the user can read.
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
+use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
+use zeroize::Zeroizing;
 
+use super::crypto::random_bytes;
 use super::{
     CertificateFingerprint, MemoryTrustStore, PairedDevice, PairingError, PresenceKey, TrustStore,
 };
@@ -21,24 +26,44 @@ const FORMAT_VERSION: u32 = 1;
 /// The path is chosen by the caller, normally under the user's data
 /// directory. Every change rewrites the whole file atomically, with mode
 /// 0600, before it takes effect in memory: a failed write changes nothing.
-/// The file holds presence keys, so it must stay out of backups and logs.
+/// The presence keys in it are sealed with a [`StoreKey`] from the keyring
+/// when there is one, so the file, which home backups include, does not
+/// hold them; without a keyring they are in the file in clear.
 #[derive(Debug)]
 pub struct FileTrustStore {
     path: PathBuf,
     records: MemoryTrustStore,
+    key: Option<StoreKey>,
 }
 
 impl FileTrustStore {
-    /// Opens the store at `path`. A missing file is an empty store; the file
-    /// is created on the first change.
+    /// Opens the store at `path`, with presence keys in clear. A missing
+    /// file is an empty store; the file is created on the first change.
     ///
     /// # Errors
     ///
     /// Fails if the file cannot be read, does not parse, or was written by a
     /// newer version of the app.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PairingError> {
+        Self::open_sealed(path, None)
+    }
+
+    /// Opens the store at `path` like [`open`](Self::open), sealing the
+    /// presence keys in the file with `key` when there is one. Keys the file
+    /// holds in clear are sealed at once. A key sealed under another store
+    /// key, or with none at hand, is dropped: each phone gives its presence
+    /// key again at the start of every session.
+    ///
+    /// # Errors
+    ///
+    /// As for [`open`](Self::open).
+    pub fn open_sealed(
+        path: impl Into<PathBuf>,
+        key: Option<StoreKey>,
+    ) -> Result<Self, PairingError> {
         let path = path.into();
         let mut records = MemoryTrustStore::default();
+        let mut in_clear = false;
         if let Some(bytes) = secure_file::read(&path).map_err(store_error)? {
             let file: StoreFile = serde_json::from_slice(&bytes).map_err(store_error)?;
             if file.version > FORMAT_VERSION {
@@ -49,10 +74,18 @@ impl FileTrustStore {
                 )));
             }
             for stored in file.devices {
-                records.insert(stored.into_device()?)?;
+                in_clear |= stored.presence_key.is_some();
+                records.insert(stored.into_device(key.as_ref())?)?;
             }
         }
-        Ok(Self { path, records })
+        let mut store = Self { path, records, key };
+        if in_clear
+            && store.key.is_some()
+            && let Err(error) = store.write_with(|_| Ok(()))
+        {
+            warn!(%error, "could not seal the presence keys in the file");
+        }
+        Ok(store)
     }
 
     /// Where the store lives.
@@ -74,7 +107,7 @@ impl FileTrustStore {
             devices: records
                 .list()
                 .iter()
-                .map(StoredDevice::from_device)
+                .map(|device| StoredDevice::from_device(device, self.key.as_ref()))
                 .collect(),
         };
         let json = serde_json::to_vec_pretty(&file).map_err(store_error)?;
@@ -112,6 +145,76 @@ impl TrustStore for FileTrustStore {
     }
 }
 
+/// The key that seals the presence keys in a [`FileTrustStore`]'s file,
+/// kept in the keyring
+/// ([`load_store_key`](crate::key_storage::load_store_key)). Its `Debug`
+/// output leaves the key out, and its memory is cleared on drop.
+pub struct StoreKey(Zeroizing<[u8; 32]>);
+
+impl StoreKey {
+    /// A new random key.
+    #[must_use]
+    pub fn generate() -> Self {
+        Self(Zeroizing::new(random_bytes()))
+    }
+
+    /// The key from the bytes the keyring holds, if there are 32.
+    #[must_use]
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        bytes
+            .try_into()
+            .ok()
+            .map(|bytes| Self(Zeroizing::new(bytes)))
+    }
+
+    /// The bytes to keep in the keyring.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    fn aead(&self) -> LessSafeKey {
+        let key = UnboundKey::new(&AES_256_GCM, self.as_bytes()).expect("a 32-byte key");
+        LessSafeKey::new(key)
+    }
+
+    /// Seals the presence key of the record under `fingerprint`, which is
+    /// bound in, so the sealed key cannot be moved to another record: hex
+    /// of a random nonce, the ciphertext and the tag.
+    fn seal(&self, fingerprint: &CertificateFingerprint, key: &PresenceKey) -> String {
+        let nonce: [u8; NONCE_LEN] = random_bytes();
+        let mut sealed = key.0.to_vec();
+        self.aead()
+            .seal_in_place_append_tag(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(fingerprint.0),
+                &mut sealed,
+            )
+            .expect("sealing 32 bytes does not fail");
+        hex(&[nonce.as_slice(), &sealed].concat())
+    }
+
+    /// The presence key [`seal`](Self::seal) sealed for `fingerprint`, if
+    /// it opens.
+    fn open(&self, fingerprint: &CertificateFingerprint, sealed: &str) -> Option<PresenceKey> {
+        let bytes = decode_hex(sealed)?;
+        let (nonce, sealed) = bytes.split_at_checked(NONCE_LEN)?;
+        let nonce = Nonce::try_assume_unique_for_key(nonce).ok()?;
+        let mut in_out = Zeroizing::new(sealed.to_vec());
+        let key = self
+            .aead()
+            .open_in_place(nonce, Aad::from(fingerprint.0), &mut in_out)
+            .ok()?;
+        PresenceKey::from_slice(key)
+    }
+}
+
+impl fmt::Debug for StoreKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("StoreKey(..)")
+    }
+}
+
 /// The file's top level.
 #[derive(Serialize, Deserialize)]
 struct StoreFile {
@@ -133,15 +236,18 @@ struct StoredDevice {
     paired_at_unix_ms: u64,
     #[serde(default)]
     confirmed: bool,
-    /// Lowercase hex.
+    /// Lowercase hex, when the store has no [`StoreKey`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     presence_key: Option<String>,
+    /// From [`StoreKey::seal`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sealed_presence_key: Option<String>,
     #[serde(default)]
     last_addresses: Vec<SocketAddr>,
 }
 
 impl StoredDevice {
-    fn from_device(device: &PairedDevice) -> Self {
+    fn from_device(device: &PairedDevice, key: Option<&StoreKey>) -> Self {
         let paired_at = device
             .paired_at
             .duration_since(UNIX_EPOCH)
@@ -157,28 +263,35 @@ impl StoredDevice {
             presence_key: device
                 .presence_key
                 .as_ref()
-                .map(|key| key.0.iter().map(|byte| format!("{byte:02x}")).collect()),
+                .filter(|_| key.is_none())
+                .map(|presence| hex(&presence.0)),
+            sealed_presence_key: key
+                .zip(device.presence_key.as_ref())
+                .map(|(key, presence)| key.seal(&device.fingerprint, presence)),
             last_addresses: device.last_addresses.clone(),
         }
     }
 
-    fn into_device(self) -> Result<PairedDevice, PairingError> {
+    fn into_device(self, key: Option<&StoreKey>) -> Result<PairedDevice, PairingError> {
         let fingerprint = |text: &str| {
             text.parse::<CertificateFingerprint>()
                 .map_err(|_| PairingError::Store(format!("malformed fingerprint {text:?}")))
         };
-        let presence_key = self
-            .presence_key
-            .map(|text| {
-                decode_hex(&text)
-                    .as_deref()
-                    .and_then(PresenceKey::from_slice)
-                    .ok_or_else(|| PairingError::Store("malformed presence key".into()))
-            })
-            .transpose()?;
+        let current = fingerprint(&self.fingerprint)?;
+        let presence_key = match (self.sealed_presence_key, self.presence_key) {
+            (Some(sealed), _) => key.and_then(|key| key.open(&current, &sealed)),
+            (None, clear) => clear
+                .map(|text| {
+                    decode_hex(&text)
+                        .as_deref()
+                        .and_then(PresenceKey::from_slice)
+                        .ok_or_else(|| PairingError::Store("malformed presence key".into()))
+                })
+                .transpose()?,
+        };
         Ok(PairedDevice {
             kind: DeviceKind::from_str_name(&self.kind).unwrap_or(DeviceKind::Unspecified),
-            fingerprint: fingerprint(&self.fingerprint)?,
+            fingerprint: current,
             next_fingerprint: self
                 .next_fingerprint
                 .as_deref()
@@ -196,6 +309,11 @@ impl StoredDevice {
 
 fn store_error(error: impl std::fmt::Display) -> PairingError {
     PairingError::Store(error.to_string())
+}
+
+/// Lowercase hex.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -272,9 +390,65 @@ mod tests {
         let mut store = FileTrustStore {
             path,
             records: MemoryTrustStore::default(),
+            key: None,
         };
         assert!(store.insert(phone("a", 1)).is_err());
         assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn a_store_key_keeps_presence_keys_out_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paired.json");
+        let mut device = phone("phone-1", 1);
+        device.presence_key = Some(PresenceKey([0xc0; 32]));
+        let in_clear = "c0".repeat(32);
+        let file = || fs::read_to_string(&path).unwrap();
+
+        // A file from before has the key in clear; opening it with a store
+        // key seals it at once.
+        FileTrustStore::open(&path)
+            .unwrap()
+            .insert(device.clone())
+            .unwrap();
+        assert!(file().contains(&in_clear));
+        let key = StoreKey::generate();
+        let copy = || StoreKey::from_slice(key.as_bytes());
+        let mut sealed = FileTrustStore::open_sealed(&path, copy()).unwrap();
+        assert!(!file().contains(&in_clear), "{}", file());
+        assert_eq!(sealed.list(), [device.clone()]);
+        sealed.insert(phone("phone-2", 3)).unwrap();
+        assert!(!file().contains(&in_clear));
+        assert_eq!(
+            FileTrustStore::open_sealed(&path, copy()).unwrap().list(),
+            sealed.list()
+        );
+
+        // Under another store key, or none, only the presence key is lost:
+        // the phone gives it again in its next session.
+        let mut lost = device.clone();
+        lost.presence_key = None;
+        let other = FileTrustStore::open_sealed(&path, Some(StoreKey::generate())).unwrap();
+        assert_eq!(other.get(&device.fingerprint), Some(lost.clone()));
+        let without = FileTrustStore::open(&path).unwrap();
+        assert_eq!(without.get(&device.fingerprint), Some(lost));
+    }
+
+    #[test]
+    fn a_sealed_presence_key_opens_only_for_its_record() {
+        let key = StoreKey::generate();
+        let presence = PresenceKey([7; 32]);
+        let mine = CertificateFingerprint([1; 32]);
+        let sealed = key.seal(&mine, &presence);
+        assert_eq!(key.open(&mine, &sealed), Some(presence.clone()));
+        assert_eq!(key.open(&CertificateFingerprint([2; 32]), &sealed), None);
+        assert_eq!(StoreKey::generate().open(&mine, &sealed), None);
+        assert_ne!(
+            key.seal(&mine, &presence),
+            sealed,
+            "a fresh nonce each time"
+        );
+        assert_eq!(format!("{key:?}"), "StoreKey(..)");
     }
 
     #[test]
