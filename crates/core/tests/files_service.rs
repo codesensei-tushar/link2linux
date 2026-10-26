@@ -1509,6 +1509,48 @@ async fn transfers_waiting_their_turn_keep_while_the_phone_is_there() {
 }
 
 #[tokio::test]
+async fn a_send_that_expires_says_whether_the_phone_had_files_off_or_was_away() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let off = Payload::FeatureStatus(link2linux_protocol::v1::FeatureStatus {
+        features: vec![link2linux_protocol::v1::FeatureState {
+            feature: "files".into(),
+            availability: link2linux_protocol::v1::FeatureAvailability::Disabled.into(),
+            ..Default::default()
+        }],
+    });
+    phone.send(off, false, 0).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let id = desktop
+        .send(vec![source(sources.path(), "a", b"x")])
+        .await
+        .unwrap();
+    desktop.settles(id, TransferState::Waiting).await;
+    desktop.expire_in(KEEP_UNFINISHED);
+    desktop
+        .reaches(id, TransferState::Failed(Failure::Disabled))
+        .await;
+
+    // A transfer that waited while the phone was away expired for that.
+    let (desktop, phone) = desktop_with(service(downloads.path())).await;
+    let id = desktop
+        .send(vec![source(sources.path(), "b", b"x")])
+        .await
+        .unwrap();
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    service.expire(Instant::now() + KEEP_UNFINISHED).await;
+    let state = service
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .unwrap()
+        .state;
+    assert_eq!(state, TransferState::Failed(Failure::Expired));
+}
+
+#[tokio::test]
 async fn a_transfer_that_arrived_is_complete_when_offered_again_after_leaving_the_list() {
     let downloads = tempfile::tempdir().unwrap();
     let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;

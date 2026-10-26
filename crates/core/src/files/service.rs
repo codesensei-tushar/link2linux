@@ -140,6 +140,10 @@ pub struct FileService {
     /// Whether the feature is ready on both devices in the current session.
     /// While it is, transfers waiting their turn do not use up their hour.
     ready: bool,
+    /// Whether a session is up, ready or not: a transfer that expires then
+    /// waited because the phone had files turned off, not because it was
+    /// away.
+    in_session: bool,
     /// The requests of chunks of this session that got no answer in time.
     /// The phone may still hold them unanswered, and a late answer never
     /// reaches this service, so they count against the window until the
@@ -172,6 +176,7 @@ impl FileService {
             pending: HashMap::new(),
             cancels: Vec::new(),
             ready: false,
+            in_session: false,
             lost_chunks: Vec::new(),
             declined: HashMap::new(),
             completed: HashMap::new(),
@@ -380,12 +385,14 @@ impl FileService {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        self.in_session = true;
         self.run(session).await
     }
 
     /// The session is gone. Running transfers are kept, for up to
     /// [`KEEP_UNFINISHED`], to go on in the next session.
     pub fn session_ended(&mut self) {
+        self.in_session = false;
         self.set_ready(false, Instant::now());
         self.pending.clear();
         self.lost_chunks.clear();
@@ -439,9 +446,16 @@ impl FileService {
             .iter()
             .map(|t| self.kept(t) && now >= t.since + KEEP_UNFINISHED)
             .collect();
+        let in_session = self.in_session;
         for (transfer, expired) in self.outgoing.iter_mut().zip(expired) {
             if expired {
-                transfer.finish(TransferState::Failed(Failure::Expired));
+                // The phone is here but has files off, or it was away.
+                let failure = if in_session && transfer.state == TransferState::Waiting {
+                    Failure::Disabled
+                } else {
+                    Failure::Expired
+                };
+                transfer.finish(TransferState::Failed(failure));
                 changed.push(transfer.view());
             }
         }

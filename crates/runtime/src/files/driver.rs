@@ -404,6 +404,8 @@ fn action(key: &str, label: &str) -> DesktopAction {
 /// Why a transfer failed, in plain words, as the files page says it.
 fn failure_text(failure: Failure, incoming: bool, phone: &str) -> String {
     match failure {
+        // Also what a send gets that waited an hour for a phone with files
+        // off.
         Failure::Disabled => format!("Files are turned off on {phone}."),
         Failure::PermissionRequired => format!("{phone} needs permission to save files."),
         Failure::NoSpace if incoming => "There isn't enough space on this computer.".to_owned(),
