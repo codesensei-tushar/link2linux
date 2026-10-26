@@ -15,7 +15,12 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import dev.link2linux.android.MainActivity
 import dev.link2linux.android.R
+import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.DesktopListener
+import dev.link2linux.android.core.data.ListenerPolicy
+import dev.link2linux.android.core.data.PairedDeviceRepository
+import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.data.connectedIn
 import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.android.ConnectivityLocalNetworks
@@ -23,6 +28,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
@@ -47,6 +54,9 @@ class ConnectionService : Service() {
     @Inject lateinit var networks: ConnectivityLocalNetworks
     @Inject lateinit var listener: DesktopListener
     @Inject lateinit var connectionSwitch: ConnectionSwitch
+    @Inject lateinit var pairedDevices: PairedDeviceRepository
+    @Inject lateinit var pairing: PairingController
+    @Inject lateinit var connections: DesktopConnections
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -63,8 +73,19 @@ class ConnectionService : Service() {
         )
         networks.start()
         discovery.start()
-        // Listening for as long as the service runs lets paired desktops reconnect outside a pairing window.
-        scope.launch { listener.start() }
+        // Listening while a desktop is paired lets it reconnect outside a pairing window.
+        scope.launch {
+            combine(pairedDevices.pairedDevices, pairing.state, connectionSwitch.enabled, ListenerPolicy::shouldListen)
+                .distinctUntilChanged()
+                .collect { listen -> if (listen) listener.start() else listener.stop() }
+        }
+        scope.launch {
+            combine(pairedDevices.pairedDevices, connections.connected) { devices, connected ->
+                devices.connectedIn(connected).map { it.device.name }
+            }.distinctUntilChanged().collect { names ->
+                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(names))
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -103,7 +124,7 @@ class ConnectionService : Service() {
         )
     }
 
-    private fun notification(): Notification {
+    private fun notification(connectedTo: List<String> = emptyList()): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -119,7 +140,13 @@ class ConnectionService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(getString(R.string.service_notification_title))
-            .setContentText(getString(R.string.service_notification_text))
+            .setContentText(
+                if (connectedTo.isEmpty()) {
+                    getString(R.string.service_notification_text)
+                } else {
+                    getString(R.string.service_notification_connected, connectedTo.joinToString(", "))
+                },
+            )
             .setContentIntent(open)
             .addAction(0, getString(R.string.service_notification_stop), stop)
             .setOngoing(true)
