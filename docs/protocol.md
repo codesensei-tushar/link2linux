@@ -367,7 +367,8 @@ appears and lets it start its connection service from the background. On
 Android 16 and later it also exempts the app from battery restrictions
 while the desktop is in range. Detection can take tens of seconds while the
 phone's screen is off, and may flap. On such a presence event the phone
-starts a beacon burst. The foreground service, not the association, is what
+starts a beacon burst, unless its last burst started less than a minute
+ago: anyone in radio range can replay the advertisement and make it flap. The foreground service, not the association, is what
 keeps the connection alive.
 
 - The advertisement is connectable, so the controller sends it from the

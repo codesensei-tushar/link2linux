@@ -42,7 +42,7 @@ class BeaconEngineTest {
 
     private fun TestScope.engine(): Pair<BeaconEngine, FakeTransport> {
         val transport = FakeTransport { currentTime }
-        return BeaconEngine(backgroundScope, transport, random) { 1_000_000 + currentTime } to transport
+        return BeaconEngine(backgroundScope, transport, random, elapsedMillis = { currentTime }) { 1_000_000 + currentTime } to transport
     }
 
     private val ready = BeaconInputs(port = 27380, networkAvailable = true)
@@ -138,6 +138,24 @@ class BeaconEngineTest {
         engine.trigger()
         runCurrent()
         assertEquals(before + 1, transport.sent.size)
+        assertEquals(2, transport.bursts.size)
+    }
+
+    @Test
+    fun repeatedNearbyReportsStartAtMostOneBurstAMinute() = runTest {
+        val (engine, transport) = engine()
+        engine.update(ready.copy(desktops = listOf(a)))
+        runCurrent()
+        repeat(50) {
+            advanceTimeBy(1_000)
+            engine.trigger()
+        }
+        runCurrent()
+        assertEquals(1, transport.bursts.size)
+
+        advanceTimeBy(BeaconEngine.TRIGGER_GAP_MILLIS)
+        engine.trigger()
+        runCurrent()
         assertEquals(2, transport.bursts.size)
     }
 
