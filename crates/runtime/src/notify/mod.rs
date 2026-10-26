@@ -24,8 +24,10 @@ use link2linux_platform::{
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub mod dto;
+mod popups;
 mod service;
 
+pub use popups::{NEUTRAL_TEXT, PrivatePopups};
 pub use service::{ServiceDriver, ServiceFactory};
 
 /// The session type the runtime runs.

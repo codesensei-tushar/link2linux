@@ -354,7 +354,7 @@ fn gone() -> PlatformError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DesktopAction, InlineReply};
+    use crate::{DesktopAction, InlineReply, Visibility};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::net::UnixStream;
     use zbus::connection::Builder;
@@ -497,6 +497,7 @@ mod tests {
                 placeholder: "Reply to Ana".into(),
             }),
             quiet: true,
+            visibility: Visibility::Private,
         }
     }
 

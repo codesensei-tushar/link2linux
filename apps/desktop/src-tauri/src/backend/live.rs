@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use link2linux_platform::PresenceAdvertiser;
 use link2linux_platform::linux::ble::BluezPresence;
-use link2linux_platform::linux::{DbusNotifications, SecretServiceStore};
-use link2linux_runtime::notify::{Presenter, ServiceFactory};
+use link2linux_platform::linux::{DbusNotifications, SecretServiceStore, SessionLock};
+use link2linux_runtime::notify::{Presenter, PrivatePopups, ServiceFactory};
 use link2linux_runtime::paths::{DataDir, desktop_name};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
@@ -31,19 +31,29 @@ pub struct LiveBackend {
 impl LiveBackend {
     /// Starts the runtime on Tauri's async runtime, with data in the user's
     /// XDG data directory and the private key in the keyring.
+    /// `open_window` brings up the window when the user clicks a pop-up.
     ///
     /// # Errors
     ///
     /// Fails when the data directory, the identity or the list of paired
     /// phones cannot be used.
-    pub fn start(events: Arc<dyn EventSink>) -> Result<Self, RuntimeError> {
+    pub fn start(
+        events: Arc<dyn EventSink>,
+        open_window: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, RuntimeError> {
         let data_dir = DataDir::from_env()?;
         // Waits while the keyring asks the user to unlock it, within the
         // store's timeouts.
         let identity = tauri::async_runtime::block_on(
             data_dir.load_identity(&SecretServiceStore::new(APP_ID)),
         )?;
-        let presenter: Arc<dyn Presenter> = Arc::new(DbusNotifications::new());
+        let popups = Arc::new(PrivatePopups::new(
+            Arc::new(DbusNotifications::new()),
+            false,
+            open_window,
+        ));
+        follow_lock(popups.clone());
+        let presenter: Arc<dyn Presenter> = popups;
         let shell = Shell {
             identity,
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), data_dir.images())),
@@ -56,6 +66,27 @@ impl LiveBackend {
         advertise(runtime.clone());
         Ok(Self { runtime })
     }
+}
+
+/// Tells the pop-ups whether the screen is locked, as logind reports it.
+/// Without logind the screen counts as unlocked.
+fn follow_lock(popups: Arc<PrivatePopups>) {
+    tauri::async_runtime::spawn(async move {
+        let mut lock = match SessionLock::connect().await {
+            Ok(lock) => lock,
+            Err(error) => {
+                tracing::info!(%error, "the lock screen state is unavailable");
+                return;
+            }
+        };
+        match lock.is_locked().await {
+            Ok(locked) => popups.set_locked(locked),
+            Err(error) => tracing::info!(%error, "the lock screen state is unavailable"),
+        }
+        while let Some(locked) = lock.changed().await {
+            popups.set_locked(locked);
+        }
+    });
 }
 
 /// Advertises over Bluetooth LE when BlueZ allows it, and tells the runtime
