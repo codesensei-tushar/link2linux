@@ -2295,6 +2295,7 @@ dependencies = [
  "rqrr",
  "rustls",
  "serde",
+ "serde_json",
  "specta",
  "specta-typescript",
  "tempfile",
