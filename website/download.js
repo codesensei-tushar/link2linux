@@ -1,6 +1,6 @@
-// Points the download buttons at the files of the newest release, including
-// pre-releases. Without JavaScript, before the first release, or when GitHub
-// can't be reached, the buttons lead to the releases page instead.
+// The download buttons link straight to the files of the release named in
+// index.html, so they work without JavaScript. This points them at the newest
+// release instead, including pre-releases, in case a newer one is out.
 (async () => {
   const status = document.getElementById("release-status");
   try {
@@ -10,15 +10,12 @@
     const assets = new Map(release.assets.map((asset) => [asset.name, asset.browser_download_url]));
     for (const link of document.querySelectorAll("a[data-asset]")) {
       const url = assets.get(link.dataset.asset);
-      if (url) {
-        link.href = url;
-        link.classList.remove("pending");
-      }
+      if (url) link.href = url;
     }
     const date = new Date(release.published_at).toLocaleDateString(undefined, { dateStyle: "long" });
     const kind = release.prerelease ? "Pre-release" : "Latest release";
     status.textContent = `${kind} ${release.tag_name}, published ${date}.`;
   } catch {
-    // Keep the links to the releases page.
+    // Keep the links to the release named in index.html.
   }
 })();

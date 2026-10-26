@@ -89,6 +89,10 @@ install the `.deb` and the APK, and pair them.
    - in `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`,
      drop anything that did not make it, add a new empty `## [Unreleased]`
      above it, and update the links at the bottom.
+   - in `website/index.html`, replace the previous tag in the four download
+     links and in the release status line with `vX.Y.Z`. The page's script
+     switches the links to the newest release by itself, but the links have
+     to work without it: each one downloads its file directly.
 2. **Merge it** after `make ci` passes, and do a build-only run on the merged
    commit.
 3. **Tag the merged commit** on `main` and push the tag:
