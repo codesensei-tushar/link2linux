@@ -6,6 +6,7 @@
 
 pub mod backend;
 mod commands;
+pub mod qr;
 mod state;
 
 use tauri_specta::{Builder, collect_commands};
