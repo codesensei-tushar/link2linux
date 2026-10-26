@@ -3,7 +3,7 @@
 //! [`NotificationService`] joins the other parts of the module: it keeps the
 //! [`Mirror`] in step with the phone, shows banners through a
 //! [`NotificationSink`] with the images the [`ImageCache`] holds, and
-//! turns the user's answers to them into requests for the phone. It does
+//! sends the user's dismissals and actions through the [`Outbox`]. It does
 //! not own the session, so it can share one with other features:
 //!
 //! 1. [`NotificationService::session_started`] once the session is up;
@@ -17,12 +17,15 @@
 //! reads [`NotificationService::notifications`].
 
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use link2linux_platform::{
     NotificationCapabilities, NotificationId, NotificationResponse, NotificationSink,
 };
 use link2linux_protocol::Payload;
-use link2linux_protocol::v1::PhoneNotification;
+use link2linux_protocol::v1::{
+    NotificationActionRequest, NotificationDismissRequest, PhoneNotification,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::broadcast;
 
@@ -30,6 +33,7 @@ use super::images::ImageCache;
 use super::mirror::{Change, Mirror, MirrorError};
 use super::present::{self, Answer};
 use crate::Feature;
+use crate::outbox::{IdempotencyKey, Outbox, OutboxEntry, OutboxError, OutboxStore};
 use crate::session::{Session, SessionError, SessionEvent};
 use crate::sync::SyncCursor;
 
@@ -59,16 +63,21 @@ pub enum ServiceError {
     /// The phone answered a request with a message it does not take.
     #[error("unexpected answer to a notifications request")]
     UnexpectedReply,
+    /// The outbox could not be stored.
+    #[error(transparent)]
+    Outbox(#[from] OutboxError),
 }
 
 /// What a request this service sent is waiting for.
 enum Pending {
     Sync,
+    Outbox(IdempotencyKey),
 }
 
 /// The notifications feature, between a session, the desktop and the user.
-pub struct NotificationService<K> {
+pub struct NotificationService<K, O> {
     sink: K,
+    outbox: Outbox<O>,
     images: ImageCache,
     settings: NotificationSettings,
     mirror: Mirror,
@@ -80,17 +89,19 @@ pub struct NotificationService<K> {
     changes: broadcast::Sender<Change>,
 }
 
-impl<K: NotificationSink> NotificationService<K> {
+impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
     /// A service that resumes `mirror`, which the caller restored from the
     /// cursor and notifications it stored (or [`Mirror::default`]).
     pub fn new(
         sink: K,
+        outbox: Outbox<O>,
         images: ImageCache,
         settings: NotificationSettings,
         mirror: Mirror,
     ) -> Self {
         Self {
             sink,
+            outbox,
             images,
             settings,
             mirror,
@@ -117,24 +128,32 @@ impl<K: NotificationSink> NotificationService<K> {
         self.changes.subscribe()
     }
 
+    /// The user's dismissals and actions not yet answered by the phone,
+    /// oldest first, for showing them as pending.
+    pub fn pending(&self) -> Vec<OutboxEntry> {
+        self.outbox.pending()
+    }
+
     /// Changes the user's settings.
     pub fn set_settings(&mut self, settings: NotificationSettings) {
         self.settings = settings;
     }
 
-    /// Starts the sync, if notifications are ready on both devices. Call it
-    /// once the session is up.
+    /// Starts the sync, if notifications are ready on both devices, and
+    /// sends what the outbox holds. Call it once the session is up.
     pub async fn session_started<S>(&mut self, session: &mut Session<S>) -> Result<(), ServiceError>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        self.start_sync(session).await
+        self.start_sync(session).await?;
+        self.flush(session).await
     }
 
     /// Forgets what was in flight; the next session syncs again from the
-    /// stored cursor.
+    /// stored cursor and resends the outbox.
     pub fn session_ended(&mut self) {
         self.mirror.session_ended();
+        self.outbox.session_ended();
         self.pending.clear();
     }
 
@@ -171,11 +190,21 @@ impl<K: NotificationSink> NotificationService<K> {
                         );
                         self.mirror.session_ended();
                     }
+                    (Pending::Outbox(key), Ok(_)) => {
+                        self.outbox.acked(&key)?;
+                    }
+                    (Pending::Outbox(key), Err(refused)) => {
+                        self.outbox.refused(&key, &refused, SystemTime::now())?;
+                    }
                     _ => return Err(ServiceError::UnexpectedReply),
                 }
                 Ok(None)
             }
             SessionEvent::RequestTimedOut { request } => match self.pending.remove(&request) {
+                Some(Pending::Outbox(key)) => {
+                    self.outbox.unanswered(&key, SystemTime::now())?;
+                    Ok(None)
+                }
                 Some(Pending::Sync) => {
                     // Live events stay refused until a new session syncs again.
                     self.mirror.session_ended();
@@ -200,29 +229,103 @@ impl<K: NotificationSink> NotificationService<K> {
                 Ok(None)
             }
             SessionEvent::FeatureStatus(status) => {
-                self.start_sync(session).await?;
+                if session.is_ready(Feature::Notifications) {
+                    self.outbox.feature_ready(Feature::Notifications)?;
+                    self.start_sync(session).await?;
+                    self.flush(session).await?;
+                }
                 Ok(Some(SessionEvent::FeatureStatus(status)))
             }
             other => Ok(Some(other)),
         }
     }
 
-    /// What the user's response to a banner asks for: a request for the
-    /// phone, for the caller to send, or opening the app window.
-    pub fn handle_response(&mut self, response: &NotificationResponse) -> Option<Answer> {
-        let id = match response {
+    /// Acts on what the user did with a banner. Requests for the phone go
+    /// through the outbox, and out at once when `session` is up; an
+    /// [`Answer::Open`] is returned for the caller to open the app window.
+    pub async fn handle_response<S>(
+        &mut self,
+        session: Option<&mut Session<S>>,
+        response: NotificationResponse,
+    ) -> Result<Option<Answer>, ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let id = match &response {
             NotificationResponse::Action { id, .. }
             | NotificationResponse::Replied { id, .. }
             | NotificationResponse::Closed { id, .. } => *id,
-            _ => return None,
+            _ => return Ok(None),
         };
-        let key = self.keys.get(&id).cloned()?;
+        let Some(key) = self.keys.get(&id).cloned() else {
+            return Ok(None);
+        };
         if matches!(response, NotificationResponse::Closed { .. }) {
             self.keys.remove(&id);
             self.banners.remove(&key);
         }
-        let notification = self.mirror.get(&key)?;
-        present::answer(notification, response, self.settings.dismiss_sync)
+        let Some(notification) = self.mirror.get(&key) else {
+            return Ok(None);
+        };
+        match present::answer(notification, &response, self.settings.dismiss_sync) {
+            Some(Answer::Request(request)) => {
+                self.queue(session, *request).await?;
+                Ok(None)
+            }
+            other => Ok(other),
+        }
+    }
+
+    /// Dismisses a notification on the phone, from the notifications page.
+    pub async fn dismiss<S>(
+        &mut self,
+        session: Option<&mut Session<S>>,
+        key: &str,
+    ) -> Result<(), ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let request = Payload::NotificationDismissRequest(NotificationDismissRequest {
+            key: key.to_owned(),
+            ..NotificationDismissRequest::default()
+        });
+        self.queue(session, request).await
+    }
+
+    /// Runs one of a notification's actions on the phone, with `reply` for
+    /// actions that take text, from the notifications page.
+    pub async fn run_action<S>(
+        &mut self,
+        session: Option<&mut Session<S>>,
+        key: &str,
+        action_id: &str,
+        reply: Option<&str>,
+    ) -> Result<(), ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let request = Payload::NotificationActionRequest(NotificationActionRequest {
+            key: key.to_owned(),
+            action_id: action_id.to_owned(),
+            reply_text: reply.unwrap_or_default().to_owned(),
+            ..NotificationActionRequest::default()
+        });
+        self.queue(session, request).await
+    }
+
+    async fn queue<S>(
+        &mut self,
+        session: Option<&mut Session<S>>,
+        request: Payload,
+    ) -> Result<(), ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        self.outbox.push(request, SystemTime::now())?;
+        match session {
+            Some(session) => self.flush(session).await,
+            None => Ok(()),
+        }
     }
 
     async fn start_sync<S>(&mut self, session: &mut Session<S>) -> Result<(), ServiceError>
@@ -238,6 +341,20 @@ impl<K: NotificationSink> NotificationService<K> {
             .start_request(Payload::NotificationSyncRequest(request))
             .await?;
         self.pending.insert(seq, Pending::Sync);
+        Ok(())
+    }
+
+    async fn flush<S>(&mut self, session: &mut Session<S>) -> Result<(), ServiceError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let due = self
+            .outbox
+            .take_due(SystemTime::now(), |feature| session.is_ready(feature));
+        for entry in due {
+            let seq = session.start_request(entry.request).await?;
+            self.pending.insert(seq, Pending::Outbox(entry.key));
+        }
         Ok(())
     }
 

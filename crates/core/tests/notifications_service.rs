@@ -9,18 +9,19 @@ use std::sync::{Arc, Mutex};
 use futures_util::{SinkExt, StreamExt};
 use link2linux_core::Session;
 use link2linux_core::notifications::{
-    Answer, ImageCache, Mirror, NotificationService, NotificationSettings, ServiceError,
+    ImageCache, Mirror, NotificationService, NotificationSettings, ServiceError,
 };
+use link2linux_core::outbox::{MemoryOutboxStore, Outbox};
 use link2linux_core::session::SessionEvent;
 use link2linux_platform::{
     CloseReason, DesktopNotification, NotificationCapabilities, NotificationId,
     NotificationResponse, NotificationSink, PlatformError,
 };
-use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    NotificationImportance, NotificationPosted, NotificationRemoved, NotificationSyncBatch,
+    Ack, NotificationImportance, NotificationPosted, NotificationRemoved, NotificationSyncBatch,
     PhoneNotification, SyncCursor,
 };
+use link2linux_protocol::{Envelope, Payload};
 use session_common::{
     RawPeer, all_ready, answer, connected_to, envelope, fast, notifying_phone_hello,
 };
@@ -78,7 +79,7 @@ impl Drop for TempDir {
 struct Setup {
     session: Session<DuplexStream>,
     phone: RawPeer,
-    service: NotificationService<FakeSink>,
+    service: NotificationService<FakeSink, MemoryOutboxStore>,
     desktop: Arc<Mutex<Desktop>>,
     _images: TempDir,
 }
@@ -97,6 +98,7 @@ async fn synced_setup(batch: Vec<PhoneNotification>) -> Setup {
         FakeSink {
             log: desktop.clone(),
         },
+        Outbox::new(MemoryOutboxStore::default()),
         ImageCache::new(&images.0, 1 << 20).unwrap(),
         NotificationSettings::default(),
         Mirror::default(),
@@ -222,10 +224,34 @@ async fn syncs_then_shows_alerting_notifications_and_closes_removed_ones() {
     assert_eq!(s.desktop.lock().unwrap().closed, [id]);
     assert_eq!(s.service.notifications().count(), 1);
     assert_eq!(s.service.cursor().revision, 3);
+}
 
-    // The user dismissing a banner asks the phone to dismiss it too.
+#[tokio::test]
+async fn the_users_dismissal_goes_to_the_phone_until_it_answers() {
+    let mut s = synced_setup(vec![]).await;
     s.phone
-        .send(&envelope(6, posted(note("other", 4), true)))
+        .send(&envelope(4, posted(note("chat", 2), true)))
+        .await
+        .unwrap();
+    let event = next(&mut s.session).await;
+    s.service.handle_event(&mut s.session, event).await.unwrap();
+
+    // A banner the desktop closed itself asks nothing of the phone.
+    let closed_by_app = NotificationResponse::Closed {
+        id: NotificationId(1),
+        reason: CloseReason::ClosedByApp,
+    };
+    assert!(
+        s.service
+            .handle_response(Some(&mut s.session), closed_by_app)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(s.service.pending().is_empty());
+
+    s.phone
+        .send(&envelope(5, posted(note("chat", 3), true)))
         .await
         .unwrap();
     let event = next(&mut s.session).await;
@@ -234,10 +260,35 @@ async fn syncs_then_shows_alerting_notifications_and_closes_removed_ones() {
         id: NotificationId(2),
         reason: CloseReason::Dismissed,
     };
-    let Some(Answer::Request(request)) = s.service.handle_response(&dismissed) else {
-        panic!("expected a request for the phone");
+    s.service
+        .handle_response(Some(&mut s.session), dismissed)
+        .await
+        .unwrap();
+    assert_eq!(
+        s.service.pending().len(),
+        1,
+        "pending until the phone answers"
+    );
+
+    let request: Envelope = s.phone.next().await.unwrap().unwrap();
+    let Some(Payload::NotificationDismissRequest(dismiss)) = &request.payload else {
+        panic!("expected a dismiss request, got {request:?}");
     };
-    assert!(matches!(*request, Payload::NotificationDismissRequest(ref d) if d.key == "other"));
+    assert_eq!(dismiss.key, "chat");
+    assert_eq!(dismiss.idempotency_key.len(), 16);
+    s.phone
+        .send(&answer(6, request.seq, Payload::Ack(Ack {})))
+        .await
+        .unwrap();
+    let reply = next(&mut s.session).await;
+    assert!(
+        s.service
+            .handle_event(&mut s.session, reply)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(s.service.pending().is_empty());
 }
 
 #[tokio::test]
@@ -248,6 +299,7 @@ async fn live_events_before_the_sync_are_a_rule_break() {
         FakeSink {
             log: Arc::default(),
         },
+        Outbox::new(MemoryOutboxStore::default()),
         ImageCache::new(&images.0, 1 << 20).unwrap(),
         NotificationSettings::default(),
         Mirror::default(),
