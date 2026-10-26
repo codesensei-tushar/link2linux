@@ -68,7 +68,7 @@ internal fun PairingScreen(
     ) { padding ->
         when (screen) {
             PairingScreenState.Home -> HomeContent(uiState, features, onOpenFeature, actions, Modifier.fillMaxSize(), padding)
-            PairingScreenState.Scanning -> Unit
+            PairingScreenState.Scanning -> ScanContent(uiState.scanError, actions, Modifier.fillMaxSize(), padding)
             else -> AttemptContent(screen, actions, Modifier.fillMaxSize(), padding)
         }
     }

@@ -16,6 +16,18 @@
     <string name="feature_pairing_done">Done</string>
     <string name="feature_pairing_try_again">Try again</string>
 
+    <string name="feature_pairing_scan_title">Scan the code</string>
+    <string name="feature_pairing_scan_body">Point the camera at the code on your computer\'s screen.</string>
+    <string name="feature_pairing_scan_error_update">This code is from a newer version of link2linux. Update the app on this phone and scan again.</string>
+    <string name="feature_pairing_scan_error_invalid">This is not a link2linux pairing code.</string>
+
+    <string name="feature_pairing_camera_title">Camera access</string>
+    <string name="feature_pairing_camera_rationale">link2linux uses the camera only to read the pairing code on your computer\'s screen. Nothing is recorded or saved.</string>
+    <string name="feature_pairing_camera_allow">Allow camera</string>
+    <string name="feature_pairing_camera_denied_title">The camera is off for link2linux</string>
+    <string name="feature_pairing_camera_denied_body">You can turn it on in the phone\'s settings, or pair without the camera by comparing a short code.</string>
+    <string name="feature_pairing_camera_settings">Open settings</string>
+
     <string name="feature_pairing_waiting_title">Waiting for %1$s</string>
     <string name="feature_pairing_waiting_body">Keep this screen open and stay on the same network as your computer. This ends in %1$d s.</string>
     <string name="feature_pairing_address_hint">Still nothing? On your computer, choose to enter the phone\'s address, and type one of these:</string>
