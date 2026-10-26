@@ -13,6 +13,7 @@ import {
   type PairingState,
   type PhoneTarget,
   type Settings,
+  type StartupError,
 } from "./bindings";
 import { createPreviewApi } from "./preview-api";
 
@@ -26,6 +27,7 @@ export type {
   PairingState,
   PhoneTarget,
   Settings,
+  StartupError,
 } from "./bindings";
 
 /** Stops listening to an event stream. */
@@ -43,6 +45,10 @@ export type Unsubscribe = () => void;
  */
 export interface DesktopApi {
   appInfo(): Promise<AppInfo>;
+  /** Why the backend did not start, or null when it did. */
+  startupError(): Promise<StartupError | null>;
+  /** Starts the app again; on success the promise never settles. */
+  restartApp(): Promise<void>;
   listDevices(): Promise<Device[]>;
 
   /** The notifications currently mirrored from a phone, in no particular order. */
@@ -94,6 +100,8 @@ async function expectData<T>(result: Promise<DataOutcome<T>>): Promise<T> {
 /** The real backend: typed IPC calls into src-tauri. */
 export const tauriApi: DesktopApi = {
   appInfo: () => commands.appInfo(),
+  startupError: () => commands.startupError(),
+  restartApp: () => commands.restartApp(),
   listDevices: () => commands.listDevices(),
   listNotifications: (deviceId) => expectData(commands.listNotifications(deviceId)),
   subscribeNotifications: (deviceId, onEvent) => {

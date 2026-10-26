@@ -7,7 +7,7 @@ const DAY_MS = 86_400_000;
 /**
  * Stand-in for running the UI in a plain browser (`pnpm dev` without Tauri),
  * where IPC does not exist. It plays a short, fixed story so every screen can
- * be looked at. `?preview=qr|code|success|failed|empty` opens on that screen.
+ * be looked at. `?preview=qr|code|success|failed|empty|startup-error` opens on that screen.
  */
 export function createPreviewApi(search: string = globalThis.location.search): DesktopApi {
   const scenario = new URLSearchParams(search).get("preview");
@@ -103,6 +103,17 @@ export function createPreviewApi(search: string = globalThis.location.search): D
         os: "browser",
         arch: "",
       }),
+    startupError: () =>
+      Promise.resolve(
+        scenario === "startup-error"
+          ? {
+              message: "link2linux couldn't open your keyring.",
+              hint: "Your keyring is locked or not running. Unlock it, then try again.",
+              detail: "identity: the keyring that holds the private key is unavailable",
+            }
+          : null,
+      ),
+    restartApp: () => Promise.resolve(),
     listDevices: () => Promise.resolve(devices),
     listNotifications: () => Promise.resolve(demoNotifications(Date.now())),
     subscribeNotifications: () => () => undefined,

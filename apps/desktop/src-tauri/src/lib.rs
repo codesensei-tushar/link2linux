@@ -24,6 +24,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::app::app_info,
+            commands::app::startup_error,
+            commands::app::restart_app,
             commands::devices::list_devices,
             commands::devices::unpair_device,
             commands::pairing::get_pairing_state,
@@ -68,9 +70,11 @@ pub fn run() {
                 Arc::new(backend::fake::FakeBackend::from_env(sink))
             } else {
                 let handle = app.handle().clone();
-                Arc::new(backend::live::LiveBackend::start(sink, move || {
+                // A failed start keeps the window up to say why, rather than
+                // quitting without a word.
+                backend::failed::or_failed(backend::live::LiveBackend::start(sink, move || {
                     show_window(&handle);
-                })?)
+                }))
             };
             app.manage(AppState::new(backend));
             Ok(())

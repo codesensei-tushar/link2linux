@@ -195,6 +195,21 @@ pub enum BackendError {
     /// A setting could not be stored. It applies until the app quits.
     #[error("The setting couldn't be saved, so it lasts only until the app quits.")]
     NotSaved,
+    /// The runtime did not start, so nothing it does is available.
+    #[error("link2linux didn't start, so this isn't available.")]
+    NotStarted,
+}
+
+/// Why the app could not start, for the page shown instead of the app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupError {
+    /// What failed, in plain words.
+    pub message: String,
+    /// What the user can do about it.
+    pub hint: String,
+    /// The error itself, for a bug report.
+    pub detail: String,
 }
 
 /// Where a backend reports changes. Called with the backend's lock held, so

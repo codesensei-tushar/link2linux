@@ -29,7 +29,7 @@ use crate::notify::dto::{self, MirroredNotification, NotificationEvent};
 use crate::notify::{DriverFactory, Presenter};
 use crate::pairing::PairingCtl;
 use crate::paths::{DataDir, desktop_name};
-use crate::view::{Device, DeviceStatus, EventSink};
+use crate::view::{Device, DeviceStatus, EventSink, StartupError};
 
 /// How the runtime starts.
 #[derive(Debug, Clone)]
@@ -90,6 +90,43 @@ pub enum RuntimeError {
     /// The TLS client could not be set up.
     #[error("transport: {0}")]
     Transport(#[from] TransportError),
+}
+
+/// Told when the cause gives the user nothing better to do.
+const TRY_AGAIN: &str = "Try again. If it keeps happening, report it with the details below.";
+
+impl From<&RuntimeError> for StartupError {
+    fn from(error: &RuntimeError) -> Self {
+        let (message, hint) = match error {
+            RuntimeError::Identity(IdentityError::KeyringUnavailable(_)) => (
+                "link2linux couldn't open your keyring, which holds the key your phones know \
+                 this computer by.",
+                "Your keyring is locked or not running. Unlock it, then try again.",
+            ),
+            RuntimeError::Data(_) => (
+                "link2linux couldn't use its data folder.",
+                "Check that your home folder has free space and can be written to, then try \
+                 again.",
+            ),
+            RuntimeError::Identity(_) => (
+                "link2linux couldn't load the key your phones know this computer by.",
+                TRY_AGAIN,
+            ),
+            RuntimeError::Store(_) => (
+                "link2linux couldn't read the list of paired phones.",
+                TRY_AGAIN,
+            ),
+            RuntimeError::Transport(_) => (
+                "link2linux couldn't set up its secure connections.",
+                TRY_AGAIN,
+            ),
+        };
+        Self {
+            message: message.to_owned(),
+            hint: hint.to_owned(),
+            detail: error.to_string(),
+        }
+    }
 }
 
 /// One paired phone's connection state and the way to reach its task.
@@ -399,4 +436,26 @@ pub(crate) fn unix_ms(time: SystemTime) -> i64 {
 
 pub(crate) fn now_unix_ms() -> i64 {
     unix_ms(SystemTime::now())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_start_says_what_failed_and_what_to_do() {
+        let locked = StartupError::from(&RuntimeError::Identity(
+            IdentityError::KeyringUnavailable("the prompt was dismissed".into()),
+        ));
+        assert!(locked.message.contains("keyring"));
+        assert_eq!(
+            locked.hint,
+            "Your keyring is locked or not running. Unlock it, then try again."
+        );
+        assert!(locked.detail.contains("the prompt was dismissed"));
+
+        let data = StartupError::from(&RuntimeError::Data(io::Error::other("disk full")));
+        assert_eq!(data.message, "link2linux couldn't use its data folder.");
+        assert!(data.detail.contains("disk full"));
+    }
 }

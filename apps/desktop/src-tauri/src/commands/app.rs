@@ -1,6 +1,9 @@
 use serde::Serialize;
 use specta::Type;
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
+
+use crate::backend::StartupError;
+use crate::state::AppState;
 
 /// Facts about the running desktop app, shown in the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -30,4 +33,19 @@ pub fn app_info(app: AppHandle) -> AppInfo {
         os: std::env::consts::OS.to_owned(),
         arch: std::env::consts::ARCH.to_owned(),
     }
+}
+
+/// Why the app could not start, or nothing when it did. The window shows
+/// this instead of the app.
+#[tauri::command]
+#[specta::specta]
+pub fn startup_error(state: State<'_, AppState>) -> Option<StartupError> {
+    state.backend().startup_error()
+}
+
+/// Starts the app again, to try again after a failed start.
+#[tauri::command]
+#[specta::specta]
+pub fn restart_app(app: AppHandle) {
+    app.restart()
 }

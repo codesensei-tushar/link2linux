@@ -10,6 +10,7 @@
 //! resulting state arrives through [`EventSink`], so a slow reply can never
 //! overwrite a newer event.
 
+pub mod failed;
 pub mod fake;
 pub mod live;
 
@@ -17,7 +18,7 @@ pub use link2linux_runtime::notify::CachedImage;
 pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, Device, DeviceStatus, DiscoveredPhone, EventSink, MirroredNotification,
-    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneTarget,
+    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneTarget, StartupError,
 };
 
 /// What the desktop shell needs from the pairing and device layer.
@@ -71,5 +72,10 @@ pub trait Backend: Send + Sync {
     /// Changes the settings; they apply at once.
     fn set_settings(&self, _settings: Settings) -> Result<(), BackendError> {
         Ok(())
+    }
+
+    /// Why the backend did not start, if it did not.
+    fn startup_error(&self) -> Option<StartupError> {
+        None
     }
 }
