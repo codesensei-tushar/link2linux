@@ -16,7 +16,6 @@
 //! [`ClipboardHub`]: link2linux_core::clipboard::ClipboardHub
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use link2linux_core::clipboard::{Clip, ClipboardEvent, ClipboardService, Origin};
 use link2linux_platform::{
@@ -24,7 +23,7 @@ use link2linux_platform::{
 };
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, watch};
-use tokio::time::{self, Instant};
+use tokio::time::Instant;
 
 use crate::link::lock;
 use crate::notify::BoxFuture;
@@ -37,11 +36,6 @@ pub use status::{
     ClipboardActivity, ClipboardDirection, ClipboardMode, ClipboardPhone, ClipboardPhoneState,
     ClipboardProblem, ClipboardProblemKind, ClipboardStatus, HeldClipboard, MAX_ACTIVITY,
 };
-
-/// How long to wait before following the clipboard again after it failed,
-/// first and at most.
-const FIRST_RETRY: Duration = Duration::from_secs(1);
-const LAST_RETRY: Duration = Duration::from_secs(60);
 
 /// A [`Clipboard`] usable as a trait object.
 pub trait ClipboardPort: Send + Sync {
@@ -157,8 +151,9 @@ pub(crate) fn share(core: &Core, clip: &Arc<Clip>, origin: Origin) {
 }
 
 /// Follows the desktop clipboard and shares each new copy, until the
-/// runtime stops. Returns at once on a desktop whose session does not let
-/// a background app follow the clipboard.
+/// runtime stops or the clipboard can no longer be followed. Returns at
+/// once on a desktop whose session does not let a background app follow
+/// the clipboard.
 pub(crate) async fn watch(core: Arc<Core>) {
     let Some(clipboard) = core.clipboard.clone() else {
         return;
@@ -166,22 +161,17 @@ pub(crate) async fn watch(core: Arc<Core>) {
     if Clipboard::access(&clipboard) != ClipboardAccess::Background {
         return;
     }
-    let mut retry = FIRST_RETRY;
     loop {
         let changed = tokio::select! {
             () = core.cancel.cancelled() => return,
             changed = Clipboard::changed(&clipboard) => changed,
         };
         if let Err(error) = changed {
-            tracing::info!(%error, "the clipboard cannot be followed for now");
-            tokio::select! {
-                () = core.cancel.cancelled() => return,
-                () = time::sleep(retry) => {}
-            }
-            retry = (retry * 2).min(LAST_RETRY);
-            continue;
+            // The connection to the display server is gone, and with it
+            // reading and writing.
+            tracing::warn!(%error, "the clipboard can no longer be followed");
+            return;
         }
-        retry = FIRST_RETRY;
         match Clipboard::read(&clipboard).await {
             Ok(Some(text)) => {
                 if let Some(clip) = core.clipboard_hub.copied(text, Instant::now()) {
