@@ -1,10 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Only network access is declared up front. Each feature asks for its own
-         permissions at runtime when the user turns it on. -->
+    <!-- Listen for the desktop's connection, send beacons, and register the mDNS service. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Follow the Wi-Fi and Ethernet networks the phone is on. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Hold the multicast lock while pairing, so the Wi-Fi chip passes mDNS traffic. It is also
+         one of the permissions Android accepts for a connectedDevice foreground service. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Keep the device awake for the first minute of a beacon burst. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The connection service keeps the phone findable and connected. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Read the pairing QR code. Asked for only when the user taps "Allow camera". -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Optional step after pairing: associate with the computer's Bluetooth advertisement.
+         Asked for only at that step. Before Android 12 the older permission applies. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Let Android start the app, and its foreground service, when the associated computer is near. -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
+
+    <!-- Everything hardware-related is optional: the phone still pairs by comparing a code
+         when it has no camera, and works without Bluetooth. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
 
     <application
         android:name=".L2lApplication"
@@ -25,5 +52,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".service.ConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Android binds this when the associated computer comes in range. -->
+        <service
+            android:name=".service.DesktopPresenceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE"
+            tools:targetApi="31">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
