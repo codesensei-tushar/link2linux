@@ -11,16 +11,9 @@ use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
-use crate::clipboard::{ClipboardDriver, Copies, Outgoing};
-use crate::notify::{DriverError, NotificationsDriver, PhoneSession};
-
-/// The features of one phone, which stay with it across sessions.
-pub struct Features {
-    /// Its notifications.
-    pub notifications: Box<dyn NotificationsDriver>,
-    /// Its part of the shared clipboard.
-    pub clipboard: ClipboardDriver,
-}
+use crate::clipboard::{Copies, Outgoing};
+use crate::features::Features;
+use crate::notify::{DriverError, PhoneSession};
 
 /// What the owner of a session can ask of it.
 #[derive(Debug)]
@@ -59,8 +52,8 @@ pub enum Command {
 pub enum Ending {
     /// The connection ended, by the phone's `Goodbye` or by itself.
     Peer(SessionEnd),
-    /// The phone broke the notification rules: this side says goodbye with
-    /// a protocol error.
+    /// The phone broke a feature's rules: this side says goodbye with a
+    /// protocol error.
     PhoneBrokeRules,
     /// This side removed the pairing and told the phone.
     Removed,
@@ -88,8 +81,8 @@ pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Runs `session` until it ends.
 ///
-/// The features see every event first: notifications, then the
-/// clipboard, which also pushes each new copy from `copies`. A copy made
+/// The features see every event first (see [`Features`]); the clipboard
+/// also pushes each new copy from `copies`. A copy made
 /// before the session started is not pushed from there: the clipboard
 /// service pushes a recent one by itself. The loop itself keeps the pairing
 /// record in step with the phone: it confirms the record on the phone's
@@ -109,15 +102,9 @@ pub async fn run(
     {
         tracing::debug!(%error, "could not set the session active");
     }
-    if let Err(error) = features.notifications.session_started(&mut session).await {
-        tracing::warn!(%error, "notifications could not start");
-    }
-    if let Err(error) = features.clipboard.session_started(&mut session).await {
-        tracing::debug!(%error, "the clipboard could not start");
-    }
+    features.session_started(&mut session).await;
     let ending = drive(&mut session, features, commands, copies, cancel, context).await;
-    features.notifications.session_ended();
-    features.clipboard.session_ended();
+    features.session_ended();
     match &ending {
         Ending::Shutdown => {
             let _ = session
@@ -133,7 +120,7 @@ pub async fn run(
             let _ = session
                 .goodbye(
                     GoodbyeReason::ProtocolError,
-                    "a notification rule was broken",
+                    "a feature's rules were broken",
                 )
                 .await;
         }
@@ -152,8 +139,6 @@ async fn drive(
     cancel: &CancellationToken,
     context: &LinkContext<'_>,
 ) -> Ending {
-    let driver = &mut *features.notifications;
-    let clipboard = &mut features.clipboard;
     // The sender goes with the phone's slot, when the phone is forgotten.
     let mut copying = true;
     loop {
@@ -164,7 +149,7 @@ async fn drive(
                 match (changed, copy) {
                     (Err(_), _) => copying = false,
                     (Ok(()), Some(Outgoing { clip, origin })) => {
-                        if let Err(error) = clipboard.share(session, clip, origin).await {
+                        if let Err(error) = features.clipboard.share(session, clip, origin).await {
                             tracing::debug!(%error, "could not push the clipboard");
                         }
                     }
@@ -180,7 +165,7 @@ async fn drive(
                     }
                 }
                 Some(Command::Response(response)) => {
-                    match driver.handle_response(Some(session), response).await {
+                    match features.notifications.handle_response(Some(session), response).await {
                         Ok(Some(answer)) => tracing::debug!(?answer, "a banner asks to open the app"),
                         Ok(None) => {}
                         Err(DriverError::PhoneBrokeRules(error)) => {
@@ -191,12 +176,13 @@ async fn drive(
                     }
                 }
                 Some(Command::Dismiss { key }) => {
-                    if let Err(error) = driver.dismiss(Some(session), &key).await {
+                    if let Err(error) = features.notifications.dismiss(Some(session), &key).await {
                         tracing::warn!(%error, "could not dismiss a notification");
                     }
                 }
                 Some(Command::Action { key, action_id, reply }) => {
-                    let sent = driver
+                    let sent = features
+                        .notifications
                         .run_action(Some(session), &key, &action_id, reply.as_deref())
                         .await;
                     if let Err(error) = sent {
@@ -204,7 +190,7 @@ async fn drive(
                     }
                 }
                 Some(Command::ClipboardSharing) => {
-                    if let Err(error) = clipboard.sharing_changed(session).await {
+                    if let Err(error) = features.clipboard.sharing_changed(session).await {
                         tracing::debug!(%error, "could not tell the phone about clipboard sharing");
                     }
                 }
@@ -212,23 +198,8 @@ async fn drive(
             },
             event = session.next_event() => match event {
                 Ok(Some(event)) => {
-                    let rest = match driver.handle_event(session, event).await {
-                        Ok(rest) => rest,
-                        Err(DriverError::PhoneBrokeRules(error)) => {
-                            tracing::warn!(%error, "the phone broke the notification rules");
-                            return Ending::PhoneBrokeRules;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "notification event failed");
-                            None
-                        }
-                    };
-                    let rest = match rest {
-                        Some(event) => clipboard.handle_event(session, event).await.unwrap_or_else(|error| {
-                            tracing::debug!(%error, "clipboard event failed");
-                            None
-                        }),
-                        None => None,
+                    let Ok(rest) = features.handle_event(session, event).await else {
+                        return Ending::PhoneBrokeRules;
                     };
                     if let Some(end) = rest.and_then(|event| handle(&event, context)) {
                         return Ending::Peer(end);

@@ -12,6 +12,7 @@ pub mod clipboard;
 mod device;
 pub mod dial;
 mod discovery;
+pub mod features;
 pub mod link;
 pub mod notify;
 mod pairing;

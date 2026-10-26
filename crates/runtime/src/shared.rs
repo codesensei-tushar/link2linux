@@ -30,7 +30,8 @@ use crate::clipboard::{
     SharedClipboard,
 };
 use crate::device::{self, Established, Inbox};
-use crate::link::{Command, Features, lock};
+use crate::features::Features;
+use crate::link::{Command, lock};
 use crate::notify::dto::{self, MirroredNotification, NotificationEvent};
 use crate::notify::{DriverFactory, Presenter};
 use crate::pairing::PairingCtl;

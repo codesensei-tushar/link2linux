@@ -19,7 +19,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::clipboard::Copies;
 use crate::dial::race;
-use crate::link::{self, Command, Ending, Features, LinkContext, lock};
+use crate::features::Features;
+use crate::link::{self, Command, Ending, LinkContext, lock};
 use crate::notify::PhoneSession;
 use crate::shared::Core;
 use crate::view::DeviceStatus;
