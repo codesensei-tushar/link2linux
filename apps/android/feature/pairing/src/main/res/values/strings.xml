@@ -63,4 +63,13 @@
     <string name="feature_pairing_failed_unsupported">This phone or the computer cannot pair this way.</string>
     <string name="feature_pairing_failed_connection_lost">The connection dropped before pairing finished.</string>
     <string name="feature_pairing_failed_internal">The phone could not wait for the computer. Check the network connection and try again.</string>
+
+    <string name="feature_pairing_companion_title">Notice your computer sooner</string>
+    <string name="feature_pairing_companion_body">Your phone can let Android start link2linux when this computer comes in range, so they connect without you opening the app. Only a Bluetooth signal from the computer is used; no data is sent over Bluetooth.</string>
+    <string name="feature_pairing_companion_action">Set up</string>
+    <string name="feature_pairing_companion_skip">Skip</string>
+    <string name="feature_pairing_companion_working">Looking for your computer\u2026</string>
+    <string name="feature_pairing_companion_done">Done. Android will tell link2linux when this computer is near.</string>
+    <string name="feature_pairing_companion_not_found">Your computer was not found. Check that Bluetooth and Location are on and that the computer is close, then try again.</string>
+    <string name="feature_pairing_companion_unavailable">This phone cannot do this.</string>
 </resources>

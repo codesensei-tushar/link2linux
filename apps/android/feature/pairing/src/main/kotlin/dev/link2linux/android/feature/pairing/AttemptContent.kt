@@ -104,6 +104,7 @@ internal fun AttemptContent(
             is PairingScreenState.Paired -> {
                 Title(stringResource(R.string.feature_pairing_success_title, screen.device.device.name))
                 Body(stringResource(R.string.feature_pairing_success_body))
+                screen.device.bluetoothAddress?.let { CompanionOffer(it) }
                 Button(onClick = actions.onDismiss) { Text(stringResource(R.string.feature_pairing_done)) }
             }
             is PairingScreenState.Failed -> {
