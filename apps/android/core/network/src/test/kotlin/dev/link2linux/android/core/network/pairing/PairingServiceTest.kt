@@ -40,6 +40,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -559,5 +560,84 @@ class PairingServiceTest {
         // B still connects as itself.
         dial(b, PairingMethod.PAIRING_METHOD_UNSPECIFIED, deviceId = "desktop-b").readSessionStart()
         assertEquals(b.fingerprint, devices.find(b.fingerprint!!)?.fingerprint)
+    }
+
+    /** A repository whose reads of the list, or saves, fail once told to, as a store whose disk or key fails. */
+    private class Failing(private val inner: InMemoryPairedDeviceRepository) : PairedDeviceRepository by inner {
+        @Volatile var reads = false
+
+        @Volatile var saves = false
+
+        override val pairedDevices = kotlinx.coroutines.flow.flow {
+            if (reads) throw java.io.IOException("The store could not be read")
+            emitAll(inner.pairedDevices)
+        }
+
+        override suspend fun save(device: PairedDevice) {
+            if (saves) throw java.io.IOException("The store could not be written")
+            inner.save(device)
+        }
+    }
+
+    @Test
+    fun aSasAttemptThatFailsWithAnyErrorFreesTheSlot() = runBlocking<Unit> {
+        val failing = Failing(devices)
+        val phone = newService(devices = failing)
+        phone.startSasPairing()
+        val peer = dial(TestDesktop(), PairingMethod.PAIRING_METHOD_SAS, on = phone)
+        peer.sasUntilCode()
+        withTimeout(10_000) { phone.state.first { it is PairingState.ConfirmCode } }
+
+        // Approving reads the pairings, which now fails with an error that is not a pairing failure.
+        failing.reads = true
+        phone.confirmCode(true)
+
+        val waiting = withTimeout(10_000) { phone.state.first { it is PairingState.AwaitingDesktop.Sas } } as PairingState.AwaitingDesktop.Sas
+        assertEquals(PairingWindow.SAS_ATTEMPTS - 1, waiting.attemptsLeft)
+        assertNull(io { peer.read() })
+        // The slot is free: another desktop gets as far as the code.
+        failing.reads = false
+        val next = dial(TestDesktop(), PairingMethod.PAIRING_METHOD_SAS, on = phone)
+        next.sasUntilCode()
+        withTimeout(10_000) { phone.state.first { it is PairingState.ConfirmCode } }
+    }
+
+    @Test
+    fun aPairingThePhoneCannotStoreIsRemovedFromTheDesktopToo() = runBlocking {
+        val failing = Failing(devices)
+        val phone = newService(devices = failing)
+        val desktop = TestDesktop()
+        phone.startQrPairing(offerFor(desktop))
+        val peer = dial(desktop, PairingMethod.PAIRING_METHOD_QR_CODE, on = phone)
+        failing.saves = true
+
+        assertEquals(PairingOutcome.PAIRING_OUTCOME_ACCEPTED, peer.pairByQrCode())
+
+        assertEquals(GoodbyeReason.GOODBYE_REASON_UNPAIRED, io { peer.read()!!.goodbye.reason })
+        assertEquals(PairingState.Failed(PairingFailure.INTERNAL), withTimeout(10_000) { phone.state.first { it is PairingState.Failed } })
+        assertTrue(devices.pairedDevices.first().isEmpty())
+    }
+
+    @Test
+    fun aConnectionWithARotatedKeyReplacesTheSessionWithTheOldKey() = runBlocking<Unit> {
+        val desktop = TestDesktop()
+        pairedRecord(desktop)
+        val old = dial(desktop, PairingMethod.PAIRING_METHOD_UNSPECIFIED)
+        old.readSessionStart()
+        val next = TestDesktop()
+        val answer = io {
+            old.send {
+                expectsReply = true
+                keyRotation = KeyRotation.newBuilder().setNextSpkiSha256(ByteString.copyFrom(next.fingerprint!!.toByteArray())).build()
+            }
+            old.read()!!
+        }
+        assertEquals(PayloadCase.ACK, answer.payloadCase)
+
+        // The desktop connects with its new key while the old connection is still up.
+        dial(next, PairingMethod.PAIRING_METHOD_UNSPECIFIED).readSessionStart()
+
+        assertEquals(GoodbyeReason.GOODBYE_REASON_REPLACED, io { old.read()!!.goodbye.reason })
+        withTimeout(5_000) { service.connected.first { it == setOf(next.fingerprint) } }
     }
 }
