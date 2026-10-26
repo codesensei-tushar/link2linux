@@ -29,6 +29,9 @@ tokio-util = { version = "0.7.20", default-features = false, features = ["codec"
 aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
 base64 = "0.23.1"
 
+# Property tests.
+proptest = "1.12"
+
 # Errors and logging.
 thiserror = "2.0.21"
 tracing = "0.1.44"
