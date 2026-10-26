@@ -53,6 +53,18 @@ describe("app shell", () => {
     expect(screen.getByRole("link", { name: "Messages" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("opens the settings from the sidebar", async () => {
+    const user = userEvent.setup();
+    const { router } = renderApp();
+
+    const nav = screen.getByRole("navigation", { name: "App" });
+    await user.click(within(nav).getByRole("link", { name: "Settings" }));
+
+    expect(router.state.location.pathname).toBe("/settings");
+    expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+    expect(document.title).toBe("Settings · link2linux");
+  });
+
   it("moves focus through the sidebar with the arrow keys", async () => {
     const user = userEvent.setup();
     renderApp({ path: "/calls" });

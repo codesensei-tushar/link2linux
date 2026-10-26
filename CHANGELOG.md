@@ -36,8 +36,9 @@ from Unreleased to a version.
   desktop's notification service, where other apps can read them, so a pop-up
   now only names the phone's app and says "New notification". The whole
   notification is in the link2linux window, which a click on the pop-up opens.
-  Notifications the phone's app marked secret get no pop-up at all while the
-  screen is locked.
+  The new Settings page can turn the text back on. Even then, pop-ups never
+  show it while the screen is locked, and notifications the phone's app marked
+  secret get no pop-up at all on a locked screen.
 
 ## [0.1.0] - 2026-10-26
 

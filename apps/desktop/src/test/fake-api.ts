@@ -73,6 +73,8 @@ export interface FakeApi extends DesktopApi {
   pairWith: Mock<DesktopApi["pairWith"]>;
   answerCode: Mock<DesktopApi["answerCode"]>;
   cancelPairing: Mock<DesktopApi["cancelPairing"]>;
+  getSettings: Mock<DesktopApi["getSettings"]>;
+  setSettings: Mock<DesktopApi["setSettings"]>;
   /** Pushes a pairing event, as the backend would. */
   emitPairing(state: PairingState): void;
   /** Pushes a devices event, as the backend would. */
@@ -115,6 +117,10 @@ export function createFakeApi(): FakeApi {
     pairWith: vi.fn<DesktopApi["pairWith"]>().mockResolvedValue(undefined),
     answerCode: vi.fn<DesktopApi["answerCode"]>().mockResolvedValue(undefined),
     cancelPairing: vi.fn<DesktopApi["cancelPairing"]>().mockResolvedValue(undefined),
+    getSettings: vi
+      .fn<DesktopApi["getSettings"]>()
+      .mockResolvedValue({ showNotificationText: false }),
+    setSettings: vi.fn<DesktopApi["setSettings"]>().mockResolvedValue(undefined),
     onPairingChanged: (listener) => {
       pairingListeners.add(listener);
       return Promise.resolve(() => pairingListeners.delete(listener));

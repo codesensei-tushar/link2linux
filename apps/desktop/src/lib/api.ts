@@ -12,6 +12,7 @@ import {
   type PairingMethod,
   type PairingState,
   type PhoneTarget,
+  type Settings,
 } from "./bindings";
 import { createPreviewApi } from "./preview-api";
 
@@ -24,6 +25,7 @@ export type {
   PairingMethod,
   PairingState,
   PhoneTarget,
+  Settings,
 } from "./bindings";
 
 /** Stops listening to an event stream. */
@@ -68,6 +70,10 @@ export interface DesktopApi {
   /** Subscribe before reading a snapshot, so nothing is missed in between. */
   onPairingChanged(listener: (state: PairingState) => void): Promise<Unsubscribe>;
   onDevicesChanged(listener: (devices: Device[]) => void): Promise<Unsubscribe>;
+
+  getSettings(): Promise<Settings>;
+  /** Applies the settings at once. Rejects when they could not be saved for the next start. */
+  setSettings(settings: Settings): Promise<void>;
 }
 
 type Outcome = { status: "ok"; data: null } | { status: "error"; error: CommandError };
@@ -125,6 +131,8 @@ export const tauriApi: DesktopApi = {
     events.devicesChanged.listen((event) => {
       listener(event.payload);
     }),
+  getSettings: () => commands.getSettings(),
+  setSettings: (settings) => expectOk(commands.setSettings(settings)),
 };
 
 /** The backend for the current environment. */

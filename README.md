@@ -128,8 +128,9 @@ Bluetooth on the computer.
 - The desktop keeps the key that identifies it to your phone in the system
   keyring (GNOME Keyring, KWallet or KeePassXC), or in a file only you can
   read when there is no keyring.
-- Desktop pop-ups only name the app. The full notification stays in the
-  link2linux window.
+- Desktop pop-ups only name the app unless you turn on their text in
+  Settings, and never show it while the screen is locked. The full
+  notification stays in the link2linux window.
 
 Found a security issue? Please report it privately as described in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-security-issues).
