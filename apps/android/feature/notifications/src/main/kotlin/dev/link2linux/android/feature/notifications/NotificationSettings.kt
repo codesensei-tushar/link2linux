@@ -23,8 +23,8 @@ data class NotificationSettingsState(
     val dismissSync: Boolean = true,
     /** Notifications that look like they hold a one-time code are shared without their content. On by default. */
     val hideOneTimeCodes: Boolean = true,
-    /** A computer may reply, and press buttons that open an app, while the phone is locked. Off by default. */
-    val actWhileLocked: Boolean = false,
+    /** A computer may reply, and press buttons that open an app, while the phone is locked. On by default. */
+    val actWhileLocked: Boolean = true,
     /** Apps whose notifications are not shared. */
     val excluded: Set<String> = emptySet(),
     /** Apps whose notifications are shared without their text. */
@@ -90,7 +90,7 @@ class NotificationSettings(private val store: SettingsStore, private val onChang
         enabled = store.getBoolean(ENABLED, false),
         dismissSync = store.getBoolean(DISMISS_SYNC, true),
         hideOneTimeCodes = store.getBoolean(HIDE_ONE_TIME_CODES, true),
-        actWhileLocked = store.getBoolean(ACT_WHILE_LOCKED, false),
+        actWhileLocked = store.getBoolean(ACT_WHILE_LOCKED, true),
         excluded = store.getStrings(EXCLUDED),
         contentHidden = store.getStrings(CONTENT_HIDDEN),
         knownApps = store.getStrings(KNOWN_APPS).mapNotNull {
