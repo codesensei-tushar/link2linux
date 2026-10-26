@@ -71,6 +71,7 @@ pub(crate) fn of(payload: &Payload) -> Rules {
     use Payload as P;
 
     const NOTIFICATIONS: Option<Feature> = Some(Feature::Notifications);
+    const CLIPBOARD: Option<Feature> = Some(Feature::Clipboard);
     let (name, kind, feature) = match payload {
         P::Hello(_) => ("Hello", Control, None),
         P::Ping(_) => ("Ping", Control, None),
@@ -105,6 +106,7 @@ pub(crate) fn of(payload: &Payload) -> Rules {
             Request(Expects::Ack),
             NOTIFICATIONS,
         ),
+        P::ClipboardPush(_) => ("ClipboardPush", Request(Expects::Ack), CLIPBOARD),
     };
     Rules {
         name,
@@ -122,7 +124,8 @@ pub(crate) fn is_last_answer(answer: &Payload) -> bool {
 #[cfg(test)]
 mod tests {
     use link2linux_protocol::v1::{
-        Ack, ErrorReply, ImageData, ImageRequest, NotificationDismissRequest, NotificationSyncBatch,
+        Ack, ClipboardPush, ErrorReply, ImageData, ImageRequest, NotificationDismissRequest,
+        NotificationSyncBatch,
     };
 
     use super::*;
@@ -139,6 +142,10 @@ mod tests {
         assert_eq!(dismiss.name, "NotificationDismissRequest");
         assert_eq!(dismiss.kind, Kind::Request(Expects::Ack));
         assert_eq!(dismiss.feature, Some(Feature::Notifications));
+
+        let push = of(&Payload::ClipboardPush(ClipboardPush::default()));
+        assert_eq!(push.kind, Kind::Request(Expects::Ack));
+        assert_eq!(push.feature, Some(Feature::Clipboard));
     }
 
     #[test]
