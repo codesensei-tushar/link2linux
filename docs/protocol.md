@@ -67,7 +67,7 @@ BCP 14 (RFC 2119, RFC 8174) when they appear in capitals.
 | TLS exporter label, QR pairing | `EXPERIMENTAL-link2linux-pair-v1` |
 | TLS exporter label, SAS pairing | `EXPERIMENTAL-link2linux-sas-v1` |
 | QR code URI | `link2linux://pair?...` |
-| Maximum frame body | 4 MiB |
+| Maximum frame body | 1.25 MiB with `ImageData`, 512 KiB without |
 | Maximum image size | 1 MiB |
 | Protocol major version | 1 |
 
@@ -807,9 +807,13 @@ connections:
 
 Each frame is a varint holding the length of one serialized `Envelope`,
 followed by that many bytes, the same format as protobuf's length-delimited
-streams. A frame body MUST NOT exceed 4 MiB. A receiver that sees a larger
-length or an undecodable body closes the connection, because the stream is
-out of sync.
+streams. A frame body MUST NOT exceed 1.25 MiB when its payload is
+`ImageData`, and 512 KiB otherwise. It MUST NOT hold more than 64 `Hello.features` or
+`FeatureStatus.features`, 100 notifications, 1000 `removed_keys`, or 32
+actions, 32 messages or 16 reply choices per notification or action,
+counted over the whole frame. A receiver checks these before decoding, and
+closes the connection on a frame that breaks them or does not decode,
+because the stream is out of sync.
 
 Senders SHOULD keep frames below 256 KiB, splitting large answers into
 batches, so that a `Ping` never waits long behind a bulk frame.
@@ -1207,7 +1211,7 @@ for at least the last 500 removals.
    both sides, the desktop sends `NotificationSyncRequest` with its cursor
    for this phone.
 2. The phone answers with `NotificationSyncBatch` messages, at most 100
-   notifications or 256 KiB each.
+   notifications, 1000 removed keys and 256 KiB each.
 3. From then on, the phone sends `NotificationPosted` for each new or
    updated notification, and `NotificationRemoved` for each removal.
 

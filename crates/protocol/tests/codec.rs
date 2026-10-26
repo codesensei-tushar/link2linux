@@ -4,7 +4,8 @@
 use bytes::{BufMut, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use link2linux_protocol::{
-    DeviceKind, Envelope, EnvelopeCodec, FrameError, Hello, PROTOCOL_VERSION, Payload, Ping, Pong,
+    DeviceKind, Envelope, EnvelopeCodec, FrameError, HANDSHAKE_MAX_FRAME_LEN, Hello,
+    MAX_MESSAGE_FRAME_LEN, PROTOCOL_VERSION, Payload, Ping, Pong,
 };
 use tokio::io::AsyncWriteExt;
 use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
@@ -166,7 +167,128 @@ fn rejects_malformed_prefixes_and_bodies() {
     let mut garbage = BytesMut::from(&[0x02, 0xff, 0xff][..]);
     assert!(matches!(
         codec.decode(&mut garbage),
+        Err(FrameError::Malformed)
+    ));
+
+    // Well-formed protobuf, but seq is a varint, not a string.
+    let mut mistyped = BytesMut::from(&[0x02, 0x0a, 0x00][..]);
+    assert!(matches!(
+        codec.decode(&mut mistyped),
         Err(FrameError::Decode(_))
+    ));
+}
+
+/// A frame whose payload `field` holds `count` empty entries of its
+/// repeated field `entry`: two bytes each on the wire, and up to hundreds
+/// in memory once decoded.
+fn bomb(field: u32, entry: u32, count: usize) -> BytesMut {
+    let mut payload = Vec::with_capacity(2 * count);
+    for _ in 0..count {
+        prost::encoding::encode_key(
+            entry,
+            prost::encoding::WireType::LengthDelimited,
+            &mut payload,
+        );
+        payload.push(0);
+    }
+    let mut body = vec![0x08, 0x01];
+    prost::encoding::encode_key(field, prost::encoding::WireType::LengthDelimited, &mut body);
+    prost::encoding::encode_varint(payload.len() as u64, &mut body);
+    body.extend(payload);
+    let mut frame = BytesMut::new();
+    prost::encoding::encode_varint(body.len() as u64, &mut frame);
+    frame.extend_from_slice(&body);
+    frame
+}
+
+#[test]
+fn refuses_repeated_fields_beyond_the_protocol_limits_before_decoding() {
+    // NotificationSyncBatch.notifications, the largest entries.
+    let mut codec = EnvelopeCodec::new();
+    let mut frame = bomb(101, 2, 100);
+    assert!(codec.decode(&mut frame).unwrap().is_some());
+    let mut frame = bomb(101, 2, 101);
+    assert!(matches!(
+        codec.decode(&mut frame),
+        Err(FrameError::TooManyEntries {
+            field: "PhoneNotification",
+            max: 100
+        })
+    ));
+    // As much of it as fits a frame: 650,000 entries, over 200 MiB decoded.
+    let mut frame = bomb(101, 2, 650_000);
+    assert!(matches!(
+        codec.decode(&mut frame),
+        Err(FrameError::TooManyEntries { .. })
+    ));
+    let mut frame = bomb(10, 5, 65);
+    assert!(matches!(
+        codec.decode(&mut frame),
+        Err(FrameError::TooManyEntries {
+            field: "Hello.features",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn only_an_image_frame_may_exceed_the_message_limit() {
+    let mut codec = EnvelopeCodec::new();
+    let image = Envelope {
+        seq: 1,
+        payload: Some(Payload::ImageData(link2linux_protocol::v1::ImageData {
+            data: vec![0x5a; 1024 * 1024],
+            ..Default::default()
+        })),
+        ..Envelope::default()
+    };
+    let mut buf = encode_all(&mut codec, std::slice::from_ref(&image));
+    assert_eq!(codec.decode(&mut buf).unwrap(), Some(image));
+
+    // A batch as large is refused both ways, though it fits the frame limit.
+    let batch = Envelope {
+        seq: 1,
+        payload: Some(Payload::NotificationSyncBatch(
+            link2linux_protocol::v1::NotificationSyncBatch {
+                removed_keys: vec!["k".repeat(MAX_MESSAGE_FRAME_LEN)],
+                ..Default::default()
+            },
+        )),
+        ..Envelope::default()
+    };
+    let mut buf = BytesMut::new();
+    assert!(matches!(
+        codec.encode(&batch, &mut buf),
+        Err(FrameError::TooLarge {
+            max: MAX_MESSAGE_FRAME_LEN,
+            ..
+        })
+    ));
+    let body = prost::Message::encode_to_vec(&batch);
+    prost::encoding::encode_varint(body.len() as u64, &mut buf);
+    buf.extend_from_slice(&body);
+    assert!(matches!(
+        codec.decode(&mut buf),
+        Err(FrameError::TooLarge {
+            max: MAX_MESSAGE_FRAME_LEN,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn the_handshake_limit_is_small() {
+    let mut codec = EnvelopeCodec::with_max_frame_len(HANDSHAKE_MAX_FRAME_LEN);
+    let mut frame = bomb(101, 2, 50);
+    assert!(codec.decode(&mut frame).unwrap().is_some());
+    let mut frame = BytesMut::new();
+    prost::encoding::encode_varint(HANDSHAKE_MAX_FRAME_LEN as u64 + 1, &mut frame);
+    assert!(matches!(
+        codec.decode(&mut frame),
+        Err(FrameError::TooLarge {
+            max: HANDSHAKE_MAX_FRAME_LEN,
+            ..
+        })
     ));
 }
 

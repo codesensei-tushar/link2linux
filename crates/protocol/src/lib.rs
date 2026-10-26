@@ -24,6 +24,7 @@
 #![warn(missing_docs)]
 
 pub mod codec;
+mod limits;
 
 /// Version 1 of the wire format, generated from the `link2linux.v1` package.
 ///
@@ -38,7 +39,10 @@ pub mod v1 {
     include!(concat!(env!("OUT_DIR"), "/link2linux.v1.rs"));
 }
 
-pub use codec::{DEFAULT_MAX_FRAME_LEN, EnvelopeCodec, FrameError};
+pub use codec::{
+    DEFAULT_MAX_FRAME_LEN, EnvelopeCodec, FrameError, HANDSHAKE_MAX_FRAME_LEN,
+    MAX_MESSAGE_FRAME_LEN,
+};
 pub use v1::envelope::Payload;
 pub use v1::{DeviceKind, Envelope, Hello, Ping, Pong};
 
