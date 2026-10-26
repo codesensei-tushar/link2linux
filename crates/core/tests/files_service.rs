@@ -760,6 +760,34 @@ async fn kept_transfers_count_against_the_room_and_a_resume_is_never_busy() {
 }
 
 #[tokio::test]
+async fn requests_sent_back_to_back_are_answered_in_the_order_they_came() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (_desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let small = data(1000, 7);
+    let other = data(1000, 8);
+    let mut sent = Vec::new();
+    sent.push(phone.request(offer([1; 16], &[("a", &small)])).await);
+    sent.push(
+        phone
+            .request(chunk([1; 16], 0, 0, &small, sha256(&small)))
+            .await,
+    );
+    sent.push(phone.request(offer([2; 16], &[("b", &other)])).await);
+    sent.push(
+        phone
+            .request(Payload::FileCancel(FileCancel {
+                transfer_id: vec![2; 16],
+            }))
+            .await,
+    );
+    let mut answered = Vec::new();
+    for _ in 0..sent.len() {
+        answered.push(phone.next().await.reply_to);
+    }
+    assert_eq!(answered, sent);
+}
+
+#[tokio::test]
 async fn room_to_spare_counts_what_other_phones_have_yet_to_write() {
     let downloads = tempfile::tempdir().unwrap();
     let free = 100 * 1024 * 1024;
