@@ -258,7 +258,7 @@ async fn answers_pings() {
     let (mut session, peer) = connected(SessionConfig::default()).await;
     let ping = envelope(2, Payload::Ping(Ping { nonce: 42 }));
     let reply = answer_to(&mut session, peer, ping).await;
-    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 42 })));
+    assert_eq!(reply, envelope(4, Payload::Pong(Pong { nonce: 42 })));
 }
 
 #[tokio::test]
@@ -269,7 +269,7 @@ async fn skips_messages_from_newer_versions() {
     peer.get_mut().write_all(&unknown).await.unwrap();
     let ping = envelope(3, Payload::Ping(Ping { nonce: 7 }));
     let reply = answer_to(&mut session, peer, ping).await;
-    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 7 })));
+    assert_eq!(reply, envelope(4, Payload::Pong(Pong { nonce: 7 })));
 }
 
 #[tokio::test]
@@ -303,18 +303,18 @@ async fn idle_sessions_stay_alive_by_pinging() {
     let (mut desk, mut phone_side) = (desk.unwrap(), phone_side.unwrap());
     let start = Instant::now();
 
-    // Nothing but pings flows, for longer than the idle timeout.
+    // After the status reports, nothing but pings flows, for longer than
+    // the idle timeout.
+    let is_pong = |event: &Result<Option<SessionEvent>, SessionError>| match event {
+        Ok(Some(SessionEvent::Pong { .. })) => true,
+        Ok(Some(SessionEvent::FeatureStatus(_) | SessionEvent::Presence(_))) => false,
+        event => panic!("unexpected {event:?}"),
+    };
     let mut pongs = (0, 0);
     while pongs.0 < 5 || pongs.1 < 5 {
         tokio::select! {
-            event = desk.next_event() => {
-                assert!(matches!(event, Ok(Some(SessionEvent::Pong { .. }))), "{event:?}");
-                pongs.0 += 1;
-            }
-            event = phone_side.next_event() => {
-                assert!(matches!(event, Ok(Some(SessionEvent::Pong { .. }))), "{event:?}");
-                pongs.1 += 1;
-            }
+            event = desk.next_event() => pongs.0 += usize::from(is_pong(&event)),
+            event = phone_side.next_event() => pongs.1 += usize::from(is_pong(&event)),
         }
     }
     assert!(start.elapsed() > fast().idle_timeout);
@@ -458,7 +458,7 @@ async fn says_goodbye_on_purpose() {
         reason: GoodbyeReason::Shutdown.into(),
         detail: "quitting".into(),
     };
-    assert_eq!(frame, envelope(2, Payload::Goodbye(expected)));
+    assert_eq!(frame, envelope(4, Payload::Goodbye(expected)));
     assert!(peer.next().await.is_none());
 }
 
@@ -500,6 +500,7 @@ async fn a_dropped_send_still_goes_out() {
         peer.send(&envelope(1, Payload::Hello(phone_hello())))
             .await
             .unwrap();
+        read_announcement(&mut peer).await;
     };
     let (session, ()) = tokio::join!(
         Session::handshake(io, desktop(), SessionConfig::default()),
@@ -518,7 +519,7 @@ async fn a_dropped_send_still_goes_out() {
     };
     let (event, frame) = tokio::join!(session.next_event(), script);
     assert!(matches!(event, Ok(None)), "{event:?}");
-    assert_eq!(frame.seq, 2);
+    assert_eq!(frame.seq, 4);
     assert!(matches!(frame.payload, Some(Payload::Ping(_))));
 }
 
@@ -540,5 +541,5 @@ async fn next_event_is_cancel_safe() {
     let script = async move { peer.next().await.unwrap().unwrap() };
     let (event, reply) = tokio::join!(session.next_event(), script);
     assert!(matches!(event, Ok(None)), "{event:?}");
-    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 9 })));
+    assert_eq!(reply, envelope(4, Payload::Pong(Pong { nonce: 9 })));
 }

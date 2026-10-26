@@ -12,9 +12,9 @@
 //!
 //! Right after the `Hello`s, each side reports how ready each of its
 //! features is (`FeatureStatus`, see [`Availability`]), then how to find
-//! it while it is offline (`PresenceUpdate`), and reports them again
-//! whenever they change. The peer's come out as
-//! [`SessionEvent::FeatureStatus`] and [`SessionEvent::Presence`].
+//! it while it is offline (`PresenceUpdate`), from its [`SessionStart`].
+//! The peer's come out as [`SessionEvent::FeatureStatus`] and
+//! [`SessionEvent::Presence`].
 //!
 //! After that, [`Session::next_event`] drives the session. It answers the
 //! peer's `Ping`s, sends a `Ping` of its own every
@@ -103,6 +103,44 @@ impl Default for SessionConfig {
             request_timeout: Duration::from_secs(30),
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
         }
+    }
+}
+
+/// What this side brings to a session: who it is, and what it reports
+/// right after the `Hello`s.
+///
+/// A [`DeviceInfo`] converts into one with every feature ready and no
+/// presence information.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SessionStart {
+    /// This device, as its `Hello` announces it.
+    pub device: DeviceInfo,
+    /// How ready each of the device's features is, sent as
+    /// `FeatureStatus`. Features without an entry are reported as ready;
+    /// entries for features the device does not list are ignored.
+    pub availability: FeatureStates,
+    /// Sent as `PresenceUpdate`: the phone's presence key for this
+    /// desktop, or the desktop's Bluetooth LE address.
+    pub presence: PresenceUpdate,
+}
+
+impl SessionStart {
+    /// A start for `device` with every feature ready and no presence
+    /// information.
+    #[must_use]
+    pub fn new(device: DeviceInfo) -> Self {
+        Self {
+            device,
+            availability: FeatureStates::new(),
+            presence: PresenceUpdate::default(),
+        }
+    }
+}
+
+impl From<DeviceInfo> for SessionStart {
+    fn from(device: DeviceInfo) -> Self {
+        Self::new(device)
     }
 }
 
@@ -263,6 +301,9 @@ pub struct Session<S> {
     framed: Framed<S, EnvelopeCodec>,
     local: DeviceInfo,
     peer: DeviceInfo,
+    /// This side's availability of every feature it listed.
+    availability: FeatureStates,
+    presence: PresenceUpdate,
     /// The peer's latest `FeatureStatus`, once one has arrived.
     peer_availability: Option<FeatureStates>,
     /// The peer's latest `PresenceUpdate`, once one has arrived.
@@ -300,7 +341,8 @@ impl<S> Session<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    /// Runs the `Hello` exchange on `io` and returns the established
+    /// Runs the `Hello` exchange on `io`, sends this side's
+    /// `FeatureStatus` and `PresenceUpdate`, and returns the established
     /// session.
     ///
     /// This side's `Hello` goes out first, without waiting for the peer, so
@@ -321,9 +363,14 @@ where
     /// Panics if [`SessionConfig::ping_interval`] is zero.
     pub async fn handshake(
         io: S,
-        local: DeviceInfo,
+        start: impl Into<SessionStart>,
         config: SessionConfig,
     ) -> Result<Self, SessionError> {
+        let SessionStart {
+            device: local,
+            availability,
+            presence,
+        } = start.into();
         let codec = EnvelopeCodec::with_max_frame_len(config.max_frame_len);
         let mut framed = Framed::new(io, codec);
         let hello = Envelope {
@@ -377,10 +424,20 @@ where
         let now = Instant::now();
         let mut ping_timer = time::interval_at(now + config.ping_interval, config.ping_interval);
         ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        Ok(Self {
+        let availability = local
+            .features
+            .iter()
+            .map(|&feature| {
+                let state = availability.get(&feature).cloned();
+                (feature, state.unwrap_or(Availability::Ready))
+            })
+            .collect();
+        let mut session = Self {
             framed,
             local,
             peer,
+            availability,
+            presence,
             peer_availability: None,
             peer_presence: None,
             version,
@@ -398,7 +455,12 @@ where
             peer_error: None,
             unflushed: false,
             ended: false,
-        })
+        };
+        session.announce()?;
+        time::timeout(config.handshake_timeout, session.flush())
+            .await
+            .map_err(|_| SessionError::HandshakeTimeout(config.handshake_timeout))??;
+        Ok(session)
     }
 
     /// This device, as announced to the peer.
@@ -428,6 +490,13 @@ where
             .intersection(&self.peer.features)
             .copied()
             .collect()
+    }
+
+    /// This device's availability of each feature it listed in its
+    /// `Hello`, as last reported to the peer.
+    #[must_use]
+    pub fn availability(&self) -> &FeatureStates {
+        &self.availability
     }
 
     /// The peer's availability of each feature it listed in its `Hello`,
@@ -466,8 +535,10 @@ where
     ///
     /// Fails with [`SessionError::UnexpectedHello`] for a `Hello`, with
     /// [`SessionError::NotAllowed`] for a `Goodbye` (see
-    /// [`Session::goodbye`]), a request (see [`Session::send_request`]) or
-    /// an answer (see [`Session::reply`]), with
+    /// [`Session::goodbye`]), a `FeatureStatus` or `PresenceUpdate` (the
+    /// session sends those itself), a request (see
+    /// [`Session::send_request`]) or an answer (see [`Session::reply`]),
+    /// with
     /// [`SessionError::FeatureNotActive`] for a message of a feature that is
     /// not active, with [`SessionError::Ended`] once the session is over,
     /// and on framing or I/O errors.
@@ -475,7 +546,9 @@ where
         let rules = rules::of(&payload);
         match payload {
             Payload::Hello(_) => return Err(SessionError::UnexpectedHello),
-            Payload::Goodbye(_) => return Err(SessionError::NotAllowed(rules.name)),
+            Payload::Goodbye(_) | Payload::FeatureStatus(_) | Payload::PresenceUpdate(_) => {
+                return Err(SessionError::NotAllowed(rules.name));
+            }
             _ if matches!(rules.kind, Kind::Reply | Kind::Request(_)) => {
                 return Err(SessionError::NotAllowed(rules.name));
             }
@@ -999,6 +1072,15 @@ where
         self.next_seq += 1;
         self.unflushed = true;
         Ok(seq)
+    }
+
+    /// Queues this side's `FeatureStatus` and `PresenceUpdate`, which start
+    /// the session proper.
+    fn announce(&mut self) -> Result<(), SessionError> {
+        let status = status::status_for(&self.local.features, &self.availability);
+        self.enqueue(Payload::FeatureStatus(status))?;
+        self.enqueue(Payload::PresenceUpdate(self.presence.clone()))?;
+        Ok(())
     }
 
     /// Queues a `Ping` with a new nonce.
