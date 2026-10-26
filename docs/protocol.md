@@ -1414,9 +1414,10 @@ The sender keeps pushes few and in order:
 - At most one push per peer waits for its answer. A newer copy made in the
   meantime replaces any copy still queued for that peer, and only the
   newest is sent once the answer arrives.
-- A device does not on its own push text it received from a peer back to
-  that peer, nor the same text it last pushed to it. It recognizes both by
-  content, so putting received text on its own clipboard does not echo.
+- A device does not on its own push to a peer the text that peer already
+  holds as far as it knows: the text it last received from that peer or
+  last pushed to it, whichever came last. It recognizes it by content, so
+  putting received text on its own clipboard does not echo.
 - A device does not relay on its own: text it received from one peer is not
   pushed to its other peers.
 - The two rules above are for copies a device shares by itself. When the
@@ -1453,7 +1454,9 @@ The sender keeps pushes few and in order:
 - A desktop that cannot set the clipboard from the background holds the
   newest text it received, answers `Ack`, and offers it to the user: it puts
   the text on the clipboard when its window gains focus or when the user
-  clicks its banner.
+  clicks its banner. If the user copied something else on the desktop in
+  the meantime, which it sees when the window gains focus, that copy wins:
+  the desktop shares it and leaves the held text to the banner.
 - The phone sets the clipboard from the background, which Android allows.
   Android 13 and later show their own confirmation of the copy.
 
