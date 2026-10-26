@@ -127,8 +127,33 @@ pub async fn run(
     features.session_started(&mut session).await;
     let ending = drive(&mut session, features, commands, copies, cancel, context).await;
     features.session_ended();
+    if ending.is_final() {
+        // Before the goodbye, which may take a while: the app can exit
+        // meanwhile, and the files must be gone by then.
+        features.files.discard_all().await;
+    }
     finish(session, &ending).await;
     ending
+}
+
+impl Ending {
+    /// Whether nothing more will come from this phone's transfers: the
+    /// pairing is removed or the app is closing.
+    fn is_final(&self) -> bool {
+        matches!(self, Self::Removed | Self::Shutdown)
+    }
+
+    /// How long the end of the session may take. A phone that reads gets
+    /// the `Goodbye` and what was still queued, such as file chunks, well
+    /// within it; one that vanished is not waited for. An unpair gets
+    /// longer, as a phone that never hears it keeps a dead pairing, and
+    /// nobody waits on this task.
+    fn finish_within(&self) -> Duration {
+        match self {
+            Self::Removed => UNPAIR_FINISH_WITHIN,
+            _ => FINISH_WITHIN,
+        }
+    }
 }
 
 /// How long the end of a session may take. A phone that reads gets the
@@ -136,7 +161,11 @@ pub async fn run(
 /// it; one that vanished is not waited for.
 const FINISH_WITHIN: Duration = Duration::from_secs(2);
 
-/// Ends `session` as `ending` says, within [`FINISH_WITHIN`].
+/// How long the end of a session may take when the user removed the pairing,
+/// so that the `Goodbye` outlasts a slow send's queued bytes.
+const UNPAIR_FINISH_WITHIN: Duration = Duration::from_secs(10);
+
+/// Ends `session` as `ending` says, within [`Ending::finish_within`].
 async fn finish<S>(session: Session<S>, ending: &Ending)
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -164,7 +193,10 @@ where
             Ending::Peer(_) => session.close().await,
         }
     };
-    if tokio::time::timeout(FINISH_WITHIN, ended).await.is_err() {
+    if tokio::time::timeout(ending.finish_within(), ended)
+        .await
+        .is_err()
+    {
         tracing::debug!("the phone did not take the end of the session in time");
     }
 }
@@ -370,5 +402,47 @@ mod tests {
         let started = tokio::time::Instant::now();
         finish(desktop, &Ending::Shutdown).await;
         assert_eq!(started.elapsed(), FINISH_WITHIN);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unpair_waits_longer_for_the_phone_to_take_the_goodbye() {
+        let (here, there) = tokio::io::duplex(64 * 1024);
+        let (desktop, phone) = tokio::join!(
+            Session::handshake(
+                here,
+                device("desk", DeviceKind::Desktop),
+                SessionConfig::default()
+            ),
+            Session::handshake(
+                there,
+                device("phone", DeviceKind::Phone),
+                SessionConfig::phone()
+            ),
+        );
+        let (mut desktop, _phone) = (desktop.unwrap(), phone.unwrap());
+        while !desktop.is_ready(Feature::Files) {
+            desktop.next_event().await.unwrap();
+        }
+        for n in 0..4_u64 {
+            let chunk = FileChunk {
+                transfer_id: vec![1; 16],
+                offset: n * 256 * 1024,
+                data: vec![0; 256 * 1024],
+                ..FileChunk::default()
+            };
+            desktop.queue_request(Payload::FileChunk(chunk)).unwrap();
+        }
+
+        let started = tokio::time::Instant::now();
+        finish(desktop, &Ending::Removed).await;
+        assert_eq!(started.elapsed(), UNPAIR_FINISH_WITHIN);
+    }
+
+    #[test]
+    fn only_a_removal_or_a_shutdown_discards_the_unfinished_files() {
+        assert!(Ending::Removed.is_final());
+        assert!(Ending::Shutdown.is_final());
+        assert!(!Ending::PhoneBrokeRules.is_final());
+        assert!(!Ending::Peer(SessionEnd::Lost).is_final());
     }
 }
