@@ -33,6 +33,8 @@
 //!   `reconnecting` covers the first two minutes after a session is lost,
 //!   `revoked` is a record the phone has told us it removed.
 
+pub mod fake;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
