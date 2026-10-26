@@ -1577,9 +1577,9 @@ The sender keeps pushes few and in order:
 - A desktop that cannot set the clipboard from the background holds the
   newest text it received, answers `Ack`, and offers it to the user: it puts
   the text on the clipboard when its window gains focus or when the user
-  clicks its banner. If the user copied something else on the desktop in
-  the meantime, which it sees when the window gains focus, that copy wins:
-  the desktop shares it and leaves the held text to the banner.
+  clicks its banner. It cannot tell whether a copy made on the desktop in
+  the meantime came before or after the held text, so the held text wins,
+  and the desktop does not share what its clipboard held before.
 - The phone sets the clipboard from the background, which Android allows.
   Android 13 and later show their own confirmation of the copy.
 
