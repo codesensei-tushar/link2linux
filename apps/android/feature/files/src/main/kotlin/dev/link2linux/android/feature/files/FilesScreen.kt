@@ -82,8 +82,7 @@ fun FilesScreen(
     }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        // A resumed transfer reads its files again, possibly long after the picker closed.
-        viewModel.keepReadAccess(uris)
+        // Their read grants are kept once a desktop is chosen; a dismissed choice keeps nothing.
         val choices = desktops.orEmpty()
         if (choices.size == 1) send(choices.single().peer, uris) else picked = uris
     }

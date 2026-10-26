@@ -51,7 +51,6 @@ class FilesViewModel @Inject internal constructor(
     /** Sends [uris] to [peer]; the result is how many could not be read. See [FilesRuntime.send]. */
     fun send(peer: FilePeer, uris: List<Uri>, shared: Boolean): Deferred<Int> = runtime.send(peer, uris, shared)
 
-    fun keepReadAccess(uris: List<Uri>) = runtime.keepReadAccess(uris)
 
     private val _shareStarted = MutableStateFlow(false)
 
