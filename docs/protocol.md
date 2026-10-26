@@ -1306,7 +1306,8 @@ dismissal or reply is more surprising than a lost one.
 - pictures as JPEG or WebP, at most 1024 pixels on the longer side.
 
 The phone keeps the images of the notifications it currently shares, so it
-can answer requests for them.
+can answer requests for them. An image may arrive in a later, quiet update
+of the notification.
 
 ### Redacted and hidden content
 

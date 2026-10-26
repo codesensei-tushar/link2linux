@@ -24,6 +24,8 @@ class MappedNotification(
     val alertWhenNew: Boolean,
     val alertOnUpdate: Boolean,
     val imageHashes: Set<ByteString>,
+    /** An image is still rendering: mapping again once it is done adds it. */
+    val imagesPending: Boolean = false,
 )
 
 /**
@@ -116,6 +118,8 @@ class NotificationMapper(
             alertWhenNew = alerts,
             alertOnUpdate = alerts && !s.onlyAlertOnce,
             imageHashes = listOfNotNull(appIcon, largeIcon, picture).mapTo(mutableSetOf()) { it.sha256 },
+            imagesPending = images.isPending(s.appIcon, ImageKind.APP_ICON) ||
+                (full && (images.isPending(s.largeIcon, ImageKind.LARGE_ICON) || images.isPending(s.picture, ImageKind.PICTURE))),
         )
     }
 

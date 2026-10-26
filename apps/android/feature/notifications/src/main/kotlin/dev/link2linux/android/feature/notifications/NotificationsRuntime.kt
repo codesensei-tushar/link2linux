@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import dev.link2linux.android.core.notifications.ImageRenderers
 import dev.link2linux.android.core.notifications.ImageStore
 import dev.link2linux.android.core.notifications.NotificationCanceller
 import dev.link2linux.android.core.notifications.NotificationEngine
@@ -59,7 +60,8 @@ class NotificationsRuntime private constructor(context: Context) {
     )
 
     private val extractor = SnapshotExtractor(app)
-    private val images = ImageStore()
+    // Other apps' images load on threads of their own, never on the engine's.
+    private val images = ImageStore(renderer = ImageRenderers.background())
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val engine = NotificationEngine(

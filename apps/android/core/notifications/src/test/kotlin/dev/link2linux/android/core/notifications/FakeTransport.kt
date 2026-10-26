@@ -1,15 +1,25 @@
 package dev.link2linux.android.core.notifications
 
 import dev.link2linux.protocol.v1.ErrorCode
+import kotlinx.coroutines.CompletableDeferred
 
 /** A session stand-in: records the live events the engine sends. */
 class FakeTransport : NotificationTransport {
     val events = mutableListOf<NotificationEvent>()
     var failWith: Exception? = null
 
+    /** While set, a send waits for it, like a desktop that stopped reading. */
+    var stall: CompletableDeferred<Unit>? = null
+    var abandoned = false
+
     override suspend fun send(event: NotificationEvent) {
         failWith?.let { throw it }
+        stall?.await()
         events += event
+    }
+
+    override fun abandon() {
+        abandoned = true
     }
 
     val posted get() = events.filterIsInstance<NotificationEvent.Posted>().map { it.message }

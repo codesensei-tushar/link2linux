@@ -30,6 +30,13 @@ sealed interface NotificationEvent {
 fun interface NotificationTransport {
     /** May throw when the connection is gone; the engine drops the event, and delta sync recovers. */
     suspend fun send(event: NotificationEvent)
+
+    /**
+     * The desktop has stopped reading: so much waits for it that the engine
+     * gave up. End the session, so it syncs again when it reconnects. Must
+     * not block.
+     */
+    fun abandon() = Unit
 }
 
 /** A request from the desktop, as the session decoded it. */
