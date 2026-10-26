@@ -102,17 +102,43 @@ impl LinuxClipboard {
     /// [`ClipboardAccess::FocusOnly`].
     #[must_use]
     pub fn open() -> Self {
+        Self::open_with(true, None)
+    }
+
+    /// Tries Wayland data-control if `wayland`, then the X server named by
+    /// `x11_display` (`DISPLAY` when `None`), each once, and says which it
+    /// got in one line of log.
+    fn open_with(wayland: bool, x11_display: Option<&str>) -> Self {
         let (sender, changes) = watch::channel(());
-        let backend = if let Some(wayland) = wayland::WaylandClipboard::open(sender.clone()) {
-            tracing::debug!("clipboard through Wayland data-control");
-            Backend::Wayland(wayland)
-        } else if let Some(x11) = x11::X11Clipboard::open(sender) {
-            tracing::debug!("clipboard through X11 selections");
-            Backend::X11(x11)
+        let no_wayland = if wayland {
+            match wayland::WaylandClipboard::open(sender.clone()) {
+                Ok(clipboard) => {
+                    tracing::info!("clipboard through Wayland data-control");
+                    return Self::with(Backend::Wayland(clipboard), changes);
+                }
+                Err(error) => error.to_string(),
+            }
         } else {
-            tracing::debug!("no clipboard access in the background");
-            Backend::FocusOnly
+            "not tried".to_owned()
         };
+        let backend = match x11::X11Clipboard::open(sender, x11_display) {
+            Ok(clipboard) => {
+                tracing::info!(%no_wayland, "clipboard through X11 selections");
+                Backend::X11(clipboard)
+            }
+            Err(no_x11) => {
+                tracing::info!(
+                    %no_wayland,
+                    %no_x11,
+                    "clipboard only while the app's window has focus"
+                );
+                Backend::FocusOnly
+            }
+        };
+        Self::with(backend, changes)
+    }
+
+    fn with(backend: Backend, changes: watch::Receiver<()>) -> Self {
         Self {
             backend,
             changes: Mutex::new(changes),
@@ -446,13 +472,15 @@ mod tests {
         assert!(matches!(text, Err(PlatformError::Unavailable { .. })));
     }
 
+    /// No server is listening on this X display.
+    pub(super) const NO_X_SERVER: &str = ":4242";
+
     #[tokio::test]
     async fn without_a_backend_only_the_focused_window_has_access() {
-        let (_, changes) = watch::channel(());
-        let clipboard = LinuxClipboard {
-            backend: Backend::FocusOnly,
-            changes: Mutex::new(changes),
-        };
+        let started = std::time::Instant::now();
+        let clipboard = LinuxClipboard::open_with(false, Some(NO_X_SERVER));
+        // Refused at once, not after the timeout.
+        assert!(started.elapsed() < OPEN_TIMEOUT);
         assert_eq!(clipboard.access(), ClipboardAccess::FocusOnly);
         assert!(matches!(
             clipboard.read().await,
@@ -470,13 +498,51 @@ mod tests {
         );
     }
 
-    /// Needs a session that lets apps use the clipboard in the background:
-    /// X11, Xwayland, or a Wayland compositor with data-control. Replaces
-    /// the clipboard while it runs, and puts the text on it before back:
-    /// `DISPLAY=:0 cargo test -p link2linux-platform -- --ignored background_clipboard`
+    /// Live tests replace the clipboard of the display server they reach,
+    /// so they run on a private one, as `xvfb-run -a` starts, and refuse
+    /// the desktop session's (X display 0, Wayland socket `wayland-0`)
+    /// unless `L2L_LIVE_SESSION_CLIPBOARD=1` is set. Says whether the test
+    /// runs on the session.
+    pub(super) fn guard_session_clipboard(x11: bool, wayland: bool) -> bool {
+        let env = |name| std::env::var(name).ok();
+        let on_x11_session = x11 && env("DISPLAY").as_deref().and_then(x_display_number) == Some(0);
+        let on_wayland_session = wayland && env("WAYLAND_DISPLAY").as_deref() == Some("wayland-0");
+        let on_session = on_x11_session || on_wayland_session;
+        assert!(
+            !on_session || env("L2L_LIVE_SESSION_CLIPBOARD").as_deref() == Some("1"),
+            "refusing to replace the desktop session's clipboard: run this test on a private \
+             display server (for X11, under `env -u WAYLAND_DISPLAY xvfb-run -a`), or set \
+             L2L_LIVE_SESSION_CLIPBOARD=1"
+        );
+        on_session
+    }
+
+    /// The display number in an X display name such as `:0`, `:1.0` or
+    /// `localhost:10.0`.
+    fn x_display_number(display: &str) -> Option<u32> {
+        let (_, number) = display.rsplit_once(':')?;
+        number.split('.').next()?.parse().ok()
+    }
+
+    #[test]
+    fn reads_x_display_numbers() {
+        assert_eq!(x_display_number(":0"), Some(0));
+        assert_eq!(x_display_number(":0.0"), Some(0));
+        assert_eq!(x_display_number("unix:0"), Some(0));
+        assert_eq!(x_display_number(":99"), Some(99));
+        assert_eq!(x_display_number("localhost:10.0"), Some(10));
+        assert_eq!(x_display_number(""), None);
+        assert_eq!(x_display_number("wayland-0"), None);
+    }
+
+    /// Needs a session that lets apps use the clipboard in the background,
+    /// and replaces its clipboard while it runs (the text on it before is
+    /// put back). Run it on a private X server:
+    /// `env -u WAYLAND_DISPLAY xvfb-run -a cargo test -p link2linux-platform -- --ignored background_clipboard`
     #[tokio::test]
-    #[ignore = "needs a desktop session"]
+    #[ignore = "replaces the clipboard: run under `env -u WAYLAND_DISPLAY xvfb-run -a`"]
     async fn background_clipboard() {
+        let on_session = guard_session_clipboard(true, true);
         let clipboard = LinuxClipboard::open();
         assert_eq!(
             clipboard.access(),
@@ -500,9 +566,11 @@ mod tests {
             Some(saved) => clipboard.write(&saved).await,
             None => Ok(()),
         };
-        // A clipboard manager, such as GNOME's, keeps the last text it
-        // copied once the app that wrote it exits: give it time to.
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        if on_session {
+            // A clipboard manager, such as GNOME's, keeps the last text it
+            // copied once the app that wrote it exits: give it time to.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
         assert_eq!(outcome.unwrap(), Some(written));
         restored.unwrap();
     }

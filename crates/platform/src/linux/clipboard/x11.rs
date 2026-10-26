@@ -74,44 +74,46 @@ struct Session {
 }
 
 impl X11Clipboard {
-    /// The clipboard of the X server in `DISPLAY`, or `None` when there is
-    /// none or it lacks XFixes.
-    pub(super) fn open(changes: watch::Sender<()>) -> Option<Self> {
-        Self::open_with(changes, None)
+    /// The clipboard of the X server named by `display`, or by `DISPLAY`
+    /// when `None`. Fails when there is no such server, it refuses the
+    /// connection or lacks XFixes, or it does not answer in time; it is
+    /// tried once.
+    pub(super) fn open(
+        changes: watch::Sender<()>,
+        display: Option<&str>,
+    ) -> Result<Self, PlatformError> {
+        Self::open_with(changes, display, None)
     }
 
     /// With `part_bytes`, the owner sends text over that size in parts of
     /// that size, so tests can make it.
-    fn open_with(changes: watch::Sender<()>, part_bytes: Option<usize>) -> Option<Self> {
+    fn open_with(
+        changes: watch::Sender<()>,
+        display: Option<&str>,
+        part_bytes: Option<usize>,
+    ) -> Result<Self, PlatformError> {
+        let display = display.map(str::to_owned);
         let (ready, started) = mpsc::sync_channel(1);
-        let opening = thread::Builder::new()
+        thread::Builder::new()
             .name("x11-clipboard-open".into())
             .spawn(move || {
-                let _ = ready.send(Self::start(changes, part_bytes));
-            });
-        if let Err(error) = opening {
-            tracing::warn!(%error, "cannot open the X11 clipboard");
-            return None;
-        }
-        match started.recv_timeout(OPEN_TIMEOUT) {
-            Ok(Ok(clipboard)) => Some(clipboard),
-            Ok(Err(error)) => {
-                tracing::debug!(%error, "no X11 clipboard");
-                None
-            }
-            Err(_) => {
-                tracing::warn!("the X server did not answer in time");
-                None
-            }
-        }
+                let _ = ready.send(Self::start(changes, display.as_deref(), part_bytes));
+            })?;
+        started
+            .recv_timeout(OPEN_TIMEOUT)
+            .map_err(|_| unavailable("the X server did not answer in time"))?
     }
 
-    fn start(changes: watch::Sender<()>, part_bytes: Option<usize>) -> Result<Self, PlatformError> {
-        let mut owner = Owner::connect().map_err(unavailable)?;
+    fn start(
+        changes: watch::Sender<()>,
+        display: Option<&str>,
+        part_bytes: Option<usize>,
+    ) -> Result<Self, PlatformError> {
+        let mut owner = Owner::connect(display).map_err(unavailable)?;
         if let Some(part_bytes) = part_bytes {
             owner.part_bytes = part_bytes;
         }
-        let reader = Reader::connect().map_err(unavailable)?;
+        let reader = Reader::connect(display).map_err(unavailable)?;
         let (commands, received) = mpsc::channel();
         let (wake, woken) = UnixStream::pair()?;
         wake.set_nonblocking(true)?;
@@ -145,8 +147,8 @@ impl X11Clipboard {
 
 /// Makes a connection and a window that is never shown, which receives
 /// property changes.
-fn connect() -> Result<(RustConnection, Window, Atoms), ReplyOrIdError> {
-    let (conn, screen) = x11rb::connect(None)
+fn connect(display: Option<&str>) -> Result<(RustConnection, Window, Atoms), ReplyOrIdError> {
+    let (conn, screen) = x11rb::connect(display)
         .map_err(|e| ConnectionError::IoError(io::Error::new(io::ErrorKind::NotConnected, e)))?;
     let atoms = Atoms::new(&conn)?;
     let window = conn.generate_id()?;
@@ -200,8 +202,8 @@ struct Reader {
 }
 
 impl Reader {
-    fn connect() -> Result<Self, ReplyOrIdError> {
-        let (conn, window, atoms) = connect()?;
+    fn connect(display: Option<&str>) -> Result<Self, ReplyOrIdError> {
+        let (conn, window, atoms) = connect(display)?;
         conn.flush()?;
         Ok(Self {
             conn,
@@ -512,8 +514,8 @@ impl Transfer {
 }
 
 impl Owner {
-    fn connect() -> Result<Self, ReplyOrIdError> {
-        let (conn, window, atoms) = connect()?;
+    fn connect(display: Option<&str>) -> Result<Self, ReplyOrIdError> {
+        let (conn, window, atoms) = connect(display)?;
         // Fails on servers without XFixes, whose clipboard cannot be watched.
         conn.xfixes_query_version(1, 0)?.reply()?;
         conn.xfixes_select_selection_input(
@@ -816,6 +818,7 @@ impl Owner {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::{NO_X_SERVER, guard_session_clipboard};
     use super::*;
 
     fn transfer(text: &[u8]) -> Transfer {
@@ -859,10 +862,21 @@ mod tests {
         assert!(over.add(b"de").is_err());
     }
 
+    #[test]
+    fn fails_at_once_without_an_x_server() {
+        // No server on that display, and a name like an unset `DISPLAY`.
+        for display in [NO_X_SERVER, ""] {
+            let started = Instant::now();
+            let (changes, _) = watch::channel(());
+            assert!(X11Clipboard::open(changes, Some(display)).is_err());
+            assert!(started.elapsed() < OPEN_TIMEOUT, "{display:?}");
+        }
+    }
+
     /// Opens the clipboard of the X server in `DISPLAY`.
     fn open(part_bytes: Option<usize>) -> (X11Clipboard, watch::Receiver<()>) {
         let (changes, changed) = watch::channel(());
-        let clipboard = X11Clipboard::open_with(changes, part_bytes).expect("an X server");
+        let clipboard = X11Clipboard::open_with(changes, None, part_bytes).expect("an X server");
         (clipboard, changed)
     }
 
@@ -882,19 +896,13 @@ mod tests {
         }
     }
 
-    /// Gives a clipboard manager, such as GNOME's, time to copy the text
-    /// just written: when the app that wrote it exits, the manager keeps
-    /// the last text it copied.
-    async fn settle() {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-
-    /// Needs an X server or Xwayland, and replaces the clipboard while it
-    /// runs (the text on it before is put back at the end):
-    /// `DISPLAY=:0 cargo test -p link2linux-platform -- --ignored x11_clipboard`
+    /// Needs an X server, and replaces its clipboard while it runs (the
+    /// text on it before is put back). Run it on a private one:
+    /// `xvfb-run -a cargo test -p link2linux-platform -- --ignored x11_clipboard`
     #[tokio::test]
-    #[ignore = "needs an X server"]
+    #[ignore = "replaces the clipboard: run under `xvfb-run -a`"]
     async fn x11_clipboard_round_trip() {
+        let on_session = guard_session_clipboard(true, false);
         // Another app, as far as the X server can tell: its own connections.
         let (reader, mut changed) = open(None);
         let saved = reader.read().await.unwrap();
@@ -940,7 +948,11 @@ mod tests {
             Some(saved) => reader.write(saved).await,
             None => Ok(()),
         };
-        settle().await;
+        if on_session {
+            // A clipboard manager, such as GNOME's, keeps the last text it
+            // copied once the app that wrote it exits: give it time to.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
         outcome.unwrap();
         restored.unwrap();
     }

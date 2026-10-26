@@ -34,34 +34,23 @@ impl Drop for WaylandClipboard {
 }
 
 impl WaylandClipboard {
-    /// The clipboard through data-control, or `None` when the session is not
-    /// Wayland or the compositor does not offer it.
-    pub(super) fn open(changes: watch::Sender<()>) -> Option<Self> {
+    /// The clipboard through data-control. Fails when the session is not
+    /// Wayland, the compositor does not offer data-control, or it does not
+    /// answer in time; it is tried once.
+    pub(super) fn open(changes: watch::Sender<()>) -> Result<Self, PlatformError> {
         let (ready, started) = std::sync::mpsc::sync_channel(1);
-        let watching = thread::Builder::new()
+        thread::Builder::new()
             .name("wayland-clipboard-watch".into())
-            .spawn(move || watch_changes(&ready, &changes));
-        if let Err(error) = watching {
-            tracing::warn!(%error, "cannot start watching the Wayland clipboard");
-            return None;
-        }
-        let watcher = match started.recv_timeout(OPEN_TIMEOUT) {
-            Ok(Ok(watcher)) => watcher,
-            Ok(Err(error)) => {
-                tracing::debug!(%error, "no Wayland data-control");
-                return None;
-            }
-            Err(_) => {
-                tracing::warn!("the Wayland compositor did not answer in time");
-                return None;
-            }
-        };
+            .spawn(move || watch_changes(&ready, &changes))?;
+        let watcher = started
+            .recv_timeout(OPEN_TIMEOUT)
+            .map_err(|_| unavailable("the Wayland compositor did not answer in time"))?
+            .map_err(unavailable)?;
         match Worker::spawn("wayland-clipboard", ()) {
-            Ok(worker) => Some(Self { worker, watcher }),
+            Ok(worker) => Ok(Self { worker, watcher }),
             Err(error) => {
-                tracing::warn!(%error, "cannot start the Wayland clipboard thread");
                 watcher.cancel();
-                None
+                Err(error.into())
             }
         }
     }
@@ -192,6 +181,7 @@ mod tests {
     use std::io::Write;
 
     use super::super::MAX_READ_BYTES;
+    use super::super::tests::guard_session_clipboard;
     use super::*;
 
     #[test]
@@ -224,11 +214,14 @@ mod tests {
     }
 
     /// Needs a Wayland compositor with data-control (KDE Plasma, Sway,
-    /// Hyprland, niri or COSMIC), and replaces the clipboard while it runs:
+    /// Hyprland, niri or COSMIC), and replaces its clipboard while it runs
+    /// (the text on it before is put back). Run it on a private one, such
+    /// as a headless Sway whose socket `WAYLAND_DISPLAY` names:
     /// `cargo test -p link2linux-platform -- --ignored wayland_clipboard`
     #[tokio::test]
-    #[ignore = "needs a Wayland compositor with data-control"]
+    #[ignore = "replaces the clipboard: needs a private compositor with data-control"]
     async fn wayland_clipboard_round_trip() {
+        let on_session = guard_session_clipboard(false, true);
         let (changes, mut changed) = watch::channel(());
         let clipboard = WaylandClipboard::open(changes).expect("data-control");
         let saved = clipboard.read().await.unwrap();
@@ -252,8 +245,11 @@ mod tests {
             Ok::<_, PlatformError>((read, secret, clipboard.read().await?, plain))
         }
         .await;
-        if let Some(saved) = saved {
-            clipboard.write(saved).await.unwrap();
+        let restored = match saved {
+            Some(saved) => clipboard.write(saved).await,
+            None => Ok(()),
+        };
+        if on_session {
             // The text is served by this process: give a clipboard manager
             // time to copy it before the test exits.
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -261,5 +257,6 @@ mod tests {
         let (read_secret, secret, read_plain, plain) = outcome.unwrap();
         assert_eq!(read_secret, Some(secret));
         assert_eq!(read_plain, Some(plain));
+        restored.unwrap();
     }
 }
