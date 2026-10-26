@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pair-with"
+description = "Enables the pair_with command without any pre-configured scope."
+commands.allow = ["pair_with"]
+
+[[permission]]
+identifier = "deny-pair-with"
+description = "Denies the pair_with command without any pre-configured scope."
+commands.deny = ["pair_with"]

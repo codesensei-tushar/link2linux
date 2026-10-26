@@ -12,7 +12,15 @@ export const testAppInfo: AppInfo = {
 };
 
 export function testDevice(overrides: Partial<Device> = {}): Device {
-  return { id: "phone-1", name: "Test phone", model: null, status: "disconnected", ...overrides };
+  return {
+    id: "phone-1",
+    name: "Test phone",
+    model: null,
+    status: "disconnected",
+    pairedAtUnixMs: Date.UTC(2026, 9, 1, 12),
+    lastConnectedUnixMs: null,
+    ...overrides,
+  };
 }
 
 export function testNotification(
