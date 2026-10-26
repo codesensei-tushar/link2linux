@@ -4,5 +4,16 @@
   "description": "What the main window may call. Nothing is granted by default: add each new command or plugin permission here explicitly.",
   "windows": ["main"],
   "platforms": ["linux", "macOS", "windows"],
-  "permissions": ["allow-app-info", "allow-list-devices"]
+  "permissions": [
+    "allow-app-info",
+    "allow-list-devices",
+    "allow-unpair-device",
+    "allow-get-pairing-state",
+    "allow-start-pairing",
+    "allow-pair-with",
+    "allow-answer-code",
+    "allow-cancel-pairing",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

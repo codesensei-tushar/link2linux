@@ -6,10 +6,14 @@
 
 pub mod backend;
 mod commands;
+mod events;
 pub mod qr;
 mod state;
 
-use tauri_specta::{Builder, collect_commands};
+use std::sync::Arc;
+
+use tauri::Manager;
+use tauri_specta::{Builder, collect_commands, collect_events};
 
 pub use state::AppState;
 
@@ -19,6 +23,16 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             commands::app::app_info,
             commands::devices::list_devices,
+            commands::devices::unpair_device,
+            commands::pairing::get_pairing_state,
+            commands::pairing::start_pairing,
+            commands::pairing::pair_with,
+            commands::pairing::answer_code,
+            commands::pairing::cancel_pairing,
+        ])
+        .events(collect_events![
+            events::PairingChanged,
+            events::DevicesChanged,
         ])
         // IPC types only travel from Rust to the UI for now, so one TypeScript
         // type per Rust type is enough (no separate input/output variants).
@@ -30,9 +44,16 @@ pub fn run() {
     let builder = specta_builder();
 
     tauri::Builder::default()
-        // TODO(core): build the state from a `crates/core` handle instead.
-        .manage(AppState::default())
         .invoke_handler(builder.invoke_handler())
+        .setup(move |app| {
+            builder.mount_events(app);
+            // TODO(core): build the real backend from `crates/core` here. The
+            // fake one follows the script named by `L2L_FAKE_SCRIPT`.
+            let sink = events::TauriSink::new(app.handle().clone());
+            let backend = backend::fake::FakeBackend::from_env(sink);
+            app.manage(AppState::new(Arc::new(backend)));
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("failed to start the link2linux desktop app");
 }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-unpair-device"
+description = "Enables the unpair_device command without any pre-configured scope."
+commands.allow = ["unpair_device"]
+
+[[permission]]
+identifier = "deny-unpair-device"
+description = "Denies the unpair_device command without any pre-configured scope."
+commands.deny = ["unpair_device"]

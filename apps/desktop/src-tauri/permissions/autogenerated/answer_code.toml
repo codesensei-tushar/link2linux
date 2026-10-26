@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-answer-code"
+description = "Enables the answer_code command without any pre-configured scope."
+commands.allow = ["answer_code"]
+
+[[permission]]
+identifier = "deny-answer-code"
+description = "Denies the answer_code command without any pre-configured scope."
+commands.deny = ["answer_code"]
