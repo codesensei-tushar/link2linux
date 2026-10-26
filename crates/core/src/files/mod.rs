@@ -50,6 +50,7 @@ pub use outgoing::{SendError, check_sendable};
 pub fn shown_name(name: &str) -> String {
     names::shown(name)
 }
+pub use disk::InstanceLock;
 pub use service::{FileService, IncomingBytes, ServiceError};
 
 /// The most bytes of a file one chunk carries.
@@ -167,6 +168,8 @@ impl TransferState {
 pub enum Failure {
     /// The phone has the feature turned off.
     Disabled,
+    /// The feature is turned off on this computer.
+    DisabledHere,
     /// The phone needs a permission before it can save files.
     PermissionRequired,
     /// The receiving device has no room for the files.
@@ -185,6 +188,9 @@ pub enum Failure {
     WriteFailed,
     /// The phone stayed away for longer than [`KEEP_UNFINISHED`].
     Expired,
+    /// An unfinished transfer from the phone was ended to make room for a
+    /// new one: there are too many.
+    TooManyUnfinished,
 }
 
 /// One file of a transfer.
@@ -239,8 +245,10 @@ pub enum TransferEvent {
 
 /// Removes the temporary files that transfers left in `dir` when the app
 /// ended before they finished, and returns how many there were. Call it
-/// once when the app starts, before any session: transfers are never kept
-/// across a restart. It reads the directory, so it blocks.
+/// once when the app starts, before any session, and only while holding the
+/// [`InstanceLock`]: transfers are never kept across a restart, but another
+/// running instance may be writing such files. It reads the directory, so it
+/// blocks.
 ///
 /// # Errors
 ///

@@ -10,6 +10,9 @@ import { errorMessage } from "@/lib/utils";
 import { PhoneChoiceDialog } from "./PhoneChoiceDialog";
 import "./files.css";
 
+/** How long after the overlay shows that events do not clear it. */
+const IGNORE_CLEARS_MS = 300;
+
 /** The phones files can go to: every paired one the phone has not removed. */
 function targets(devices: Device[]): Device[] {
   return devices.filter((d) => d.status !== "revoked");
@@ -92,10 +95,13 @@ export function FileDropOverlay() {
 
   // The window hears nothing while files are dragged over it, so anything
   // it hears means the drag is over, even when the desktop did not say.
+  // An event right after the drag entered (a focus change, a stray pointer
+  // move) says nothing about the drag, so it is ignored for a moment.
   useEffect(() => {
     if (!over) return;
+    const shownAt = Date.now();
     const clear = () => {
-      setOver(false);
+      if (Date.now() - shownAt >= IGNORE_CLEARS_MS) setOver(false);
     };
     const kinds = ["pointermove", "keydown", "blur"] as const;
     kinds.forEach((kind) => {
@@ -112,9 +118,17 @@ export function FileDropOverlay() {
   let hint = "Drop to send to one of your phones";
   if (target) hint = `Drop to send to ${target.name}`;
   else if (devices.status === "ready" && phones.length === 0) hint = "Pair a phone to send files";
-  // Every phone went away while the question was open.
-  const gone = asking !== null && devices.status === "ready" && phones.length === 0;
-  const message = gone ? "Your phones are gone, so the files weren't sent." : notice;
+  // The question is moot once the phones are gone or cannot be listed: close
+  // it, and say so. Adjusting state while rendering, as React allows.
+  if (asking !== null && (devices.status !== "ready" || phones.length === 0)) {
+    setAsking(null);
+    setNotice(
+      devices.status === "ready"
+        ? "Your phones are gone, so the files weren't sent."
+        : "Your phones can't be listed right now, so the files weren't sent.",
+    );
+  }
+  const message = notice;
   return (
     <>
       {over && (
@@ -125,7 +139,7 @@ export function FileDropOverlay() {
           </div>
         </div>
       )}
-      {asking && phones.length > 0 && (
+      {asking && (
         <PhoneChoiceDialog
           names={asking.names}
           phones={phones}
@@ -145,7 +159,6 @@ export function FileDropOverlay() {
             variant="ghost"
             onClick={() => {
               setNotice(null);
-              if (gone) setAsking(null);
             }}
           >
             Close

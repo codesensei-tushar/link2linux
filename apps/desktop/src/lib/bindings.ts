@@ -565,6 +565,8 @@ export type TransferDirection =
 export type TransferFailure = 
 /**  Files are turned off on the phone. */
 "disabled" | 
+/**  Files are turned off on this computer. */
+"disabledHere" | 
 /**  The phone needs a permission before it can save files. */
 "permissionRequired" | 
 /**  The receiving device has no room for the files. */
@@ -582,7 +584,9 @@ export type TransferFailure =
 /**  A received file could not be saved. */
 "writeFailed" | 
 /**  The phone stayed away for more than an hour. */
-"expired";
+"expired" | 
+/**  An unfinished transfer was ended to make room for newer ones. */
+"tooManyUnfinished";
 
 /**  One file of a transfer. */
 export type TransferFileInfo = {

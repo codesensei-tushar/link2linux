@@ -405,8 +405,9 @@ fn action(key: &str, label: &str) -> DesktopAction {
 fn failure_text(failure: Failure, incoming: bool, phone: &str) -> String {
     match failure {
         // Also what a send gets that waited an hour for a phone with files
-        // off.
+        // off, or for this computer's files to be turned on.
         Failure::Disabled => format!("Files are turned off on {phone}."),
+        Failure::DisabledHere => "Files are turned off on this computer.".to_owned(),
         Failure::PermissionRequired => format!("{phone} needs permission to save files."),
         Failure::NoSpace if incoming => "There isn't enough space on this computer.".to_owned(),
         Failure::NoSpace => format!("There isn't enough space on {phone}."),
@@ -416,6 +417,9 @@ fn failure_text(failure: Failure, incoming: bool, phone: &str) -> String {
         Failure::Invalid => format!("{phone} sent the files incorrectly."),
         Failure::WriteFailed => "A file couldn't be saved.".to_owned(),
         Failure::Expired => format!("{phone} didn't reconnect within an hour."),
+        Failure::TooManyUnfinished => {
+            format!("Too many unfinished transfers from {phone}, so this one was dropped.")
+        }
         _ => format!("{phone} didn't accept the files."),
     }
 }

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 pub use link2linux_core::files::shown_name;
 use link2linux_core::files::{
-    FileService, IncomingBytes, SendError, Transfer, TransferId, check_sendable,
+    FileService, IncomingBytes, InstanceLock, SendError, Transfer, TransferId, check_sendable,
 };
 use link2linux_core::session::Availability;
 use link2linux_platform::{FileStore, PlatformError};
@@ -108,23 +108,38 @@ pub struct FilesFactory {
     boards: Mutex<HashMap<String, Board>>,
     /// What every phone's transfers still have to write into Downloads.
     incoming: Arc<IncomingBytes>,
+    /// Marks this instance as the one that owns the unfinished downloads,
+    /// for as long as the app runs.
+    _instance: Option<InstanceLock>,
 }
 
 impl FilesFactory {
     /// A factory whose drivers save into the Downloads directory that
     /// `opener` names, and open files through it, with files turned on when
-    /// `enabled`. It removes what transfers of an earlier run left there,
-    /// so make it once, when the app starts and before any session; that
-    /// reads the directory, so it blocks.
+    /// `enabled`. It takes the instance lock at `lock_path` and, unless
+    /// another running instance holds it, removes what transfers of an
+    /// earlier run left there, so make it once, when the app starts and
+    /// before any session; that reads the directory, so it blocks.
     #[must_use]
-    pub fn new(opener: Arc<dyn Opener>, enabled: bool) -> Self {
+    pub fn new(opener: Arc<dyn Opener>, enabled: bool, lock_path: &Path) -> Self {
         let downloads = opener
             .downloads_dir()
             .inspect_err(
                 |error| tracing::warn!(%error, "no Downloads directory for received files"),
             )
             .ok();
-        if let Some(dir) = &downloads {
+        let instance = match InstanceLock::acquire(lock_path) {
+            Ok(None) => {
+                tracing::info!("another instance owns the unfinished downloads");
+                None
+            }
+            Ok(lock) => lock,
+            Err(error) => {
+                tracing::warn!(%error, "could not take the lock on unfinished downloads");
+                None
+            }
+        };
+        if let (Some(dir), Some(_)) = (&downloads, &instance) {
             match link2linux_core::files::remove_leftovers(dir) {
                 Ok(0) => {}
                 Ok(removed) => tracing::info!(removed, "removed unfinished downloads"),
@@ -141,6 +156,7 @@ impl FilesFactory {
             switch,
             boards: Mutex::default(),
             incoming: IncomingBytes::new(),
+            _instance: instance,
         }
     }
 
@@ -242,5 +258,56 @@ pub fn send_error(error: &SendError) -> BackendError {
         SendError::TooMany => BackendError::TooManyFiles,
         SendError::NoFiles => BackendError::WrongState,
         _ => BackendError::FileUnreadable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A desktop whose Downloads directory is `dir`.
+    struct Downloads(PathBuf);
+
+    impl FileStore for Downloads {
+        fn downloads_dir(&self) -> Result<PathBuf, PlatformError> {
+            Ok(self.0.clone())
+        }
+
+        async fn open(&self, _path: &Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        async fn show_in_folder(&self, _path: &Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
+
+    fn leftover(dir: &Path) -> PathBuf {
+        let path = dir.join(format!(".link2linux-{}-0.part", "ab".repeat(16)));
+        std::fs::write(&path, b"partial").unwrap();
+        path
+    }
+
+    #[test]
+    fn only_the_instance_holding_the_lock_removes_leftovers() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloads = temp.path().join("Downloads");
+        std::fs::create_dir(&downloads).unwrap();
+        let lock = temp.path().join("files.lock");
+        let opener: Arc<dyn Opener> = Arc::new(Downloads(downloads.clone()));
+
+        let path = leftover(&downloads);
+        let first = FilesFactory::new(opener.clone(), true, &lock);
+        assert!(!path.exists());
+
+        // A second instance leaves what the first may be writing.
+        let path = leftover(&downloads);
+        let second = FilesFactory::new(opener.clone(), true, &lock);
+        assert!(path.exists());
+
+        // Once the first is gone, a new start cleans up whatever it left.
+        drop((first, second));
+        let _third = FilesFactory::new(opener, true, &lock);
+        assert!(!path.exists());
     }
 }

@@ -230,6 +230,7 @@ impl Core {
         let files = FilesFactory::new(
             shell.files.unwrap_or_else(|| Arc::new(NoFiles)),
             config.files,
+            &config.data_dir.files_lock(),
         );
         let (keys, _) = watch::channel(DiscoveryKeys::default());
         let core = Arc::new(Self {

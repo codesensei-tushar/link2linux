@@ -91,6 +91,22 @@ impl DataDir {
         self.root.join("device-id")
     }
 
+    /// The file that one running instance locks to own the unfinished
+    /// downloads: in `$XDG_RUNTIME_DIR`, which is emptied at logout and
+    /// belongs to the user alone, or else in this directory.
+    #[must_use]
+    pub fn files_lock(&self) -> PathBuf {
+        self.files_lock_in(std::env::var_os("XDG_RUNTIME_DIR"))
+    }
+
+    fn files_lock_in(&self, runtime_dir: Option<OsString>) -> PathBuf {
+        runtime_dir
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| self.root.clone())
+            .join("link2linux-files.lock")
+    }
+
     /// The desktop app's settings.
     #[must_use]
     pub fn settings(&self) -> PathBuf {
@@ -243,6 +259,21 @@ mod tests {
         );
         assert!(DataDir::from_vars(None, Some("home".into())).is_err());
         assert!(DataDir::from_vars(None, None).is_err());
+    }
+
+    #[test]
+    fn the_files_lock_prefers_the_runtime_directory() {
+        let dir = DataDir::new("/data/link2linux");
+        assert_eq!(
+            dir.files_lock_in(Some("/run/user/1000".into())),
+            Path::new("/run/user/1000/link2linux-files.lock")
+        );
+        for unusable in [None, Some("relative".into())] {
+            assert_eq!(
+                dir.files_lock_in(unusable),
+                Path::new("/data/link2linux/link2linux-files.lock")
+            );
+        }
     }
 
     #[test]

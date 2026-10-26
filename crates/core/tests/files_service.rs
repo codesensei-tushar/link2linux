@@ -7,7 +7,7 @@ mod session_common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use aws_lc_rs::digest;
 use futures_util::{SinkExt, StreamExt};
@@ -820,6 +820,74 @@ async fn room_to_spare_counts_what_other_phones_have_yet_to_write() {
     assert_eq!(second.ask(size(3, 5 << 20)).await, accept(0, 0));
 }
 
+/// An offer of one file of `size` bytes.
+fn sized_offer(id: u8, size: u64) -> Payload {
+    Payload::FileOffer(FileOffer {
+        transfer_id: vec![id; 16],
+        files: vec![FileInfo {
+            name: "big".into(),
+            size,
+            ..FileInfo::default()
+        }],
+        ..FileOffer::default()
+    })
+}
+
+#[tokio::test]
+async fn offers_at_the_same_moment_cannot_both_fill_the_disk() {
+    let downloads = tempfile::tempdir().unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let shared = IncomingBytes::new();
+    let on = |downloads: &Path| {
+        let barrier = barrier.clone();
+        service(downloads)
+            .with_free_space(move |_| {
+                // Both checks are under way at once.
+                barrier.wait();
+                Ok(114 << 20)
+            })
+            .with_shared_incoming(&shared)
+    };
+    let (_one, mut first) = desktop_with(on(downloads.path())).await;
+    let (_two, mut second) = desktop_with(on(downloads.path())).await;
+    // Each 30 MiB fits after the 64 MiB, but not both together.
+    let (a, b) = tokio::join!(
+        first.ask(sized_offer(1, 30 << 20)),
+        second.ask(sized_offer(2, 30 << 20)),
+    );
+    let accepted = [a, b]
+        .iter()
+        .filter(|answer| **answer == accept(0, 0))
+        .count();
+    assert!(accepted <= 1, "{accepted} offers were accepted");
+}
+
+#[tokio::test]
+async fn bytes_of_transfers_ended_by_turning_files_off_stop_counting_for_other_phones() {
+    let downloads = tempfile::tempdir().unwrap();
+    let shared = IncomingBytes::new();
+    let on = |downloads: &Path| {
+        service(downloads)
+            .with_free_space(move |_| Ok(100 << 20))
+            .with_shared_incoming(&shared)
+    };
+    let (mut one, mut first) = desktop_with(on(downloads.path())).await;
+    let (_two, mut second) = desktop_with(on(downloads.path())).await;
+    assert_eq!(first.ask(sized_offer(1, 30 << 20)).await, accept(0, 0));
+    assert_eq!(
+        code_of(&second.ask(sized_offer(2, 30 << 20)).await),
+        ErrorCode::NoSpace
+    );
+
+    one.switch(Availability::Disabled);
+    one.reaches(
+        TransferId([1; 16]),
+        TransferState::Cancelled { by_peer: false },
+    )
+    .await;
+    assert_eq!(second.ask(sized_offer(3, 30 << 20)).await, accept(0, 0));
+}
+
 #[tokio::test]
 async fn turning_files_off_ends_what_the_phone_sends() {
     let downloads = tempfile::tempdir().unwrap();
@@ -918,22 +986,13 @@ async fn unfinished_transfers_from_the_phone_expire_after_an_hour() {
 fn leftovers_of_an_earlier_run_are_removed() {
     let downloads = tempfile::tempdir().unwrap();
     let leftover = format!(".link2linux-{}-0.part", "ab".repeat(16));
-    let long_ago = SystemTime::now() - Duration::from_secs(3 * 60 * 60);
-    let path = downloads.path().join(&leftover);
-    fs::write(&path, b"partial").unwrap();
-    fs::File::options()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_modified(long_ago)
-        .unwrap();
+    let recent = format!(".link2linux-{}-0.part", "cd".repeat(16));
+    fs::write(downloads.path().join(&leftover), b"partial").unwrap();
+    fs::write(downloads.path().join(&recent), b"partial").unwrap();
     fs::write(downloads.path().join("mine.txt"), b"mine").unwrap();
-    // Another instance may be writing this one just now.
-    let busy = format!(".link2linux-{}-0.part", "cd".repeat(16));
-    fs::write(downloads.path().join(&busy), b"partial").unwrap();
     let removed = link2linux_core::files::remove_leftovers(downloads.path()).unwrap();
-    assert_eq!(removed, 1);
-    assert_eq!(names_in(downloads.path()), [busy.as_str(), "mine.txt"]);
+    assert_eq!(removed, 2);
+    assert_eq!(names_in(downloads.path()), ["mine.txt"]);
 }
 
 /// Reads the desktop's offer and checks it names `id`, when given.
@@ -1579,6 +1638,48 @@ async fn a_send_that_expires_says_whether_the_phone_had_files_off_or_was_away() 
 }
 
 #[tokio::test]
+async fn a_send_that_expires_names_the_side_that_was_not_ready() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+
+    // Files turned off on this computer while the phone is there.
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    desktop.switch(Availability::Disabled);
+    let status = phone.next().await;
+    assert!(matches!(status.payload, Some(Payload::FeatureStatus(_))));
+    let id = desktop
+        .send(vec![source(sources.path(), "a", b"x")])
+        .await
+        .unwrap();
+    desktop.settles(id, TransferState::Waiting).await;
+    desktop.expire_in(KEEP_UNFINISHED);
+    desktop
+        .reaches(id, TransferState::Failed(Failure::DisabledHere))
+        .await;
+
+    // The phone needs a permission.
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let needs = Payload::FeatureStatus(link2linux_protocol::v1::FeatureStatus {
+        features: vec![link2linux_protocol::v1::FeatureState {
+            feature: "files".into(),
+            availability: link2linux_protocol::v1::FeatureAvailability::PermissionRequired.into(),
+            permission: "storage".into(),
+        }],
+    });
+    phone.send(needs, false, 0).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let id = desktop
+        .send(vec![source(sources.path(), "b", b"x")])
+        .await
+        .unwrap();
+    desktop.settles(id, TransferState::Waiting).await;
+    desktop.expire_in(KEEP_UNFINISHED);
+    desktop
+        .reaches(id, TransferState::Failed(Failure::PermissionRequired))
+        .await;
+}
+
+#[tokio::test]
 async fn a_transfer_that_arrived_is_complete_when_offered_again_after_leaving_the_list() {
     let downloads = tempfile::tempdir().unwrap();
     let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
@@ -1638,7 +1739,7 @@ async fn only_so_many_transfers_from_the_phone_are_kept() {
     assert_eq!(
         states
             .iter()
-            .filter(|s| **s == TransferState::Failed(Failure::Expired))
+            .filter(|s| **s == TransferState::Failed(Failure::TooManyUnfinished))
             .count(),
         4
     );
