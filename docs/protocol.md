@@ -823,9 +823,9 @@ because the stream is out of sync.
 
 Senders SHOULD keep frames below 256 KiB, splitting large answers into
 batches, so that a `Ping` never waits long behind a bulk frame. Each side
-MUST keep reading frames while it writes: when both send bulk data, two
-sides that stop reading while they write block each other once the TCP
-buffers fill.
+MUST keep reading frames while it writes: when both send bulk data, such as
+files in both directions, two sides that stop reading while they write
+block each other once the TCP buffers fill.
 
 ### Connecting and reconnecting
 
@@ -1406,8 +1406,9 @@ it. Later Android versions need no permission.
    sends `FileOffer` with its files. The receiver answers `FileAccept`,
    which says where the bytes start: file 0, offset 0 for a new transfer.
 2. The sender sends the files' bytes in order, as `FileChunk` requests of
-   at most 256 KiB, each answered by `Ack` once the receiver has written
-   it. A chunk starts where the previous chunk of the same file ended, and
+   256 KiB, except for the last chunk of each file, each answered by `Ack`
+   once the receiver has written it. A receiver accepts any chunk of 1 byte
+   to 256 KiB that continues where it stands. A chunk starts where the previous chunk of the same file ended, and
    each file starts after the previous one is complete. The sender may send
    chunks before the earlier ones are answered, but at most 8 chunks are
    unanswered per session, across all transfers, so the session's other
@@ -1417,9 +1418,23 @@ it. Later Android versions need no permission.
 4. The transfer is complete when the last chunk of the last file has its
    `Ack`.
 
+The sender sends only while the feature is `READY` on both sides. When the
+peer's status leaves `READY`, it pauses its transfers and offers them again
+once the peer is `READY`, within the hour it keeps them. It SHOULD run at
+most 4 transfers to one peer at once and queue the rest.
+
 If a file cannot be read, or its size changes while it is being sent, the
-sender cancels the transfer and tells the user. A chunk without an answer
-in time interrupts the transfer; the sender resumes it as described below.
+sender cancels the transfer and tells the user. An offer or chunk without
+an answer in time interrupts the transfer: the sender offers it again with
+the same `transfer_id` in the same session, and `FileAccept` says where to
+go on. After 3 unanswered requests in a row it stops sending in that
+session and resumes in the next one.
+
+Answers to an offer: after `BUSY` or `UNAVAILABLE` the sender tries again
+after `retry_after_ms`, or 5 seconds without one; after `INTERNAL` it tries
+again a few times with backoff. Any other error fails the transfer. Any
+error to a chunk ends the transfer. The sender sends no `FileCancel` for a
+transfer the receiver refused or ended this way.
 
 ### Receiving
 
@@ -1429,8 +1444,15 @@ in time interrupts the transfer; the sender resumes it as described below.
   `NO_SPACE` when the files do not fit with room to spare,
   `INVALID_ARGUMENT` to an offer that breaks the limits, and `BUSY` while 4
   transfers from the same peer are running.
+- Room to spare: the offer's bytes still to come, plus those of the
+  transfers it already accepted, must leave at least 64 MiB free.
+- `BUSY` counts the transfers running in a session with that peer. A
+  transfer kept only for resuming does not count, and an offer that resumes
+  a transfer the receiver knows is never answered `BUSY`.
 - It answers a chunk with `NOT_FOUND` when it does not know the transfer,
-  and with `INVALID_ARGUMENT` when the chunk does not continue where the
+  when the transfer is complete or cancelled, or when it was not offered
+  in the current session (after a reconnect the sender offers it again
+  before sending chunks); and with `INVALID_ARGUMENT` when the chunk does not continue where the
   receiver stands or runs past the file's size. When a file's hash does not
   match, it deletes the file and answers `INVALID_ARGUMENT`. Each of these
   ends the transfer on the sender's side.
@@ -1439,7 +1461,10 @@ in time interrupts the transfer; the sender resumes it as described below.
   or display safely, and never overwrites a file: it picks a free name, such
   as `photo (1).jpg`. It writes each file under a temporary name and gives
   it its own name only once the hash matches. It never makes a received
-  file executable and never opens one by itself.
+  file executable and never opens one by itself. `mime_type` is only a
+  hint: the receiver types a saved file by its name.
+- A receiver whose user turns the feature off ends its running transfers:
+  it answers `DISABLED` to their later chunks, and MAY send `FileCancel`.
 - The desktop saves files in the user's Downloads directory. The phone
   saves them in its shared Downloads, through MediaStore on Android 10 and
   later.
@@ -1459,6 +1484,10 @@ in time interrupts the transfer; the sender resumes it as described below.
 - Either side can end a transfer with `FileCancel`. The receiver deletes the
   files it has not finished and keeps the finished ones. Chunks the sender
   had already sent get `NOT_FOUND`, which it ignores once it cancelled.
+- A receiver remembers the transfers its user cancelled for 1 hour, and
+  answers an offer that repeats one with `DECLINED`. When the user cancelled
+  while the sender was not connected, the receiver MAY send `FileCancel`
+  once a session with the sender is up again.
 - A receiver deletes the partial files of a transfer that was cancelled or
   that it no longer keeps. It does not keep transfers across a restart of
   its app, and removes leftover partial files when it starts.
