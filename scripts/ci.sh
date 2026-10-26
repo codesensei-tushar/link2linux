@@ -4,7 +4,7 @@
 #
 #   scripts/ci.sh             run every job whose project exists
 #   scripts/ci.sh --changed   run only the jobs for paths changed vs origin/main
-#   scripts/ci.sh rust web    run the named jobs (proto, rust, web, android)
+#   scripts/ci.sh rust web    run the named jobs (proto, rust, web, android, interop)
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -17,10 +17,11 @@ if [ "${1:-}" = "--changed" ]; then
   touches '^(crates/|apps/desktop/src-tauri/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|proto/)' && jobs+=(rust)
   touches '^(apps/desktop/|package\.json$|pnpm-(lock|workspace)\.yaml$)' && jobs+=(web)
   touches '^(apps/android/|proto/)' && jobs+=(android)
+  touches '^(crates/core/|apps/android/core/(network|security|discovery)/|proto/|Cargo\.lock$|scripts/interop\.sh$)' && jobs+=(interop)
 elif [ $# -gt 0 ]; then
   jobs=("$@")
 else
-  jobs=(proto rust web android)
+  jobs=(proto rust web android interop)
 fi
 
 proto() {
@@ -70,10 +71,16 @@ android() {
   (cd apps/android && ./gradlew assembleDebug testDebugUnitTest lint)
 }
 
+# The desktop core against the phone app's TLS listener and pairing.
+interop() {
+  [ -x apps/android/gradlew ] && [ -f crates/core/examples/interop_desktop.rs ] || { echo "no interop test yet"; return 0; }
+  scripts/interop.sh
+}
+
 [ ${#jobs[@]} -eq 0 ] && { echo "ci: nothing to check"; exit 0; }
 failed=()
 for job in "${jobs[@]}"; do
-  case "$job" in proto|rust|web|android) ;; *) echo "ci: unknown job '$job'"; exit 2 ;; esac
+  case "$job" in proto|rust|web|android|interop) ;; *) echo "ci: unknown job '$job'"; exit 2 ;; esac
   echo "==> $job"
   start=$SECONDS
   if "$job"; then echo "<== $job passed ($((SECONDS - start))s)"; else echo "<== $job FAILED"; failed+=("$job"); fi

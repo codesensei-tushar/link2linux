@@ -12,6 +12,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(projects.core.testing)
+    // The QR code parser, for the interop test with the desktop's code.
+    testImplementation(projects.core.discovery)
     // Unit tests run on the desktop JVM, where conscrypt-android cannot load
     // its native library. The OpenJDK build of the same release has the
     // same Java API and the same BoringSSL, so the TLS tests exercise the
@@ -31,4 +33,14 @@ tasks.withType<Test>().configureEach {
         .withPropertyName("sharedTestData")
         .withPathSensitivity(PathSensitivity.RELATIVE)
     systemProperty("l2l.testdata.dir", sharedTestData.absolutePath)
+}
+
+// The desktop core's interop_desktop example, built by scripts/interop.sh.
+// DesktopInteropTest runs against it and is skipped when it is not set.
+val interopDesktop: String? = providers.environmentVariable("L2L_INTEROP_DESKTOP").orNull
+tasks.withType<Test>().configureEach {
+    if (interopDesktop != null) {
+        inputs.file(interopDesktop).withPropertyName("interopDesktop").withPathSensitivity(PathSensitivity.NONE)
+        systemProperty("l2l.interop.desktop", interopDesktop)
+    }
 }
