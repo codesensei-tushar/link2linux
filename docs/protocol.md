@@ -1418,6 +1418,10 @@ it. Later Android versions need no permission.
 4. The transfer is complete when the last chunk of the last file has its
    `Ack`.
 
+Another app on the phone can start the phone's share target directly, not
+only through the share sheet, so the phone asks the user to confirm which
+files go to which desktop before it offers them.
+
 The sender sends only while the feature is `READY` on both sides. When the
 peer's status leaves `READY`, it pauses its transfers and offers them again
 once the peer is `READY`, within the hour it keeps them. It SHOULD run at
