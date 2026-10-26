@@ -1,0 +1,8 @@
+# ufw application profile for link2linux. It lets the desktop hear its phone:
+# mDNS announcements (UDP 5353) and the phone's beacons (UDP 27381). The
+# desktop never accepts incoming TCP connections. Allow it with:
+#   sudo ufw allow link2linux
+[link2linux]
+title=link2linux
+description=Lets link2linux find your Android phone on the local network: mDNS and the phone's beacons on UDP port 27381.
+ports=5353,27381/udp

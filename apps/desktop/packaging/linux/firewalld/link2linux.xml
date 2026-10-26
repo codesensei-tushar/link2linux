@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- firewalld service for link2linux. It lets the desktop hear its phone:
+     mDNS announcements, and the phone's UDP beacons on networks that filter
+     multicast. The desktop never accepts incoming TCP connections; it dials
+     the phone. The command that allows it is in packaging/README.md. -->
+<service>
+  <short>link2linux</short>
+  <description>Lets link2linux find your Android phone on the local network: mDNS announcements and the phone's beacons on UDP port 27381.</description>
+  <include service="mdns"/>
+  <port protocol="udp" port="27381"/>
+</service>
