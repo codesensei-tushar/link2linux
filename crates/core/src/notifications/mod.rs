@@ -6,8 +6,12 @@
 //! actions, including inline replies.
 //!
 //! - [`mirror`]: the desktop's copy, kept in step with the phone's sync
-//!   batches and live events.
+//!   batches and live events;
+//! - [`present`]: how the copy appears as desktop banners, and what the
+//!   user's answers to them ask of the phone.
 
 pub mod mirror;
+pub mod present;
 
 pub use mirror::{Change, Mirror, MirrorError};
+pub use present::{Answer, answer, to_desktop, wants_banner};

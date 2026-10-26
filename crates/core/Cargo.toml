@@ -14,6 +14,7 @@ workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
 futures-util.workspace = true
+link2linux-platform.workspace = true
 link2linux-protocol.workspace = true
 mdns-sd.workspace = true
 if-addrs.workspace = true
