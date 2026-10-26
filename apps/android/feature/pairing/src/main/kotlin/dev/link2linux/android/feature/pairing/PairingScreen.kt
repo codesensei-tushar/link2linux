@@ -26,7 +26,9 @@ import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
 import dev.link2linux.android.core.model.DeviceKind
 import dev.link2linux.android.core.model.Feature
+import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairedDevice
+import dev.link2linux.android.core.model.PresenceKey
 import dev.link2linux.android.core.designsystem.R as DesignR
 
 @Composable
@@ -97,10 +99,15 @@ private fun NotPairedPreview() {
 @Preview
 @Composable
 private fun PairedPreview() {
-    val desk = Device(DeviceId("desk"), name = "Workstation", kind = DeviceKind.DESKTOP)
+    val desk = PairedDevice(
+        Device(DeviceId("desk"), name = "Workstation", kind = DeviceKind.DESKTOP),
+        KeyFingerprint.of(ByteArray(32)),
+        pairedAtEpochMillis = 0,
+        presenceKey = PresenceKey.of(ByteArray(32)),
+    )
     L2lTheme(dynamicColor = false) {
         PairingScreen(
-            uiState = PairingUiState.Paired(listOf(PairedDevice(desk, "ab12", 0))),
+            uiState = PairingUiState.Paired(listOf(desk)),
             features = Feature.optIn,
             onOpenFeature = {},
         )

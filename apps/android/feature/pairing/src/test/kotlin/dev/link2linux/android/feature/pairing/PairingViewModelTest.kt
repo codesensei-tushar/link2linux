@@ -4,7 +4,9 @@ import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
 import dev.link2linux.android.core.model.DeviceKind
+import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairedDevice
+import dev.link2linux.android.core.model.PresenceKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,7 +37,12 @@ class PairingViewModelTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.uiState.collect {} }
         assertEquals(PairingUiState.NotPaired, viewModel.uiState.value)
 
-        val desk = PairedDevice(Device(DeviceId("desk"), "Desk", DeviceKind.DESKTOP), "ab12", 0)
+        val desk = PairedDevice(
+            Device(DeviceId("desk"), "Desk", DeviceKind.DESKTOP),
+            KeyFingerprint.of(ByteArray(32)),
+            pairedAtEpochMillis = 0,
+            presenceKey = PresenceKey.of(ByteArray(32)),
+        )
         repository.save(desk)
 
         assertEquals(PairingUiState.Paired(listOf(desk)), viewModel.uiState.value)
@@ -46,8 +53,8 @@ class PairingViewModelTest {
         override suspend fun save(device: PairedDevice) {
             pairedDevices.value += device
         }
-        override suspend fun forget(id: DeviceId) {
-            pairedDevices.value = pairedDevices.value.filterNot { it.device.id == id }
+        override suspend fun forget(fingerprint: KeyFingerprint) {
+            pairedDevices.value = pairedDevices.value.filterNot { it.fingerprint == fingerprint }
         }
     }
 }
