@@ -15,6 +15,8 @@ fn main() {
         "dismiss_notification",
         "run_notification_action",
         "notification_image",
+        "get_settings",
+        "set_settings",
     ]);
 
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))

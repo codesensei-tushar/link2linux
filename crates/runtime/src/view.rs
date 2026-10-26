@@ -192,6 +192,9 @@ pub enum BackendError {
     /// No such phone.
     #[error("That phone is no longer available.")]
     NotFound,
+    /// A setting could not be stored. It applies until the app quits.
+    #[error("The setting couldn't be saved, so it lasts only until the app quits.")]
+    NotSaved,
 }
 
 /// Where a backend reports changes. Called with the backend's lock held, so

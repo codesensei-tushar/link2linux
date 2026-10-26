@@ -1,0 +1,41 @@
+.settings {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 44rem;
+}
+
+.settings__group {
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-size-md);
+}
+
+.setting {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.setting input {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  margin: 0.125rem 0 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.setting__text {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.setting__label {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.setting__hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}

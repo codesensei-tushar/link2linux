@@ -13,6 +13,7 @@
 pub mod fake;
 pub mod live;
 
+pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, Device, DeviceStatus, DiscoveredPhone, EventSink, MirroredNotification,
     NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneTarget,
@@ -60,5 +61,14 @@ pub trait Backend: Send + Sync {
     /// The file of a picture the phone shared, if it has arrived.
     fn notification_image(&self, _device_id: &str, _sha256: &str) -> Option<std::path::PathBuf> {
         None
+    }
+
+    /// The desktop app's settings.
+    fn settings(&self) -> Settings {
+        Settings::default()
+    }
+    /// Changes the settings; they apply at once.
+    fn set_settings(&self, _settings: Settings) -> Result<(), BackendError> {
+        Ok(())
     }
 }

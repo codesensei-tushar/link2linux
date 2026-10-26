@@ -1,3 +1,4 @@
+import { Settings } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { NavLink } from "react-router";
 
@@ -43,6 +44,17 @@ export function Sidebar() {
               </NavLink>
             </li>
           ))}
+        </ul>
+      </nav>
+
+      <nav className="sidebar__nav" aria-label="App">
+        <ul>
+          <li>
+            <NavLink to="/settings" className="nav-link" onKeyDown={moveFocus}>
+              <Settings aria-hidden="true" />
+              Settings
+            </NavLink>
+          </li>
         </ul>
       </nav>
 

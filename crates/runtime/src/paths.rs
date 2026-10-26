@@ -90,6 +90,12 @@ impl DataDir {
         self.root.join("device-id")
     }
 
+    /// The desktop app's settings.
+    #[must_use]
+    pub fn settings(&self) -> PathBuf {
+        self.root.join("settings.json")
+    }
+
     /// The pictures phones shared with notifications, one folder per phone.
     #[must_use]
     pub fn images(&self) -> PathBuf {

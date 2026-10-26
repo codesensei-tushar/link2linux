@@ -10,11 +10,13 @@ import "./layout.css";
 export function AppLayout() {
   const mainRef = useRef<HTMLElement>(null);
   const { pathname } = useLocation();
-  const current = features.find((f) => pathname === `/${f.id}`);
+  const label =
+    features.find((f) => pathname === `/${f.id}`)?.label ??
+    (pathname === "/settings" ? "Settings" : undefined);
 
   useEffect(() => {
-    document.title = current ? `${current.label} · link2linux` : "link2linux";
-  }, [current]);
+    document.title = label ? `${label} · link2linux` : "link2linux";
+  }, [label]);
 
   // Routes live in the URL hash, so the skip link moves focus itself
   // instead of navigating to "#main".

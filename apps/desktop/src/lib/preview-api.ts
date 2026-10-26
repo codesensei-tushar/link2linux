@@ -1,6 +1,6 @@
 import { demoNotifications } from "@/features/notifications/demo";
 
-import type { DesktopApi, Device, PairingState, PhoneTarget, Unsubscribe } from "./api";
+import type { DesktopApi, Device, PairingState, PhoneTarget, Settings, Unsubscribe } from "./api";
 
 const DAY_MS = 86_400_000;
 
@@ -33,6 +33,7 @@ export function createPreviewApi(search: string = globalThis.location.search): D
             lastConnectedUnixMs: now - 2 * DAY_MS,
           },
         ];
+  let settings: Settings = { showNotificationText: false };
   const pairingListeners = new Set<(state: PairingState) => void>();
   const deviceListeners = new Set<(devices: Device[]) => void>();
 
@@ -142,6 +143,11 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     },
     onPairingChanged: (listener) => listen(pairingListeners, listener),
     onDevicesChanged: (listener) => listen(deviceListeners, listener),
+    getSettings: () => Promise.resolve(settings),
+    setSettings: (next) => {
+      settings = next;
+      return Promise.resolve();
+    },
   };
 }
 
