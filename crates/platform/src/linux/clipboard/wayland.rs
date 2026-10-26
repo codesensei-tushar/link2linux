@@ -19,7 +19,7 @@ use wl_clipboard_rs::paste::{self, ClipboardType, Seat};
 use wl_clipboard_rs::watch::{CancelHandle, ClipboardType as Watched, Watcher};
 
 use super::{
-    OPEN_TIMEOUT, PlatformError, READ_TIMEOUT, Reporter, Source, TRANSFER_TIMEOUT, Worker,
+    Caller, OPEN_TIMEOUT, PlatformError, READ_TIMEOUT, Reporter, Source, TRANSFER_TIMEOUT, Worker,
     too_long, unavailable,
 };
 use crate::ClipboardText;
@@ -62,15 +62,15 @@ impl WaylandClipboard {
 
     pub(super) async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
         self.worker
-            .run(|generation: &mut Arc<AtomicU64>| {
+            .run(|generation: &mut Arc<AtomicU64>, caller: &Caller| {
                 let mut reading = Reading::new(generation);
-                super::read(&mut reading, Instant::now() + READ_TIMEOUT)
+                super::read(&mut reading, Instant::now() + READ_TIMEOUT, caller)
             })
             .await
     }
 
     pub(super) async fn write(&self, text: ClipboardText) -> Result<(), PlatformError> {
-        self.worker.run(move |_| write(text)).await
+        self.worker.run(move |_, _| write(text)).await
     }
 }
 

@@ -81,6 +81,10 @@ fn too_long() -> PlatformError {
 ///
 /// Dropping it never blocks: its threads stop on their own once a call in
 /// progress ends, and none of them keeps the process from exiting.
+///
+/// Its `read` and `write` need a tokio runtime with timers enabled, as
+/// `#[tokio::main]` and `Builder::enable_all` give: they time out with
+/// `tokio::time`, and panic on a runtime without timers or outside tokio.
 pub struct LinuxClipboard {
     backend: Backend,
     link: Link,
@@ -319,20 +323,23 @@ impl<C: Send + 'static> Worker<C> {
     }
 
     /// Runs `job` on the thread and waits for its result, up to
-    /// [`CALL_TIMEOUT`]. Cancel-safe: a result nobody waits for any more is
-    /// dropped.
+    /// [`CALL_TIMEOUT`]. Cancel-safe: a job whose caller gave up before it
+    /// started is skipped, and `job` is told through [`Caller`] when its
+    /// caller gives up while it runs.
     async fn run<T: Send + 'static>(
         &self,
-        job: impl FnOnce(&mut C) -> Result<T, PlatformError> + Send + 'static,
+        job: impl FnOnce(&mut C, &Caller) -> Result<T, PlatformError> + Send + 'static,
     ) -> Result<T, PlatformError> {
+        let waiting = Arc::new(AtomicBool::new(true));
+        // Whether this call returns, times out or is dropped.
+        let _leaving = Leaving(waiting.clone());
+        let caller = Caller(waiting);
         let (reply, result) = oneshot::channel();
         self.jobs
             .send(Box::new(move |context| {
-                // Its caller gave up while it waited in line.
-                if reply.is_closed() {
-                    return;
+                if caller.waits() {
+                    let _ = reply.send(job(context, &caller));
                 }
-                let _ = reply.send(job(context));
             }))
             .map_err(|_| stopped())?;
         tokio::time::timeout(CALL_TIMEOUT, result)
@@ -340,6 +347,37 @@ impl<C: Send + 'static> Worker<C> {
             .map_err(|_| unavailable("the display server did not answer in time"))?
             .map_err(|_| stopped())?
     }
+}
+
+/// Tells a job run by [`Worker::run`] whether its caller still waits for
+/// it. One that gave up was told the call failed, so the job must not go on
+/// to change the clipboard.
+#[derive(Clone)]
+struct Caller(Arc<AtomicBool>);
+
+impl Caller {
+    /// A caller that always waits, for tests.
+    #[cfg(test)]
+    fn waiting() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn waits(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Marks the caller gone when [`Worker::run`]'s future ends.
+struct Leaving(Arc<AtomicBool>);
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn caller_left() -> PlatformError {
+    unavailable("the call was given up on")
 }
 
 fn stopped() -> PlatformError {
@@ -392,7 +430,8 @@ trait Source {
     fn changed_since_begin(&mut self) -> Result<bool, PlatformError>;
 }
 
-/// Reads the clipboard text from `source`, giving up at `deadline`.
+/// Reads the clipboard text from `source`, giving up at `deadline`, or
+/// before another attempt once `caller` gave up.
 ///
 /// The types, the password hint and the text are fetched one after another,
 /// each from whatever app holds the clipboard by then. When another copy
@@ -402,8 +441,12 @@ trait Source {
 fn read(
     source: &mut impl Source,
     deadline: Instant,
+    caller: &Caller,
 ) -> Result<Option<ClipboardText>, PlatformError> {
     for _ in 0..READ_ATTEMPTS {
+        if !caller.waits() {
+            return Err(caller_left());
+        }
         let Some(types) = source.begin(deadline)? else {
             return Ok(None);
         };
@@ -688,7 +731,9 @@ mod tests {
                 ("x-kde-passwordManagerHint", b"secret"),
             ],
         ]);
-        let text = read(&mut clipboard, Instant::now()).unwrap().unwrap();
+        let text = read(&mut clipboard, Instant::now(), &Caller::waiting())
+            .unwrap()
+            .unwrap();
         assert_eq!((text.text.as_str(), text.sensitive), ("hunter2", true));
         assert_eq!(clipboard.begun, 2);
     }
@@ -697,7 +742,7 @@ mod tests {
     fn a_clipboard_that_keeps_changing_fails_the_read() {
         let copy = vec![("UTF8_STRING", &b"again"[..])];
         let mut clipboard = Copying::new(vec![copy; READ_ATTEMPTS + 2]);
-        assert!(read(&mut clipboard, Instant::now()).is_err());
+        assert!(read(&mut clipboard, Instant::now(), &Caller::waiting()).is_err());
         assert_eq!(clipboard.begun, READ_ATTEMPTS);
     }
 
@@ -1088,7 +1133,7 @@ mod tests {
     async fn the_worker_skips_jobs_nobody_waits_for() {
         let worker = Worker::spawn("test-worker", Vec::new()).unwrap();
         let (release, released) = mpsc::channel::<()>();
-        let mut busy = std::pin::pin!(worker.run(move |_: &mut Vec<u32>| {
+        let mut busy = std::pin::pin!(worker.run(move |_: &mut Vec<u32>, _: &Caller| {
             let _ = released.recv();
             Ok(())
         }));
@@ -1096,7 +1141,7 @@ mod tests {
         // line behind the first, and its caller gives up.
         let wait = Duration::from_millis(20);
         assert!(tokio::time::timeout(wait, &mut busy).await.is_err());
-        let abandoned = worker.run(|seen: &mut Vec<u32>| {
+        let abandoned = worker.run(|seen: &mut Vec<u32>, _: &Caller| {
             seen.push(1);
             Ok(())
         });
@@ -1104,24 +1149,44 @@ mod tests {
         release.send(()).unwrap();
         busy.await.unwrap();
         let seen = worker
-            .run(|seen: &mut Vec<u32>| Ok(seen.clone()))
+            .run(|seen: &mut Vec<u32>, _: &Caller| Ok(seen.clone()))
             .await
             .unwrap();
         assert!(seen.is_empty());
     }
 
     #[tokio::test]
+    async fn a_job_hears_when_its_caller_gives_up() {
+        let worker = Worker::spawn("test-worker", ()).unwrap();
+        let (told, heard) = mpsc::channel();
+        let call = worker.run(move |(), caller: &Caller| {
+            let started = Instant::now();
+            while caller.waits() && started.elapsed() < Duration::from_secs(5) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            told.send(caller.waits()).unwrap();
+            Ok(())
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), call)
+                .await
+                .is_err()
+        );
+        assert!(!heard.recv_timeout(Duration::from_secs(2)).unwrap());
+    }
+
+    #[tokio::test]
     async fn the_worker_runs_jobs_in_order() {
         let worker = Worker::spawn("test-worker", Vec::new()).unwrap();
         worker
-            .run(|seen: &mut Vec<u32>| {
+            .run(|seen: &mut Vec<u32>, _: &Caller| {
                 seen.push(1);
                 Ok(())
             })
             .await
             .unwrap();
         let seen = worker
-            .run(|seen: &mut Vec<u32>| {
+            .run(|seen: &mut Vec<u32>, _: &Caller| {
                 seen.push(2);
                 Ok(seen.clone())
             })

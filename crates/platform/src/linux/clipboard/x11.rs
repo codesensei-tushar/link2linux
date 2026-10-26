@@ -11,7 +11,7 @@
 //!   its content and waits for it, up to a timeout. It hears of clipboard
 //!   changes too, to tell when a read spans two copies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::ops::Range;
 use std::os::unix::net::UnixStream;
@@ -36,8 +36,8 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
 use super::{
-    MAX_READ_BYTES, OPEN_TIMEOUT, PlatformError, READ_TIMEOUT, Reporter, Source, TRANSFER_TIMEOUT,
-    Worker, too_long, unavailable,
+    Caller, MAX_READ_BYTES, OPEN_TIMEOUT, PlatformError, READ_TIMEOUT, Reporter, Source,
+    TRANSFER_TIMEOUT, Worker, caller_left, too_long, unavailable,
 };
 use crate::ClipboardText;
 
@@ -64,6 +64,12 @@ const MAX_PART_BYTES: usize = 1 << 20;
 /// How many properties the reader takes turns with, one per conversion, so
 /// that a late answer to one is never taken for the next one's.
 const TRANSFER_PROPERTIES: usize = 8;
+/// How long the reader keeps a window it replaced, and how many at most: an
+/// app that answers late then writes to a window that still exists. Writing
+/// to one that is gone is an error, on which apps that leave Xlib's default
+/// error handler in place exit, taking their clipboard with them.
+const RETIRED_WINDOW_LIFETIME: Duration = Duration::from_secs(30);
+const MAX_RETIRED_WINDOWS: usize = 16;
 
 pub(super) struct X11Clipboard {
     worker: Worker<Session>,
@@ -131,17 +137,17 @@ impl X11Clipboard {
 
     pub(super) async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
         self.worker
-            .run(|session: &mut Session| {
-                super::read(&mut session.reader, Instant::now() + READ_TIMEOUT)
+            .run(|session: &mut Session, caller: &Caller| {
+                super::read(&mut session.reader, Instant::now() + READ_TIMEOUT, caller)
             })
             .await
     }
 
     pub(super) async fn write(&self, text: ClipboardText) -> Result<(), PlatformError> {
         self.worker
-            .run(move |session: &mut Session| {
+            .run(move |session: &mut Session, caller: &Caller| {
                 let time = session.reader.server_time()?;
-                session.owner.take(text, time)
+                session.owner.take(text, time, caller)
             })
             .await
     }
@@ -219,6 +225,8 @@ struct Reader {
     /// Replaced after a conversion that was given up on, so that whatever
     /// is still on its way for that one never reaches the next.
     window: Window,
+    /// Windows replaced, and when, destroyed once they are old enough.
+    retired: VecDeque<(Window, Instant)>,
     atoms: Atoms,
     /// Where conversions are delivered, taking turns.
     properties: [Atom; TRANSFER_PROPERTIES],
@@ -250,6 +258,7 @@ impl Reader {
             conn,
             root,
             window,
+            retired: VecDeque::new(),
             atoms,
             properties,
             next_property: 0,
@@ -261,13 +270,42 @@ impl Reader {
         })
     }
 
-    /// Replaces the window after a conversion that was given up on: an
-    /// answer still on its way, or an app still sending its text in parts,
-    /// then finds no window and stops.
+    /// Replaces the window after a conversion that was given up on. The old
+    /// one stops reporting anything but lives on for a while, so an answer
+    /// still on its way lands where nobody reads it, and an app still
+    /// sending its text in parts waits for a deletion that never comes and
+    /// gives up.
     fn replace_window(&mut self) -> Result<(), PlatformError> {
-        self.conn.destroy_window(self.window).map_err(unavailable)?;
+        let old = self.window;
+        self.conn
+            .change_window_attributes(
+                old,
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+            )
+            .map_err(unavailable)?;
+        self.conn
+            .xfixes_select_selection_input(
+                old,
+                self.atoms.CLIPBOARD,
+                SelectionEventMask::from(0u32),
+            )
+            .map_err(unavailable)?;
+        self.retired.push_back((old, Instant::now()));
         self.window = create_window(&self.conn, self.root, &self.atoms).map_err(unavailable)?;
+        self.destroy_retired(Instant::now())?;
         self.conn.flush().map_err(unavailable)?;
+        Ok(())
+    }
+
+    /// Destroys the retired windows that are old enough, or too many.
+    fn destroy_retired(&mut self, now: Instant) -> Result<(), PlatformError> {
+        while let Some(&(window, retired)) = self.retired.front()
+            && (now.saturating_duration_since(retired) >= RETIRED_WINDOW_LIFETIME
+                || self.retired.len() > MAX_RETIRED_WINDOWS)
+        {
+            self.conn.destroy_window(window).map_err(unavailable)?;
+            self.retired.pop_front();
+        }
         Ok(())
     }
 
@@ -459,6 +497,7 @@ impl Source for Reader {
     fn begin(&mut self, deadline: Instant) -> Result<Option<Vec<String>>, PlatformError> {
         self.deadline = deadline;
         self.offered.clear();
+        self.destroy_retired(Instant::now())?;
         // The owner's reply comes after every event sent before it, so the
         // changes it brings in are older than this read.
         self.owner = self.selection_owner()?;
@@ -549,6 +588,9 @@ struct Take {
     done: mpsc::SyncSender<Result<(), PlatformError>>,
 }
 
+/// How often a take waiting for the owner thread checks on its caller.
+const CALLER_CHECK_INTERVAL: Duration = Duration::from_millis(50);
+
 const WAITING: u8 = 0;
 const CLAIMED: u8 = 1;
 const GIVEN_UP: u8 = 2;
@@ -569,8 +611,17 @@ fn closed() -> PlatformError {
 
 impl OwnerHandle {
     /// Has the owner thread take the clipboard. A take it does not get to in
-    /// time is given up on, and never happens later.
-    fn take(&mut self, text: ClipboardText, time: Timestamp) -> Result<(), PlatformError> {
+    /// time, or before `caller` gives up, is given up on, and never happens
+    /// later.
+    fn take(
+        &mut self,
+        text: ClipboardText,
+        time: Timestamp,
+        caller: &Caller,
+    ) -> Result<(), PlatformError> {
+        if !caller.waits() {
+            return Err(caller_left());
+        }
         let (done, result) = mpsc::sync_channel(1);
         let state = Arc::new(AtomicU8::new(WAITING));
         self.commands
@@ -587,20 +638,29 @@ impl OwnerHandle {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(_) => return Err(closed()),
         }
-        match result.recv_timeout(TRANSFER_TIMEOUT) {
-            Ok(taken) => taken,
-            Err(RecvTimeoutError::Timeout) => {
-                if state
-                    .compare_exchange(WAITING, GIVEN_UP, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    Err(unavailable("the clipboard was not taken in time"))
-                } else {
-                    // Claimed just now: it is being taken.
-                    result.recv().map_err(|_| closed())?
-                }
+        let deadline = Instant::now() + TRANSFER_TIMEOUT;
+        loop {
+            match result.recv_timeout(CALLER_CHECK_INTERVAL) {
+                Ok(taken) => return taken,
+                Err(RecvTimeoutError::Disconnected) => return Err(closed()),
+                Err(RecvTimeoutError::Timeout) => {}
             }
-            Err(RecvTimeoutError::Disconnected) => Err(closed()),
+            let gone = !caller.waits();
+            if !gone && Instant::now() < deadline {
+                continue;
+            }
+            if state
+                .compare_exchange(WAITING, GIVEN_UP, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Err(if gone {
+                    caller_left()
+                } else {
+                    unavailable("the clipboard was not taken in time")
+                });
+            }
+            // Claimed just now: it is being taken.
+            return result.recv().map_err(|_| closed())?;
         }
     }
 }
@@ -799,6 +859,9 @@ impl Owner {
         } else {
             request.property
         };
+        // Asked again on that property: whatever was being sent there ends,
+        // so a deletion of the new answer does not move the old one on.
+        self.end_transfers_to(request.requestor, property)?;
         let answered = match self.owned.clone() {
             Some(owned)
                 if request.selection == self.atoms.CLIPBOARD && request.owner == self.window =>
@@ -888,9 +951,6 @@ impl Owner {
             requestor,
             &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
         )?;
-        // Asked again on the same property: the earlier transfer there ends.
-        self.transfers
-            .retain(|transfer| transfer.requestor != requestor || transfer.property != property);
         let size = u32::try_from(text.len()).unwrap_or(u32::MAX);
         self.conn.change_property32(
             PropMode::REPLACE,
@@ -938,6 +998,21 @@ impl Owner {
         Ok(())
     }
 
+    fn end_transfers_to(
+        &mut self,
+        requestor: Window,
+        property: Atom,
+    ) -> Result<(), ReplyOrIdError> {
+        while let Some(index) = self
+            .transfers
+            .iter()
+            .position(|transfer| transfer.requestor == requestor && transfer.property == property)
+        {
+            self.finish_transfer(index)?;
+        }
+        Ok(())
+    }
+
     fn give_up_stalled(&mut self, now: Instant) -> Result<(), ReplyOrIdError> {
         while let Some(index) = self
             .transfers
@@ -966,7 +1041,7 @@ impl Owner {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::super::tests::{NO_X_SERVER, PrivateX};
     use super::super::{Link, link};
@@ -1036,12 +1111,32 @@ mod tests {
             sensitive: false,
         };
         let started = Instant::now();
-        let error = owner.take(text, 1).unwrap_err();
+        let error = owner.take(text, 1, &Caller::waiting()).unwrap_err();
         assert!(started.elapsed() >= TRANSFER_TIMEOUT);
         assert!(error.to_string().contains("not taken in time"), "{error}");
         // When the owner thread gets to it after all, it leaves it.
         let take = received.try_recv().unwrap();
         assert!(!take.claim());
+    }
+
+    #[test]
+    fn a_take_whose_caller_left_never_happens() {
+        let (commands, received) = mpsc::channel();
+        let (wake, _woken) = UnixStream::pair().unwrap();
+        wake.set_nonblocking(true).unwrap();
+        let mut owner = OwnerHandle { commands, wake };
+        let waiting = Arc::new(AtomicBool::new(true));
+        let caller = Caller(waiting.clone());
+        let leaving = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            waiting.store(false, Ordering::Release);
+        });
+        let started = Instant::now();
+        let error = owner.take(text("late", false), 1, &caller).unwrap_err();
+        assert!(started.elapsed() < TRANSFER_TIMEOUT);
+        assert!(error.to_string().contains("given up"), "{error}");
+        assert!(!received.try_recv().unwrap().claim());
+        leaving.join().unwrap();
     }
 
     /// Opens the clipboard of the X server on `display`.
@@ -1080,6 +1175,8 @@ mod tests {
     /// `answer` says, which may also wait first.
     struct FakeOwner {
         stop: Arc<AtomicBool>,
+        /// X errors it got, as for writing to a window that is gone.
+        errors: Arc<AtomicUsize>,
         thread: Option<thread::JoinHandle<()>>,
     }
 
@@ -1097,12 +1194,20 @@ mod tests {
             let owner = conn.get_selection_owner(atoms.CLIPBOARD).unwrap();
             assert_eq!(owner.reply().unwrap().owner, window);
             let stop = Arc::new(AtomicBool::new(false));
-            let stopping = stop.clone();
-            let thread = thread::spawn(move || serve_fake(&conn, &offered, answer, &stopping));
+            let errors = Arc::new(AtomicUsize::new(0));
+            let (stopping, counting) = (stop.clone(), errors.clone());
+            let thread = thread::spawn(move || {
+                serve_fake(&conn, &offered, answer, &stopping, &counting);
+            });
             Self {
                 stop,
+                errors,
                 thread: Some(thread),
             }
+        }
+
+        fn errors(&self) -> usize {
+            self.errors.load(Ordering::Acquire)
         }
     }
 
@@ -1128,15 +1233,20 @@ mod tests {
         offered: &[Atom],
         mut answer: impl FnMut(&str) -> Answer,
         stop: &AtomicBool,
+        errors: &AtomicUsize,
     ) {
         while !stop.load(Ordering::Acquire) {
             let Some(event) = conn.poll_for_event().unwrap() else {
                 thread::sleep(Duration::from_millis(5));
                 continue;
             };
-            // Errors about windows gone meanwhile are dropped with the rest.
-            let Event::SelectionRequest(request) = event else {
-                continue;
+            let request = match event {
+                Event::SelectionRequest(request) => request,
+                Event::Error(_) => {
+                    errors.fetch_add(1, Ordering::AcqRel);
+                    continue;
+                }
+                _ => continue,
             };
             let name = conn.get_atom_name(request.target).unwrap().reply().unwrap();
             let property = match answer(&String::from_utf8_lossy(&name.name)) {
@@ -1312,6 +1422,24 @@ mod tests {
         drop(slow);
     }
 
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_a_late_answer_lands_on_a_window_that_still_exists() {
+        let server = PrivateX::start();
+        let (clipboard, _) = open(&server.display, None);
+        let slow = FakeOwner::start(&server.display, &["TARGETS", "UTF8_STRING"], |name| {
+            if name == "TARGETS" {
+                thread::sleep(TRANSFER_TIMEOUT + Duration::from_millis(500));
+                return Answer::Targets;
+            }
+            Answer::Data("UTF8_STRING", b"late".to_vec())
+        });
+        assert!(clipboard.read().await.is_err());
+        // By now it answered, to a window that is no longer read.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(slow.errors(), 0);
+    }
+
     #[test]
     #[ignore = "starts its own Xvfb"]
     fn own_xvfb_a_slow_app_cannot_hold_a_read_past_its_deadline() {
@@ -1329,7 +1457,7 @@ mod tests {
         let mut reader = Reader::connect(Some(&server.display)).unwrap();
         let started = Instant::now();
         let deadline = started + Duration::from_millis(2500);
-        assert!(super::super::read(&mut reader, deadline).is_err());
+        assert!(super::super::read(&mut reader, deadline, &Caller::waiting()).is_err());
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
