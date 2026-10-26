@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Reads the phone's notifications once the user grants notification access,
+             so they can be shown on the paired computer. Exported because the system
+             binds it, and protected by the permission only the system holds. The user
+             grants access in system settings; nothing is read before that. -->
+        <service
+            android:name=".L2lNotificationListener"
+            android:exported="true"
+            android:label="@string/notifications_listener_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+
+            <!-- Android 13 and later: listen to every kind of notification, not only the
+                 conversations and alerts it would pick by default. -->
+            <meta-data
+                android:name="android.service.notification.default_filter_types"
+                android:value="conversations|alerting|ongoing|silent" />
+        </service>
+    </application>
+</manifest>
