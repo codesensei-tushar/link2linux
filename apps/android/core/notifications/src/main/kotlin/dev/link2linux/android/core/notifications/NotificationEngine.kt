@@ -2,6 +2,7 @@ package dev.link2linux.android.core.notifications
 
 import com.google.protobuf.ByteString
 import dev.link2linux.protocol.v1.ErrorCode
+import dev.link2linux.protocol.v1.NotificationActionRequest
 import dev.link2linux.protocol.v1.NotificationDismissRequest
 import dev.link2linux.protocol.v1.NotificationRemovalReason
 import dev.link2linux.protocol.v1.notificationPosted
@@ -173,10 +174,22 @@ class NotificationEngine(
         refuse()?.let { return@withLock replies.send(it) }
         when (request) {
             is NotificationRequest.Sync -> handleSync(request, replies)
+            is NotificationRequest.Image -> {
+                val hash = request.message.sha256
+                val reply = if (hash.size() != 32) {
+                    failure(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "sha256 must be 32 bytes")
+                } else {
+                    images.get(hash)?.let { NotificationReply.Image(it) }
+                        ?: failure(ErrorCode.ERROR_CODE_NOT_FOUND, "no such image")
+                }
+                replies.send(reply)
+            }
             is NotificationRequest.Dismiss -> replies.send(
                 once(request.message.idempotencyKey, request.message.createdUnixMs) { dismiss(request.message) },
             )
-            else -> replies.send(failure(ErrorCode.ERROR_CODE_UNSUPPORTED))
+            is NotificationRequest.Action -> replies.send(
+                once(request.message.idempotencyKey, request.message.createdUnixMs) { act(request.message) },
+            )
         }
     }
 
@@ -404,6 +417,47 @@ class NotificationEngine(
             return failure(ErrorCode.ERROR_CODE_UNAVAILABLE, "the platform did not cancel the notification")
         }
         return NotificationReply.Ack
+    }
+
+    private fun act(request: NotificationActionRequest): NotificationReply {
+        val entry = shared[request.key] ?: return failure(ErrorCode.ERROR_CODE_NOT_FOUND, "no such notification")
+        val wire = collection[request.key]?.actionsList?.firstOrNull { it.id == request.actionId }
+        val action = entry.mapped.actions[request.actionId]
+        if (wire == null || action == null) return failure(ErrorCode.ERROR_CODE_NOT_FOUND, "no such action")
+
+        val text = request.replyText
+        val takesReply = wire.acceptsReply || wire.replyChoicesCount > 0
+        if (takesReply) {
+            if (text.isEmpty()) return failure(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "reply_text is required")
+            if (text.toByteArray(Charsets.UTF_8).size > Limits.REPLY_TEXT) {
+                return failure(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "reply_text is too long")
+            }
+            if (!wire.acceptsReply && text !in wire.replyChoicesList) {
+                return failure(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "reply_text is not one of the choices")
+            }
+        } else if (text.isNotEmpty()) {
+            return failure(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "this action takes no reply")
+        }
+
+        if (wire.requiresUnlock && environment.isLocked) {
+            return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the action needs the phone unlocked")
+        }
+        val mayStart = environment.canStartActivitiesFromBackground
+        if (action.opensActivity && !mayStart) {
+            return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the app may not open apps from the background")
+        }
+        val outcome = try {
+            action.invoker.invoke(text.ifEmpty { null }, mayStart)
+        } catch (e: RuntimeException) {
+            onError(e)
+            ActionOutcome.FAILED
+        }
+        return when (outcome) {
+            ActionOutcome.SENT -> NotificationReply.Ack
+            ActionOutcome.CANCELED -> failure(ErrorCode.ERROR_CODE_NOT_FOUND, "the app cancelled this action")
+            ActionOutcome.BLOCKED -> failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the system refused to run the action")
+            ActionOutcome.FAILED -> failure(ErrorCode.ERROR_CODE_INTERNAL, "the action failed")
+        }
     }
 
     /** Answers to Dismiss and Action requests, kept for 24 hours so a retry is not carried out twice. */
