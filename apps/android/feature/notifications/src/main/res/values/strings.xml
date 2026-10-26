@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Name shown in the system's notification access list. -->
+    <string name="notifications_listener_label">link2linux</string>
+
+    <string name="notifications_toggle_title">Show notifications on your computer</string>
+    <string name="notifications_toggle_summary">Your phone\'s notifications appear on the computers you paired with, and you can dismiss them or reply from there.</string>
+
+    <string name="notifications_access_title">Notification access</string>
+    <string name="notifications_access_granted">Allowed</string>
+    <string name="notifications_access_missing">Not allowed yet. Notifications are not shared until you allow it.</string>
+    <string name="notifications_access_open">Open settings</string>
+    <string name="notifications_access_manage">Manage</string>
+    <string name="notifications_access_restricted_hint">If the setting is greyed out because the app was installed from a file, open the app\'s info page, tap the menu and choose Allow restricted settings, then try again.</string>
+
+    <string name="notifications_dismiss_sync_title">Dismiss on this phone too</string>
+    <string name="notifications_dismiss_sync_summary">When you dismiss a notification on your computer, it is dismissed here as well.</string>
+
+    <string name="notifications_apps_title">Apps</string>
+    <string name="notifications_apps_summary">Choose which apps share their notifications. Apps are listed after they post their first notification.</string>
+    <string name="notifications_apps_empty">No apps yet.</string>
+    <string name="notifications_app_hide_text">Share without the message text</string>
+
+    <string name="notifications_rationale_title">Allow notification access?</string>
+    <string name="notifications_rationale_body">To show your notifications on your computer, link2linux has to read them on this phone, including their text and the people they come from. They are sent only to computers you paired with, over your local network, and never to a server.\n\nAndroid will take you to its settings page, where you allow access for link2linux. You can take it back there at any time.</string>
+    <string name="notifications_rationale_continue">Continue</string>
+    <string name="notifications_rationale_cancel">Not now</string>
+</resources>
