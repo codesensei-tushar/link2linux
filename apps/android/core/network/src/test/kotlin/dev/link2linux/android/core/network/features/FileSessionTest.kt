@@ -298,6 +298,44 @@ class FileSessionTest {
     }
 
     @Test
+    fun eightChunksInARowAreAllAnsweredInOrder() = runBlocking {
+        val peer = connect()
+        peer.readStart()
+        val id = ByteString.copyFrom(ByteArray(16) { 5 })
+        val piece = 32 * 1024
+        val data = ByteArray(8 * piece) { (it % 199).toByte() }
+        peer.request {
+            fileOffer = fileOffer {
+                transferId = id
+                files += fileInfo {
+                    name = "burst.bin"
+                    size = data.size.toLong()
+                }
+            }
+        }
+        // The desktop sends its window of 8 chunks before it reads any answer.
+        val seqs = io {
+            List(8) { n ->
+                peer.send {
+                    expectsReply = true
+                    fileChunk = fileChunk {
+                        transferId = id
+                        offset = n.toLong() * piece
+                        this.data = ByteString.copyFrom(data, n * piece, piece)
+                        if (n == 7) sha256 = sha256(data)
+                    }
+                }
+            }
+        }
+        val answers = io { List(8) { peer.read()!! } }
+        assertEquals(seqs, answers.map { it.replyTo })
+        assertTrue(answers.all { it.payloadCase == PayloadCase.ACK })
+        assertArrayEquals(data, store.saved["burst.bin"])
+        // The session is still up.
+        peer.assertNothingSent()
+    }
+
+    @Test
     fun withoutFilesInTheDesktopsHelloItsOffersAreUnsupported() = runBlocking {
         val peer = connect(features = emptyList())
         peer.readStart()
