@@ -298,26 +298,27 @@ async fn idle_sessions_stay_alive_by_pinging() {
     let (a, b) = duplex(64 * 1024);
     let (desk, phone_side) = tokio::join!(
         Session::handshake(a, desktop(), fast()),
-        Session::handshake(b, phone(), fast())
+        Session::handshake(b, phone(), SessionConfig::phone())
     );
     let (mut desk, mut phone_side) = (desk.unwrap(), phone_side.unwrap());
     let start = Instant::now();
 
-    // After the status reports, nothing but pings flows, for longer than
-    // the idle timeout.
+    // After the status reports, nothing but the desktop's pings flows, for
+    // longer than either side's silence limit. The phone never pings.
     let is_pong = |event: &Result<Option<SessionEvent>, SessionError>| match event {
         Ok(Some(SessionEvent::Pong { .. })) => true,
         Ok(Some(SessionEvent::FeatureStatus(_) | SessionEvent::Presence(_))) => false,
         event => panic!("unexpected {event:?}"),
     };
     let mut pongs = (0, 0);
-    while pongs.0 < 5 || pongs.1 < 5 {
+    while pongs.0 < 5 {
         tokio::select! {
             event = desk.next_event() => pongs.0 += usize::from(is_pong(&event)),
             event = phone_side.next_event() => pongs.1 += usize::from(is_pong(&event)),
         }
     }
-    assert!(start.elapsed() > fast().idle_timeout);
+    assert_eq!(pongs.1, 0);
+    assert!(start.elapsed() > FAST_SILENCE);
 }
 
 #[tokio::test(start_paused = true)]
@@ -326,10 +327,10 @@ async fn a_silent_peer_times_out() {
     let start = Instant::now();
     let err = session.next_event().await.unwrap_err();
     assert!(
-        matches!(err, SessionError::IdleTimeout(t) if t == fast().idle_timeout),
+        matches!(err, SessionError::PeerSilent(t) if t == FAST_SILENCE),
         "{err:?}"
     );
-    assert!(start.elapsed() >= fast().idle_timeout);
+    assert!(start.elapsed() >= FAST_SILENCE);
 
     // The session kept pinging while it waited.
     drop(session);

@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use link2linux_core::session::PingSchedule;
 use link2linux_core::{DeviceInfo, DeviceKind, Feature, Session, SessionConfig};
 use link2linux_protocol::v1::{FeatureAvailability, FeatureState, FeatureStatus, PresenceUpdate};
 use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload};
@@ -142,14 +143,22 @@ pub fn all_ready(features: &[&str]) -> Payload {
     })
 }
 
-/// Short timers, so paused-time tests stay readable.
+/// Short timers, so paused-time tests stay readable: a ping every second,
+/// and silence for 3 seconds ends the session.
 pub fn fast() -> SessionConfig {
     SessionConfig {
-        ping_interval: Duration::from_secs(1),
-        idle_timeout: Duration::from_secs(3),
+        ping: Some(PingSchedule {
+            active: Duration::from_secs(1),
+            idle: Duration::from_secs(1),
+            missed: 3,
+        }),
+        silence_timeout: Duration::from_secs(3),
         ..SessionConfig::default()
     }
 }
+
+/// The silence that ends a session with the [`fast`] timers.
+pub const FAST_SILENCE: Duration = Duration::from_secs(3);
 
 /// Sends `frame` from the scripted peer and returns the session's answer.
 /// The peer hangs up afterwards, so the session must report a clean close.
