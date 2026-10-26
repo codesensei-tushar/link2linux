@@ -84,7 +84,7 @@ describe("PairingPage: QR code", () => {
 
     const input = screen.getByRole("button", { name: "Type the phone's address instead" });
     input.focus();
-    api.emitPairing(qrOffer({ uri: "link2linux://pair?v=1&n=Desk&x=2", expiresInMs: 300_000 }));
+    api.emitPairing(qrOffer({ offerNumber: 2, expiresInMs: 300_000 }));
     expect(screen.getByRole("timer")).toHaveTextContent("5:00");
     expect(screen.getByRole("status", { hidden: true })).toHaveTextContent(
       "A new code is showing.",

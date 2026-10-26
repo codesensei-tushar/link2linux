@@ -53,8 +53,8 @@ fn qr_pairing_runs_through_every_step() {
     let mut m = machine(Script::Success);
     m.start_pairing(PairingMethod::QrCode, at(0)).unwrap();
     let PairingState::QrOffer {
-        uri,
         svg,
+        offer_number,
         desktop_name,
         expires_in_ms,
         lifetime_ms,
@@ -63,9 +63,8 @@ fn qr_pairing_runs_through_every_step() {
     else {
         panic!("expected a QR offer");
     };
-    assert!(uri.starts_with("link2linux://pair?v=1&f="));
-    assert_eq!(last_failure, None);
-    assert!(svg.contains("<svg"));
+    assert_eq!((offer_number, last_failure), (1, None));
+    assert!(svg.0.contains("<svg"));
     assert_eq!(desktop_name, "Desk");
     assert_eq!((expires_in_ms, lifetime_ms), (299_000, OFFER_LIFETIME_MS));
 

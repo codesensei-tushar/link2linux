@@ -15,7 +15,7 @@ use std::time::Duration;
 use link2linux_core::device::{DeviceInfo, DeviceKind, Feature};
 use link2linux_core::discovery::LocalAddress;
 use link2linux_core::identity::{CertificateFingerprint, Identity};
-use link2linux_core::pairing::QrPayload;
+use link2linux_core::pairing::{QrPayload, StoreKey};
 use link2linux_core::session::{Session, SessionConfig, SessionEvent};
 use link2linux_platform::{
     DesktopNotification, NotificationCapabilities, NotificationId, NotificationResponse,
@@ -203,6 +203,7 @@ fn start() -> Rig {
     let presenter: Arc<dyn link2linux_runtime::notify::Presenter> = sink.clone();
     let shell = Shell {
         identity: Identity::generate().unwrap(),
+        store_key: Some(StoreKey::generate()),
         drivers: Arc::new(ServiceFactory::new(
             presenter.clone(),
             Some(data.path().join("images")),
@@ -223,17 +224,62 @@ fn start() -> Rig {
 /// Shows a QR code and returns what a phone reads from it.
 async fn show_code(rig: &Rig) -> QrPayload {
     rig.runtime.start_pairing(PairingMethod::QrCode).unwrap();
-    let uri = rig
+    let svg = rig
         .events
         .pairing_matching(|state| match state {
-            PairingState::QrOffer { uri, svg, .. } => {
-                assert!(svg.contains("<svg"), "the code is drawn");
-                Some(uri.clone())
-            }
+            PairingState::QrOffer { svg, .. } => Some(svg.0.clone()),
             _ => None,
         })
         .await;
+    let uri = scan(&svg);
+    // The code holds the secret: debug output shows neither it nor the URI.
+    let printed = format!("{:?}", rig.runtime.pairing());
+    assert!(
+        !printed.contains(&uri) && !printed.contains("<svg"),
+        "{printed}"
+    );
     QrPayload::parse(&uri).unwrap()
+}
+
+/// Reads the code in an SVG from the runtime, as a phone's camera does.
+/// The window only ever gets the image, not the URI with the secret.
+fn scan(svg: &str) -> String {
+    fn attr<'a>(svg: &'a str, name: &str) -> &'a str {
+        let key = format!("{name}=\"");
+        let start = svg.find(&key).unwrap() + key.len();
+        &svg[start..start + svg[start..].find('"').unwrap()]
+    }
+    let modules: usize = attr(svg, "viewBox")
+        .rsplit(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut dark = vec![false; modules * modules];
+    // One run of dark modules each: M<x> <y>h<length>v1h-<length>z
+    for run in attr(svg, "d").split('z').filter(|run| !run.is_empty()) {
+        let (origin, rest) = run.trim_start_matches('M').split_once('h').unwrap();
+        let (x, y) = origin.split_once(' ').unwrap();
+        let (length, _) = rest.split_once('v').unwrap();
+        let (x, y, length): (usize, usize, usize) = (
+            x.parse().unwrap(),
+            y.parse().unwrap(),
+            length.parse().unwrap(),
+        );
+        dark[y * modules + x..y * modules + x + length].fill(true);
+    }
+    let scale = 4;
+    let size = modules * scale;
+    let mut image = rqrr::PreparedImage::prepare_from_greyscale(size, size, |x, y| {
+        if dark[(y / scale) * modules + x / scale] {
+            0
+        } else {
+            255
+        }
+    });
+    let grids = image.detect_grids();
+    let (_, content) = grids[0].decode().expect("the code decodes");
+    content
 }
 
 /// Pairs the stand-in phone by QR code and returns the desktop's key.

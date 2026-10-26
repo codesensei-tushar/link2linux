@@ -100,8 +100,8 @@ function QrPanel({ step }: { step: Extract<Step, { step: "qrOffer" }> }) {
   const image = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(step.svg)}`;
   const failure = step.lastFailure ? failureCopy[step.lastFailure] : null;
   // Announce a renewed code, but not the first one (the title covers that).
-  const [firstUri] = useState(step.uri);
-  const renewed = firstUri !== step.uri;
+  const [firstOffer] = useState(step.offerNumber);
+  const renewed = firstOffer !== step.offerNumber;
 
   return (
     <Panel title="Scan with your phone" className="pairing-panel--qr" ownsError>
@@ -113,7 +113,7 @@ function QrPanel({ step }: { step: Extract<Step, { step: "qrOffer" }> }) {
             alt={`QR code for pairing with ${step.desktopName}`}
           />
           <Countdown
-            key={step.uri}
+            key={step.offerNumber}
             expiresInMs={step.expiresInMs}
             lifetimeMs={step.lifetimeMs}
             label="New code in"

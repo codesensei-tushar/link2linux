@@ -12,7 +12,7 @@ use link2linux_core::discovery::onlink::{LocalAddress, local_addresses};
 use link2linux_core::discovery::{DiscoveryKeys, LanConfig, PairedKey, SecretBytes};
 use link2linux_core::identity::{Identity, IdentityError};
 use link2linux_core::pairing::{
-    DEFAULT_BEACON_PORT, FileTrustStore, PairedDevice, PairingError, TrustStore,
+    DEFAULT_BEACON_PORT, FileTrustStore, PairedDevice, PairingError, StoreKey, TrustStore,
 };
 use link2linux_core::session::SessionStart;
 use link2linux_core::transport::{DialTimeouts, TlsDialer, TransportError};
@@ -67,6 +67,10 @@ pub struct Shell {
     /// [`DataDir::load_identity`](crate::paths::DataDir::load_identity)
     /// before starting, since the keyring may prompt the user.
     pub identity: Identity,
+    /// Seals the phones' presence keys in the pairing file, from
+    /// [`DataDir::load_store_key`](crate::paths::DataDir::load_store_key).
+    /// `None` keeps them there in clear.
+    pub store_key: Option<StoreKey>,
     /// Shows banners on the desktop.
     pub presenter: Arc<dyn Presenter>,
     /// Receives every change as a snapshot.
@@ -156,7 +160,7 @@ pub(crate) struct Core {
     pub extra_locals: Vec<LocalAddress>,
     pub keys: watch::Sender<DiscoveryKeys>,
     pub evidence: Mutex<Evidence>,
-    pub offer_secret: Mutex<Option<Vec<u8>>>,
+    pub offer_secret: Mutex<Option<SecretBytes>>,
     pub ble_address: Mutex<Option<[u8; 6]>>,
     pub active: AtomicBool,
     pub cancel: CancellationToken,
@@ -175,7 +179,7 @@ impl Core {
     ) -> Result<Arc<Self>, RuntimeError> {
         config.data_dir.create()?;
         let identity = shell.identity;
-        let store = FileTrustStore::open(config.data_dir.trust_store())?;
+        let store = FileTrustStore::open_sealed(config.data_dir.trust_store(), shell.store_key)?;
         let id = config.data_dir.load_or_create_device_id()?;
         let name = config.desktop_name.clone().unwrap_or_else(desktop_name);
         let mut dialer = TlsDialer::new(&identity)?;
@@ -370,7 +374,7 @@ impl Core {
                 })
             })
             .collect();
-        let offer_secret = lock(&self.offer_secret).clone().map(SecretBytes::new);
+        let offer_secret = lock(&self.offer_secret).clone();
         self.keys.send_replace(DiscoveryKeys {
             paired,
             offer_secret,

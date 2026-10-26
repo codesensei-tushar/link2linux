@@ -6,10 +6,10 @@
 //!
 //! - [`PairingMethod::QrCode`] is the QR pairing mode and
 //!   [`PairingMethod::Sas`] is the short-authentication-string mode.
-//! - [`PairingState::QrOffer`] is one active offer. `uri` is the
-//!   `link2linux://pair?...` payload and `svg` is the code drawn from it;
-//!   offers last 5 minutes and are replaced by a new one shortly before they
-//!   expire.
+//! - [`PairingState::QrOffer`] is one active offer. `svg` is the code drawn
+//!   from its `link2linux://pair?...` payload, which holds the pairing
+//!   secret and is never sent by itself; offers last 5 minutes and are
+//!   replaced by a new one shortly before they expire.
 //! - [`PairingState::Searching`] lists phones whose mDNS record advertises
 //!   `pm=1`. [`PhoneTarget::Address`] is the typed `IP:port` fallback.
 //! - [`PairingState::SasCode`] carries the six digits, grouped for display by
@@ -18,6 +18,8 @@
 //! - [`Device`] comes from the pairing record plus the session state.
 //!   `reconnecting` covers the first two minutes after a session is lost,
 //!   `revoked` is a record the phone has told us it removed.
+
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -70,10 +72,12 @@ pub enum PairingState {
     /// A QR code is on screen, waiting for a phone to scan it.
     #[serde(rename_all = "camelCase")]
     QrOffer {
-        /// The `link2linux://pair?...` payload held by the code.
-        uri: String,
         /// The code as an SVG document, black on white so it scans in any theme.
-        svg: String,
+        #[specta(type = String)]
+        svg: QrImage,
+        /// Which code of this activation it is, from 1. A new one replaces
+        /// it shortly before it expires.
+        offer_number: u8,
         /// The name the phone will see for this computer.
         desktop_name: String,
         /// Time left until this offer is replaced.
@@ -124,6 +128,18 @@ pub enum PairingState {
         method: PairingMethod,
         reason: PairingFailure,
     },
+}
+
+/// A QR code drawn as an SVG document. It holds the pairing secret, so its
+/// `Debug` output leaves it out.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct QrImage(pub String);
+
+impl fmt::Debug for QrImage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("QrImage(..)")
+    }
 }
 
 /// Why pairing did not finish.

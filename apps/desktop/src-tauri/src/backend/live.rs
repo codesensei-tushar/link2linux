@@ -47,11 +47,11 @@ impl LiveBackend {
         open_window: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, RuntimeError> {
         let data_dir = DataDir::from_env()?;
+        let keyring = SecretServiceStore::new(APP_ID);
         // Waits while the keyring asks the user to unlock it, within the
         // store's timeouts.
-        let identity = tauri::async_runtime::block_on(
-            data_dir.load_identity(&SecretServiceStore::new(APP_ID)),
-        )?;
+        let identity = tauri::async_runtime::block_on(data_dir.load_identity(&keyring))?;
+        let store_key = tauri::async_runtime::block_on(data_dir.load_store_key(&keyring));
         // Pictures stay off the disk: in the runtime directory, or else
         // only in memory.
         if let Err(error) = data_dir.remove_old_images() {
@@ -69,6 +69,7 @@ impl LiveBackend {
         let presenter: Arc<dyn Presenter> = popups.clone();
         let shell = Shell {
             identity,
+            store_key,
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), images)),
             presenter,
             events,

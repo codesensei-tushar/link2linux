@@ -18,7 +18,8 @@ pub use link2linux_runtime::notify::CachedImage;
 pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, Device, DeviceStatus, DiscoveredPhone, EventSink, MirroredNotification,
-    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneTarget, StartupError,
+    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneTarget, QrImage,
+    StartupError,
 };
 
 /// What the desktop shell needs from the pairing and device layer.

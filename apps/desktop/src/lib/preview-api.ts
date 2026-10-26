@@ -39,8 +39,8 @@ export function createPreviewApi(search: string = globalThis.location.search): D
 
   const qr: PairingState = {
     step: "qrOffer",
-    uri: "link2linux://pair?v=1",
     svg: previewSvg(),
+    offerNumber: 1,
     desktopName: "This computer",
     expiresInMs: 272_000,
     lifetimeMs: 300_000,
