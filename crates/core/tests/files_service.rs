@@ -198,6 +198,8 @@ enum Command {
     ExpireIn(Duration),
     /// When the service has something to do by itself.
     Deadline(oneshot::Sender<Option<Instant>>),
+    /// The user removed a finished transfer from the list.
+    Forget(TransferId),
 }
 
 /// A service on its session, driven the way the runtime drives it.
@@ -232,6 +234,9 @@ impl Driven {
                             }
                             Some(Command::Deadline(reply)) => {
                                 let _ = reply.send(service.next_deadline());
+                            }
+                            Some(Command::Forget(id)) => {
+                                service.forget(id);
                             }
                             Some(Command::Switch(availability)) => {
                                 if session.set_availability(Feature::Files, availability).await.is_err() {
@@ -277,6 +282,10 @@ impl Driven {
         self.commands.send(Command::Switch(availability)).unwrap();
     }
 
+    fn forget(&self, id: TransferId) {
+        self.commands.send(Command::Forget(id)).unwrap();
+    }
+
     fn expire_in(&self, later: Duration) {
         self.commands.send(Command::ExpireIn(later)).unwrap();
     }
@@ -319,6 +328,21 @@ impl Driven {
         })
         .await
         .unwrap_or_else(|_| panic!("transfer {id} never became {state:?}"))
+    }
+
+    /// Waits for the event that removes transfer `id` from the list.
+    async fn reaches_removal(&mut self, id: TransferId) {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match self.events.recv().await {
+                    Ok(TransferEvent::Removed(removed)) if removed == id => return,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("the service stopped"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("transfer {id} never left the list"));
     }
 
     /// Waits until transfer `id` is in `state`, whatever the events said
@@ -1438,6 +1462,39 @@ async fn transfers_waiting_their_turn_keep_while_the_phone_is_there() {
     assert_eq!(state(&service), TransferState::Waiting);
     service.expire(Instant::now() + KEEP_UNFINISHED).await;
     assert_eq!(state(&service), TransferState::Failed(Failure::Expired));
+}
+
+#[tokio::test]
+async fn a_transfer_that_arrived_is_complete_when_offered_again_after_leaving_the_list() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let id = [3; 16];
+    let files: [(&str, &[u8]); 2] = [("a", b"one"), ("b", b"two")];
+    assert_eq!(phone.offer(id, &files).await, accept(0, 0));
+    for (index, (_, data)) in files.iter().enumerate() {
+        assert!(
+            phone
+                .send_file(id, index as u32, data, 0)
+                .await
+                .iter()
+                .all(is_ack)
+        );
+    }
+    desktop
+        .reaches(TransferId(id), TransferState::Completed)
+        .await;
+    desktop.forget(TransferId(id));
+    desktop.reaches_removal(TransferId(id)).await;
+
+    // The phone missed the last answer and offers it again: nothing is
+    // received twice.
+    assert_eq!(phone.offer(id, &files).await, accept(2, 0));
+    let other: [(&str, &[u8]); 1] = [("a", b"one")];
+    assert_eq!(
+        code_of(&phone.offer(id, &other).await),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(names_in(downloads.path()), ["a", "b"]);
 }
 
 /// A phone running the same service, on the other end of a pipe.

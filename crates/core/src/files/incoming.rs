@@ -144,7 +144,13 @@ impl Incoming {
         self.started_unix_ms
     }
 
-    fn size(&self) -> u64 {
+    /// How many files the transfer has.
+    pub(super) fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Bytes of all its files.
+    pub(super) fn size(&self) -> u64 {
         self.files
             .iter()
             .fold(0, |total, target| total.saturating_add(target.size))

@@ -100,6 +100,11 @@ pub struct FileService {
     /// phone answers a request sent after them: it answers file requests
     /// one at a time, in the order they came, so it has answered these too.
     lost_chunks: Vec<u64>,
+    /// Transfers from the phone that arrived, with their number of files,
+    /// their bytes and when they arrived, kept for [`KEEP_UNFINISHED`]: one
+    /// offered again, as when the phone missed the last answer, is answered
+    /// as complete even after it left the list.
+    completed: HashMap<TransferId, (usize, u64, Instant)>,
     /// Transfers from the phone that the user ended here, with when, kept
     /// for [`KEEP_UNFINISHED`]: offering one again gets `DECLINED`.
     declined: HashMap<TransferId, Instant>,
@@ -120,6 +125,7 @@ impl FileService {
             ready: false,
             lost_chunks: Vec::new(),
             declined: HashMap::new(),
+            completed: HashMap::new(),
             events: broadcast::channel(256).0,
         }
     }
@@ -355,6 +361,8 @@ impl FileService {
             }
         }
         self.declined.retain(|_, at| now < *at + KEEP_UNFINISHED);
+        self.completed
+            .retain(|_, (_, _, at)| now < *at + KEEP_UNFINISHED);
         if !changed.is_empty() {
             tracing::info!(transfers = changed.len(), "unfinished transfers expired");
             for view in changed {
@@ -507,6 +515,22 @@ impl FileService {
             self.publish(TransferEvent::Changed(view));
             return Payload::FileAccept(accept);
         }
+        if let Some((files, size, _)) = self.completed.get(&id) {
+            let offered = offer
+                .files
+                .iter()
+                .fold(0, |total: u64, file| total.saturating_add(file.size));
+            if offer.files.len() != *files || offered != *size {
+                return error(
+                    ErrorCode::InvalidArgument,
+                    "the offer does not match the transfer it repeats",
+                );
+            }
+            return Payload::FileAccept(FileAccept {
+                file_index: u32::try_from(*files).unwrap_or(u32::MAX),
+                offset: 0,
+            });
+        }
 
         let running = self
             .incoming
@@ -598,6 +622,8 @@ impl FileService {
                 transfer.state = TransferState::Completed;
                 transfer.live = false;
                 tracing::info!(transfer = %transfer.id, "received files");
+                let arrived = (transfer.file_count(), transfer.size(), Instant::now());
+                self.completed.insert(transfer.id, arrived);
                 let view = transfer.view();
                 self.publish(TransferEvent::Changed(view));
                 self.prune();
