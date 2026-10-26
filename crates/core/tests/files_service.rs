@@ -7,7 +7,7 @@ mod session_common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use aws_lc_rs::digest;
 use futures_util::{SinkExt, StreamExt};
@@ -918,22 +918,13 @@ async fn unfinished_transfers_from_the_phone_expire_after_an_hour() {
 fn leftovers_of_an_earlier_run_are_removed() {
     let downloads = tempfile::tempdir().unwrap();
     let leftover = format!(".link2linux-{}-0.part", "ab".repeat(16));
-    let long_ago = SystemTime::now() - Duration::from_secs(3 * 60 * 60);
-    let path = downloads.path().join(&leftover);
-    fs::write(&path, b"partial").unwrap();
-    fs::File::options()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_modified(long_ago)
-        .unwrap();
+    let recent = format!(".link2linux-{}-0.part", "cd".repeat(16));
+    fs::write(downloads.path().join(&leftover), b"partial").unwrap();
+    fs::write(downloads.path().join(&recent), b"partial").unwrap();
     fs::write(downloads.path().join("mine.txt"), b"mine").unwrap();
-    // Another instance may be writing this one just now.
-    let busy = format!(".link2linux-{}-0.part", "cd".repeat(16));
-    fs::write(downloads.path().join(&busy), b"partial").unwrap();
     let removed = link2linux_core::files::remove_leftovers(downloads.path()).unwrap();
-    assert_eq!(removed, 1);
-    assert_eq!(names_in(downloads.path()), [busy.as_str(), "mine.txt"]);
+    assert_eq!(removed, 2);
+    assert_eq!(names_in(downloads.path()), ["mine.txt"]);
 }
 
 /// Reads the desktop's offer and checks it names `id`, when given.

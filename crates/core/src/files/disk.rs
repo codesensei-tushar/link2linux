@@ -14,7 +14,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind};
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use aws_lc_rs::digest;
 use rustix::fs::{CWD, OFlags, RenameFlags};
@@ -176,14 +176,10 @@ pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
     Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
-/// How recently a temporary file must have been written to be left alone
-/// as the work of another running instance of the app.
-const LEFTOVER_AGE: Duration = Duration::from_secs(2 * 60 * 60);
-
 /// Removes the temporary files that transfers of an earlier run left in
-/// `dir`, and returns how many there were. A missing `dir` has none. Files
-/// written in the last two hours stay: another instance of the app may be
-/// downloading into them.
+/// `dir`, and returns how many there were. A missing `dir` has none. Only
+/// call it while holding the [`InstanceLock`]: another running instance of
+/// the app may be downloading into such files.
 pub(crate) fn remove_leftovers(dir: &Path) -> io::Result<usize> {
     let entries = match fs::read_dir(dir) {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
@@ -193,18 +189,6 @@ pub(crate) fn remove_leftovers(dir: &Path) -> io::Result<usize> {
     for entry in entries {
         let entry = entry?;
         if is_temp_name(&entry.file_name()) && entry.file_type()?.is_file() {
-            let recent = entry
-                .metadata()
-                .and_then(|meta| meta.modified())
-                .is_ok_and(|modified| {
-                    SystemTime::now()
-                        .duration_since(modified)
-                        .is_ok_and(|age| age < LEFTOVER_AGE)
-                        || modified > SystemTime::now()
-                });
-            if recent {
-                continue;
-            }
             match fs::remove_file(entry.path()) {
                 Ok(()) => removed += 1,
                 Err(error) => tracing::warn!(%error, "could not remove an unfinished download"),
@@ -212,6 +196,36 @@ pub(crate) fn remove_leftovers(dir: &Path) -> io::Result<usize> {
         }
     }
     Ok(removed)
+}
+
+/// The claim of one running instance of the app on the unfinished downloads
+/// in Downloads: an exclusive lock on a file, held until this is dropped or
+/// the process ends, however it ends.
+#[derive(Debug)]
+pub struct InstanceLock {
+    _file: File,
+}
+
+impl InstanceLock {
+    /// Locks the file at `path`, creating it. `None` means another instance
+    /// holds the lock.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be opened or locked.
+    pub fn acquire(path: &Path) -> io::Result<Option<Self>> {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 /// Removes `path` if it is there.
@@ -388,24 +402,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let temp = dir.path().join(temp_name(id(), 3));
         fs::write(&temp, b"partial").unwrap();
-        File::options()
-            .write(true)
-            .open(&temp)
-            .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(3 * 60 * 60))
-            .unwrap();
         fs::write(dir.path().join("keep.txt"), b"mine").unwrap();
-        // One written a moment ago may be another instance's download.
+        // However recent, an unfinished download is a leftover.
         let fresh = dir.path().join(temp_name(TransferId([2; 16]), 0));
         fs::write(&fresh, b"partial").unwrap();
         // A directory with a temporary name is not ours to remove.
         fs::create_dir(dir.path().join(temp_name(TransferId([1; 16]), 0))).unwrap();
 
-        assert_eq!(remove_leftovers(dir.path()).unwrap(), 1);
+        assert_eq!(remove_leftovers(dir.path()).unwrap(), 2);
         assert!(!temp.exists());
-        assert!(fresh.exists());
+        assert!(!fresh.exists());
         assert!(dir.path().join("keep.txt").exists());
         assert_eq!(remove_leftovers(&dir.path().join("missing")).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_instance_lock_is_held_by_one_owner_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("files.lock");
+        let first = InstanceLock::acquire(&path).unwrap().expect("free");
+        assert!(InstanceLock::acquire(&path).unwrap().is_none());
+        drop(first);
+        assert!(InstanceLock::acquire(&path).unwrap().is_some());
     }
 
     #[test]

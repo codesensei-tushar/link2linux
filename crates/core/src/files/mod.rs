@@ -50,6 +50,7 @@ pub use outgoing::{SendError, check_sendable};
 pub fn shown_name(name: &str) -> String {
     names::shown(name)
 }
+pub use disk::InstanceLock;
 pub use service::{FileService, IncomingBytes, ServiceError};
 
 /// The most bytes of a file one chunk carries.
@@ -239,8 +240,10 @@ pub enum TransferEvent {
 
 /// Removes the temporary files that transfers left in `dir` when the app
 /// ended before they finished, and returns how many there were. Call it
-/// once when the app starts, before any session: transfers are never kept
-/// across a restart. It reads the directory, so it blocks.
+/// once when the app starts, before any session, and only while holding the
+/// [`InstanceLock`]: transfers are never kept across a restart, but another
+/// running instance may be writing such files. It reads the directory, so it
+/// blocks.
 ///
 /// # Errors
 ///
