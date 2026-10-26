@@ -19,6 +19,7 @@ import org.junit.Test
 import java.net.BindException
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.security.interfaces.ECPrivateKey
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -60,6 +61,33 @@ class TlsServerTest {
         }
         val phoneSide = runCatching { server.secure(listener.accept()) }
         return phoneSide to client
+    }
+
+    @Test
+    fun aClientThatSendsAByteNowAndThenIsCutOffAtTheHandshakeDeadline() {
+        val server = server { true }
+        val listener = server.listen(port = 0, address = InetAddress.getLoopbackAddress()).also { listeners += it }
+        val dribbler = executor.submit {
+            Socket(InetAddress.getLoopbackAddress(), listener.localPort).use { socket ->
+                // A TLS record header that promises 512 bytes, then one byte every 200 ms:
+                // each read finishes well within the per-read timeout.
+                socket.getOutputStream().write(byteArrayOf(0x16, 0x03, 0x01, 0x02, 0x00))
+                repeat(100) {
+                    Thread.sleep(200)
+                    socket.getOutputStream().write(1)
+                }
+            }
+        }
+        val accepted = listener.accept()
+
+        val started = System.nanoTime()
+        val result = runCatching { server.secure(accepted, handshakeTimeoutMillis = 1_000) }
+        val tookMillis = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue(result.isFailure)
+        assertTrue("The handshake took $tookMillis ms", tookMillis < 3_000)
+        assertTrue(accepted.isClosed)
+        dribbler.cancel(true)
     }
 
     @Test

@@ -58,18 +58,22 @@ interface BeaconTransport {
  * A burst starts when a condition begins to hold (the service got a port,
  * the phone joined a network, a session was lost, a desktop was paired) or on
  * [trigger] (the system reported the desktop nearby); it stops when the
- * condition ends or its schedule runs out.
+ * condition ends or its schedule runs out. Anyone in radio range can make
+ * the system report the desktop again and again, so [trigger] does nothing
+ * within [TRIGGER_GAP_MILLIS] of the last presence burst's start.
  */
 class BeaconEngine(
     private val scope: CoroutineScope,
     private val transport: BeaconTransport,
     private val random: RandomBytes = SecureRandomBytes(),
+    private val elapsedMillis: () -> Long = { System.nanoTime() / 1_000_000 },
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
 ) {
     private var inputs = BeaconInputs()
     private var pairingJob: Job? = null
     private var pairingSecretKey: Any? = null
     private var presenceJob: Job? = null
+    private var presenceStartedAt: Long? = null
 
     @Synchronized
     fun update(new: BeaconInputs) {
@@ -79,9 +83,11 @@ class BeaconEngine(
         updatePresence(old, new)
     }
 
-    /** Starts a new presence burst now, if one is wanted. */
+    /** Starts a new presence burst now, if one is wanted and the last one did not start moments ago. */
     @Synchronized
     fun trigger() {
+        val last = presenceStartedAt
+        if (last != null && elapsedMillis() - last < TRIGGER_GAP_MILLIS) return
         if (presenceWanted(inputs)) startPresence()
     }
 
@@ -142,6 +148,7 @@ class BeaconEngine(
     }
 
     private fun startPresence() {
+        presenceStartedAt = elapsedMillis()
         presenceJob?.cancel()
         presenceJob = scope.launch {
             transport.onBurstStart(BurstKind.PRESENCE)
@@ -159,6 +166,11 @@ class BeaconEngine(
                 true
             }
         }
+    }
+
+    companion object {
+        /** The shortest time between presence bursts that [trigger] starts. */
+        const val TRIGGER_GAP_MILLIS: Long = 60_000
     }
 
     /** Calls [step] at each offset; stops early when it returns false. */

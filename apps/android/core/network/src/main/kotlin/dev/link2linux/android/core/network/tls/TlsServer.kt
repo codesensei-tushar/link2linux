@@ -19,6 +19,9 @@ import java.net.Socket
 import java.security.Provider
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocket
@@ -77,11 +80,24 @@ class TlsServer(
      * checks the protocol version and ALPN. Blocking; closes [socket] on
      * failure.
      *
+     * @param handshakeTimeoutMillis how long the whole handshake may take.
+     *   The socket is closed when it runs out, so a client that sends a byte
+     *   now and then cannot hold the handshake open.
      * @param idleTimeoutMillis how long a read may wait once the connection
      *   is up. The desktop pings at least once a minute, so a longer silence
      *   means the connection is gone.
      */
     fun secure(socket: Socket, handshakeTimeoutMillis: Int = HANDSHAKE_TIMEOUT_MILLIS, idleTimeoutMillis: Int = IDLE_TIMEOUT_MILLIS): TlsTransport {
+        // SO_TIMEOUT bounds each read, not the handshake; closing the socket does.
+        val deadline = deadlines.schedule({ runCatching { socket.close() } }, handshakeTimeoutMillis.toLong(), TimeUnit.MILLISECONDS)
+        try {
+            return handshake(socket, handshakeTimeoutMillis, idleTimeoutMillis)
+        } finally {
+            deadline.cancel(false)
+        }
+    }
+
+    private fun handshake(socket: Socket, handshakeTimeoutMillis: Int, idleTimeoutMillis: Int): TlsTransport {
         try {
             socket.soTimeout = handshakeTimeoutMillis
             val tls = context.socketFactory.createSocket(socket, socket.inetAddress.hostAddress, socket.port, true) as SSLSocket
@@ -133,6 +149,11 @@ class TlsServer(
 
         private const val TLS_13 = "TLSv1.3"
         private const val BACKLOG = 8
+
+        /** Closes sockets whose handshake ran out of time. Its task never blocks. */
+        private val deadlines: ScheduledExecutorService by lazy {
+            Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "l2l-tls-deadline").apply { isDaemon = true } }
+        }
     }
 }
 

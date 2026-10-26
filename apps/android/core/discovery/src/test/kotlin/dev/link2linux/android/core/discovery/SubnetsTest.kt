@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
@@ -57,5 +58,21 @@ class SubnetsTest {
             setOf(InetSocketAddress(ip("192.168.43.255"), port), laptop),
             Subnets.beaconTargets(hotspot, listOf(laptop, InetSocketAddress(ip("192.168.1.20"), port)), port),
         )
+    }
+
+    @Test
+    fun theNetworksOwnTheirAddressesAndNoOthers() {
+        val networks = listOf(network)
+        assertTrue(networks.ownsAddress(ip("192.168.1.5")))
+        assertTrue(networks.ownsAddress(ip("fd00::5")))
+        assertTrue(networks.ownsAddress(ip("fe80::1")))
+        // An IPv4 connection on a dual-stack socket can report its address IPv4-mapped.
+        val mapped = Inet6Address.getByAddress(null, ByteArray(10) + byteArrayOf(-1, -1, -64, -88, 1, 5), -1)
+        assertTrue(mapped is Inet6Address && networks.ownsAddress(mapped))
+        // Another address in the same subnet is the desktop's, not the phone's.
+        assertFalse(networks.ownsAddress(ip("192.168.1.6")))
+        assertFalse(networks.ownsAddress(ip("100.64.0.1")))
+        assertFalse(networks.ownsAddress(ip("127.0.0.1")))
+        assertFalse(emptyList<LocalNetwork>().ownsAddress(ip("192.168.1.5")))
     }
 }

@@ -16,14 +16,24 @@ data class NetworkAddress(val address: InetAddress, val prefixLength: Int)
  *
  * A tethered network is one the phone hosts for a computer: its Wi-Fi
  * hotspot, or USB or Bluetooth tethering. Its [id] is negative, so it never
- * equals the id of a platform network.
+ * equals the id of a platform network. Its [addresses] are only the private
+ * IPv4 ones that make it count; [ownAddresses] has every address of its
+ * interface, as a desktop may dial any of them.
  */
 data class LocalNetwork(
     val id: Long,
     val addresses: List<NetworkAddress>,
     val handle: Any? = null,
     val tethered: Boolean = false,
+    /** Every address the phone has on this network: the ones the listener takes connections on. */
+    val ownAddresses: List<InetAddress> = addresses.map { it.address },
 )
+
+/** Whether [address] is one the phone has on one of these networks. An IPv4-mapped IPv6 address counts as its IPv4 address. */
+fun List<LocalNetwork>.ownsAddress(address: InetAddress): Boolean {
+    val wanted = Subnets.unmapped(address.address)
+    return any { network -> network.ownAddresses.any { Subnets.unmapped(it.address).contentEquals(wanted) } }
+}
 
 /**
  * The networks the phone is on, whether or not they reach the internet: Wi-Fi
@@ -74,6 +84,13 @@ object Subnets {
         return network.addresses.any { (own, prefix) ->
             own.javaClass == target.javaClass && sharesPrefix(own.address, target.address, prefix)
         }
+    }
+
+    /** The 4 bytes of an IPv4-mapped IPv6 address (::ffff:a.b.c.d); any other address as it is. */
+    fun unmapped(address: ByteArray): ByteArray {
+        val mapped = address.size == 16 && (0 until 10).all { address[it] == 0.toByte() } &&
+            address[10] == (-1).toByte() && address[11] == (-1).toByte()
+        return if (mapped) address.copyOfRange(12, 16) else address
     }
 
     private fun sharesPrefix(a: ByteArray, b: ByteArray, prefixLength: Int): Boolean {

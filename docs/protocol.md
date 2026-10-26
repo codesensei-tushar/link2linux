@@ -87,6 +87,14 @@ available, and otherwise in a file only the user can read (mode 0600). The
 phone keeps its private key in the Android Keystore, where it cannot be
 exported.
 
+A receiver checks the peer's `Hello` against these rules: a `device_id`
+that is not 1 to 64 ASCII letters, digits and hyphens is a protocol error
+(the desktop app so far sends `desktop-` and 32 hex digits, so receivers
+accept more than a UUID), and a `device_name` longer than 64 bytes is cut at
+a character boundary after control and bidirectional formatting characters
+are removed. An
+`app_version` longer than 32 bytes is cut too.
+
 Peers recognize each other by `fp`, never by anything else in the
 certificate: names, validity dates and extensions are ignored. A device can
 therefore reissue its certificate for the same key at any time, for example
@@ -120,6 +128,11 @@ any other port, which it then advertises. It runs its connection service
 a pairing is under way, unless the user turned link2linux off. The service
 keeps running when the phone leaves Wi-Fi or Ethernet: it closes the
 listener and stops announcing until the phone is on such a network again.
+While it listens, the phone takes connections only on its own addresses on
+the local networks it is on or hosts (see [Hotspot and
+tethering](#hotspot-and-tethering)). It closes a connection that arrived on
+any other of its addresses, such as one on mobile data or a VPN, before the
+TLS handshake.
 It does not stop and restart with the network, because Android lets an app
 start a foreground service from the background only in a few cases. The
 service starts at boot and when the app is opened, and from the background
@@ -301,9 +314,10 @@ and hotspot state broadcasts, and every 10 seconds as a backstop. An
 interface counts as a tethered network when it is up, is not loopback, has a
 private IPv4 address (10/8, 172.16/12 or 192.168/16, with the interface's
 prefix length), does not belong to a network Android reports, and is not a
-mobile-data, VPN, 464XLAT or Wi-Fi Direct interface (names starting `lo`,
-`rmnet`, `r_rmnet`, `ccmni`, `ccinet`, `seth`, `sipa`, `epdg`, `tun`, `tap`,
-`ipsec`, `clat`, `v4-`, `dummy`, `p2p`). No interface name says "hotspot": the names differ by maker (`wlan1`,
+mobile-data, VPN, 464XLAT, Wi-Fi Direct or Wi-Fi Aware interface (names
+starting `lo`, `rmnet`, `r_rmnet`, `rev_rmnet`, `ccmni`, `ccinet`, `seth`,
+`sipa`, `epdg`, `wwan`, `tun`, `tap`, `ipsec`, `ppp`, `wg`, `clat`, `v4-`,
+`dummy`, `p2p`, `aware_data`, `nan`). No interface name says "hotspot": the names differ by maker (`wlan1`,
 `ap0`, `swlan0`, `softap0`; `rndis0`, `ncm0`, `usb0` for USB; `bt-pan` for
 Bluetooth), so the phone excludes known non-tethering names instead of
 listing known tethering ones.
@@ -353,7 +367,8 @@ appears and lets it start its connection service from the background. On
 Android 16 and later it also exempts the app from battery restrictions
 while the desktop is in range. Detection can take tens of seconds while the
 phone's screen is off, and may flap. On such a presence event the phone
-starts a beacon burst. The foreground service, not the association, is what
+starts a beacon burst, unless its last burst started less than a minute
+ago: anyone in radio range can replay the advertisement and make it flap. The foreground service, not the association, is what
 keeps the connection alive.
 
 - The advertisement is connectable, so the controller sends it from the
@@ -548,7 +563,9 @@ screen.
 
 The user turns on "pair without camera" on the phone. For the next 2
 minutes, the phone accepts one pairing connection at a time from any
-desktop, advertises `pm=1`, keeps its mDNS instance name fixed, and shows
+desktop (a host whose connections twice took that slot and ended before
+the phone revealed its nonce gets no more for the rest of the 2 minutes),
+advertises `pm=1`, keeps its mDNS instance name fixed, and shows
 that name (as Android registered it) and its address on screen. The desktop lists the phones that
 advertise `pm=1` by instance name, the user picks the one their phone
 shows (or types its address when mDNS does not get through), and the
@@ -752,6 +769,22 @@ the TLS 1.2 suites and would then find no certificate. The exporter is
 `export_keying_material` in rustls and `Conscrypt.exportKeyingMaterial`
 on the phone, both called after the handshake with the 64-byte context.
 
+Until a connection has finished its TLS handshake and its Hello exchange,
+the phone knows nothing about the host behind it. So it limits such
+connections:
+
+- The TLS handshake must finish within 10 seconds of starting, and the
+  Hello exchange within 10 seconds after that; the phone closes the
+  connection otherwise. These are deadlines for the whole step, not for
+  each read.
+- At most 8 such connections at a time, and at most 2 from one host (one
+  IPv4 address, or one IPv6 /64 prefix). The phone closes any more as soon
+  as it accepts them.
+- Handshakes run on a few threads of their own, so stalled ones cannot
+  hold up the rest of the app.
+- A failed `accept` (for example when the app is out of file descriptors)
+  is retried after a short pause; the listener stays open.
+
 ### Framing
 
 Each frame is a varint holding the length of one serialized `Envelope`,
@@ -843,6 +876,9 @@ only answers can let its radio sleep.
   wake-ups a day. A local network has no NAT state to keep alive, so a
   shorter interval only buys faster detection of a lost connection.
 - Any frame counts as a sign of life, not only `Pong`.
+- The phone closes a connection when writing one envelope takes longer
+  than 30 seconds: the desktop has stopped reading, and its unread data
+  would otherwise hold up everything the phone sends on it.
 
 ### One session per pair
 
@@ -850,7 +886,9 @@ A desktop and a phone have at most one session with each other. When a new
 connection from a paired desktop (the same record, found by `fp`) completes
 its Hello exchange while an older session with that desktop is still open, the phone sends `Goodbye`
 with `GOODBYE_REASON_REPLACED` on the old connection and closes it. This
-resolves half-open connections left over after a network change. A phone
+resolves half-open connections left over after a network change. The new
+session does not wait for that: the `Goodbye` gets 2 seconds, after which
+the old connection is closed without it. A phone
 MAY have sessions with several desktops at the same time.
 
 ## Session
@@ -892,6 +930,9 @@ sender's build implements:
 - an optional part of a feature, written `feature.option`. Version 1
   defines none; later versions add options this way instead of changing
   the meaning of existing messages.
+
+A `Hello` lists at most 64 tokens of at most 32 bytes each; more, or a
+longer one, is a protocol error.
 
 A feature is **active** in a session when both Hellos list it. An option is
 active when both list it and its feature is active. Tokens a side does not
@@ -1443,7 +1484,10 @@ from the desktop app's data. The desktop app narrows what it leaves open:
   them this way while a code is shown.
 - In SAS pairing mode, the phone keeps one random instance name for up to
   2 minutes, so the user can pick it from a list; it never advertises its
-  real name.
+  real name. It does complete TLS with any desktop key in this mode, and
+  sends its `Hello` (device id, name and features) before the desktop has
+  proven anything, as the desktop does when it dials to pair. A host on the
+  network can learn them this way while SAS mode is on.
 
 ### Implementation requirements
 

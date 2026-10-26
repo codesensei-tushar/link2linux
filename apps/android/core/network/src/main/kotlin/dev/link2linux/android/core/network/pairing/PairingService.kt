@@ -2,6 +2,7 @@ package dev.link2linux.android.core.network.pairing
 
 import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.DesktopListener
+import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
@@ -60,12 +61,21 @@ import java.util.concurrent.ConcurrentHashMap
  * while SAS mode has a free slot. After the Hello exchange, a connection
  * whose Hello names a pairing method pairs; any other must come from a
  * paired desktop whose record (found by key) has the same device id.
+ *
+ * Before any of that, a connection must arrive on one of the phone's
+ * addresses on a local network ([listenAddresses]), and it must finish the
+ * TLS handshake and the Hello exchange in time. Only [MAX_PRE_AUTH]
+ * connections may be that far at once, [MAX_PRE_AUTH_PER_SOURCE] of them
+ * from one host, and their handshakes share [HANDSHAKE_THREADS] threads of
+ * their own, so hosts that open connections and stall cannot use up the
+ * app's threads or keep a desktop out.
  */
 class PairingService(
     private val identity: IdentityKeySource,
     private val devices: PairedDeviceRepository,
     private val localDevice: LocalDeviceRepository,
     private val scope: CoroutineScope,
+    private val listenAddresses: ListenAddresses,
     private val hooks: SessionHooks = SessionHooks.None,
     private val pairing: PhonePairing = PhonePairing(),
     private val random: SecureRandom = SecureRandom(),
@@ -79,6 +89,10 @@ class PairingService(
     private val server = TlsServer(identity, PeerKeyPolicy { it in pairedKeys.value || window.acceptsKey(it) })
     private val sessions = ConcurrentHashMap<KeyFingerprint, Session>()
     private val listenerLock = Mutex()
+    private val preAuth = PreAuthLimits(MAX_PRE_AUTH, MAX_PRE_AUTH_PER_SOURCE)
+
+    // A view of the IO pool with threads of its own: blocked handshakes use these, never the app's IO threads.
+    private val handshakes = Dispatchers.IO.limitedParallelism(HANDSHAKE_THREADS)
     private val pairedSession = PairedSession(devices, hooks, onRecordsChanged = ::refreshKeys)
 
     private var listener: ServerSocket? = null
@@ -196,23 +210,44 @@ class PairingService(
         }
     }
 
-    private suspend fun acceptLoop(socket: ServerSocket) {
-        while (!socket.isClosed) {
-            val accepted = runCatching { runInterruptible(Dispatchers.IO) { socket.accept() } }
-                .getOrElse { break }
-            scope.launch { runCatching { handle(accepted) } }
+    private suspend fun acceptLoop(socket: ServerSocket) = acceptUntilClosed(socket) { accepted ->
+        val slot = admit(accepted)
+        if (slot == null) {
+            runCatching { accepted.close() }
+        } else {
+            scope.launch { runCatching { handle(accepted, slot) } }
         }
     }
 
+    /**
+     * Whether [socket] may go on to the TLS handshake: it arrived on a local
+     * network, and the caps on unfinished connections leave room for it.
+     * Returns the slot it holds until its Hello exchange is over.
+     */
+    private fun admit(socket: Socket): PreAuthLimits.Slot? {
+        if (!listenAddresses.isLocal(socket.localAddress)) return null
+        return preAuth.tryAcquire(socket.inetAddress)
+    }
+
     /** One connection, from the TLS handshake to the end of its session. */
-    private suspend fun handle(socket: Socket) {
-        val transport = runInterruptible(Dispatchers.IO) { server.secure(socket) }
-        val session = Session(transport)
-        val local = localDevice.localDevice()
-        val peer = session.handshake(local.copy(features = local.features + hooks.features()).toHello())
-        if (peer.kind != WireDeviceKind.DEVICE_KIND_DESKTOP || peer.deviceId.isBlank()) {
-            session.protocolError("Expected a desktop with a device id")
+    private suspend fun handle(socket: Socket, slot: PreAuthLimits.Slot) {
+        val transport: TlsTransport
+        val session: Session
+        val peer: Hello
+        try {
+            transport = runInterruptible(handshakes) { server.secure(socket) }
+            session = Session(transport)
+            val local = localDevice.localDevice()
+            peer = session.handshake(local.copy(features = local.features + hooks.features()).toHello())
+        } finally {
+            slot.release()
         }
+        if (peer.kind != WireDeviceKind.DEVICE_KIND_DESKTOP) session.protocolError("Expected a desktop")
+        val checked = runCatching { PeerHello.checked(peer) }.getOrElse { session.protocolError(it.message.orEmpty()) }
+        dispatch(transport, session, checked)
+    }
+
+    private suspend fun dispatch(transport: TlsTransport, session: Session, peer: Hello) {
         when (peer.pairingMethod) {
             WirePairingMethod.PAIRING_METHOD_QR_CODE -> pairByQrCode(transport, session, peer)
             WirePairingMethod.PAIRING_METHOD_SAS -> pairBySas(transport, session, peer)
@@ -261,7 +296,7 @@ class PairingService(
     }
 
     private suspend fun pairBySas(transport: TlsTransport, session: Session, peer: Hello) {
-        if (!window.claimSas()) return notExpected(session)
+        if (!window.claimSas(transport.remoteAddress.address)) return notExpected(session)
         pairingConnection = session
         _state.value = PairingState.Verifying(PairingMethod.SAS, peer.deviceName)
         val channel = PairingChannel(session, transport, transport.peerKey, transport.localKey)
@@ -343,13 +378,30 @@ class PairingService(
     private suspend fun runSession(key: KeyFingerprint, session: Session) {
         val record = devices.find(key) ?: return session.close()
         // One session per desktop: a newer connection replaces an older one.
-        sessions.put(record.fingerprint, session)?.goodbye(GoodbyeReason.GOODBYE_REASON_REPLACED)
+        sessions.put(record.fingerprint, session)?.let(::replaced)
         _connected.value = sessions.keys.toSet()
         try {
             pairedSession.run(key, session)
         } finally {
             sessions.remove(record.fingerprint, session)
             _connected.value = sessions.keys.toSet()
+        }
+    }
+
+    /**
+     * Ends [old], which a newer session with the same desktop replaced, off
+     * the new session's path: the old connection may be half-open or its
+     * peer may have stopped reading, so its `Goodbye` gets
+     * [REPLACED_GOODBYE_MILLIS] before the connection is closed anyway.
+     */
+    private fun replaced(old: Session) {
+        scope.launch {
+            val cutOff = launch {
+                delay(REPLACED_GOODBYE_MILLIS)
+                old.close()
+            }
+            old.goodbye(GoodbyeReason.GOODBYE_REASON_REPLACED)
+            cutOff.cancel()
         }
     }
 
@@ -374,8 +426,20 @@ class PairingService(
     private fun keysOf(list: List<PairedDevice>): Set<KeyFingerprint> =
         list.flatMapTo(mutableSetOf()) { listOfNotNull(it.fingerprint, it.nextFingerprint) }
 
-    private companion object {
-        const val BEACON_PORT = 27381
-        const val MAX_ADDRESSES = 4
+    companion object {
+        /** Connections that may be in their TLS handshake or Hello exchange at once. */
+        const val MAX_PRE_AUTH: Int = 8
+
+        /** Of those, how many may come from one host (an IPv4 address or an IPv6 /64). */
+        const val MAX_PRE_AUTH_PER_SOURCE: Int = 2
+
+        /** Threads that run TLS handshakes. */
+        const val HANDSHAKE_THREADS: Int = 4
+
+        /** How long a replaced session's `Goodbye` may take before its connection is closed. */
+        const val REPLACED_GOODBYE_MILLIS: Long = 2_000
+
+        private const val BEACON_PORT = 27381
+        private const val MAX_ADDRESSES = 4
     }
 }
