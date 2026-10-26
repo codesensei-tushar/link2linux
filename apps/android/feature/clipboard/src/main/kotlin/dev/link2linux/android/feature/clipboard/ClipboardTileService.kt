@@ -18,7 +18,8 @@ import kotlinx.coroutines.launch
  * [ClipboardSendActivity], which takes focus for a moment so it can read
  * the clipboard; on a locked phone the user unlocks first, since Android
  * does not let apps read the clipboard while it is locked. The tile is
- * active while a connected computer takes the clipboard.
+ * active while a connected computer takes the clipboard, and names it
+ * except on the lock screen.
  */
 class ClipboardTileService : TileService() {
 
@@ -61,15 +62,23 @@ class ClipboardTileService : TileService() {
 
     private fun update(on: Boolean, desktops: List<ConnectedDesktop>) {
         val tile = qsTile ?: return
-        val ready = desktops.filter { it.isReady }
+        val ready = desktops.filter { it.isReady }.map { it.name }
         tile.state = if (on && ready.isNotEmpty()) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = when {
-                !on -> getString(R.string.clipboard_tile_off)
-                ready.isEmpty() -> getString(R.string.clipboard_tile_not_connected)
-                else -> ready.joinToString(", ") { it.name }
-            }
+            val subtitle = tileSubtitle(on, ready, locked = isLocked)
+            tile.subtitle = getString(subtitle.id, *subtitle.args.toTypedArray())
         }
         tile.updateTile()
     }
+}
+
+/**
+ * The tile's subtitle. Quick settings show on the lock screen, so there it
+ * says only whether a computer is connected, not which one.
+ */
+internal fun tileSubtitle(on: Boolean, ready: List<String>, locked: Boolean): Message = when {
+    !on -> Message(R.string.clipboard_tile_off)
+    ready.isEmpty() -> Message(R.string.clipboard_tile_not_connected)
+    locked -> Message(R.string.clipboard_tile_connected)
+    else -> Message(R.string.clipboard_send_to, listOf(ready.joinToString(", ")))
 }

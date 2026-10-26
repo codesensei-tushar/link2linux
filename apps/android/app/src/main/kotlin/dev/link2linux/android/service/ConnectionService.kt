@@ -59,7 +59,7 @@ import dev.link2linux.android.feature.clipboard.R as ClipboardR
  * does. Running it on a device is unverified.
  *
  * Its notification offers "Send clipboard" while that feature is on and a
- * computer is connected.
+ * connected computer takes the clipboard.
  */
 @AndroidEntryPoint
 class ConnectionService : Service() {
@@ -74,7 +74,7 @@ class ConnectionService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + loggingUncaught("the connection service"))
 
-    /** What the notification shows: the connected computers, and whether it offers to send the clipboard. */
+    /** What the notification shows: the connected computers, and whether one of them takes the clipboard. */
     private data class Shown(val connectedTo: List<String> = emptyList(), val clipboard: Boolean = false)
 
     // Read and written on the main thread only, where the notification is posted too.
@@ -109,9 +109,9 @@ class ConnectionService : Service() {
                 .collectLatest { listen -> if (listen) listen() else runCatching { listener.stop() } }
         }
         scope.launch {
-            val clipboard = ClipboardRuntime.get(this@ConnectionService).enabled
-            combine(pairedDevices.pairedDevices, connections.connected, clipboard) { devices, connected, clipboardOn ->
-                Shown(devices.connectedIn(connected).map { it.device.name }, clipboardOn)
+            val clipboard = ClipboardRuntime.get(this@ConnectionService).canSend
+            combine(pairedDevices.pairedDevices, connections.connected, clipboard) { devices, connected, canSendClipboard ->
+                Shown(devices.connectedIn(connected).map { it.device.name }, canSendClipboard)
             }.distinctUntilChanged().collect { next ->
                 withContext(Dispatchers.Main) {
                     shown = next
@@ -205,7 +205,7 @@ class ConnectionService : Service() {
                 },
             )
             .setContentIntent(open)
-        if (shown.clipboard && shown.connectedTo.isNotEmpty()) {
+        if (shown.clipboard) {
             builder.addAction(
                 0,
                 getString(ClipboardR.string.clipboard_send_action),

@@ -20,6 +20,7 @@
     <string name="clipboard_tile_label">Send clipboard</string>
     <string name="clipboard_tile_off">Off</string>
     <string name="clipboard_tile_not_connected">Not connected</string>
+    <string name="clipboard_tile_connected">Connected</string>
 
     <!-- The label of text put on the clipboard; some keyboards show it in their clipboard history. -->
     <string name="clipboard_clip_label">Copied on your computer</string>
@@ -33,5 +34,6 @@
     <string name="clipboard_result_empty">Clipboard is empty</string>
     <string name="clipboard_result_nothing">Nothing to share</string>
     <string name="clipboard_result_text_only">Only text can be copied to your computer</string>
+    <string name="clipboard_result_no_focus">Couldn\'t read the clipboard</string>
     <string name="clipboard_result_off_here">Turn on clipboard sharing in link2linux first</string>
 </resources>

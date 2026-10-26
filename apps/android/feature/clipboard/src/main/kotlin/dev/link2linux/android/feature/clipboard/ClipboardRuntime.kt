@@ -13,9 +13,11 @@ import dev.link2linux.android.core.clipboard.ShareResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -43,15 +45,18 @@ class ClipboardRuntime private constructor(context: Context) {
         onError = { Log.w(TAG, "Could not set the clipboard: ${it.javaClass.simpleName}") },
     )
 
+    /** Whether a share could reach a computer now: the feature is on, and a connected computer takes the clipboard. */
+    val canSend: Flow<Boolean> = combine(enabled, engine.connected) { on, desktops -> on && desktops.any { it.isReady } }
+
     init {
-        // The share sheet and selection entries follow the setting, even after the app's data was cleared.
-        scope.launch { showShareTargets(enabled.value) }
+        // The share sheet and selection entries follow the setting, one change after the other, so quick
+        // toggles cannot leave them out of step; the first value also mends them after the app's data was cleared.
+        scope.launch { enabled.collect { showShareTargets(it) } }
     }
 
     fun setEnabled(on: Boolean) {
         prefs.edit { putBoolean(ENABLED, on) }
         _enabled.value = on
-        scope.launch { showShareTargets(on) }
     }
 
     /** Shares text the user handed over, from the share sheet or a text selection. */
@@ -76,11 +81,7 @@ class ClipboardRuntime private constructor(context: Context) {
      * might work. Asked before reading the clipboard, so Android does not
      * tell the user about a read that was for nothing.
      */
-    internal fun refusalBeforeReading(): Message? = when {
-        !enabled.value -> messageFor(ShareResult.Disabled)
-        engine.connected.value.isEmpty() -> messageFor(ShareResult.NoDesktop)
-        else -> null
-    }
+    internal fun refusalBeforeReading(): Message? = engine.refusalBeforeSharing()?.let(::messageFor)
 
     internal fun show(message: Message) {
         scope.launch { showNow(message) }

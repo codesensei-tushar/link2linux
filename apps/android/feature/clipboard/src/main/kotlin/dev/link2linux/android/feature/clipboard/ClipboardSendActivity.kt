@@ -6,6 +6,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 
 /**
  * Sends text to the connected computers when the user asks. It shows
@@ -25,28 +27,47 @@ import android.os.Bundle
  * plain text, so it is not taken here.
  *
  * Unverified without a device: that the translucent window gains focus on
- * every Android version and launcher.
+ * every Android version and launcher. Where it does not, it gives up after
+ * [FOCUS_TIMEOUT_MILLIS] rather than sit unseen over the screen, where it
+ * would take every touch.
  */
 class ClipboardSendActivity : Activity() {
 
+    private val handler = Handler(Looper.getMainLooper())
     private var read = false
+
+    private val giveUp = Runnable {
+        if (!read && !isFinishing) {
+            read = true
+            ClipboardRuntime.get(this).show(Message(R.string.clipboard_result_no_focus))
+            finish()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val runtime = ClipboardRuntime.get(this)
         if (componentName.className != ClipboardSendActivity::class.java.name) {
-            if (intent.hasExtra(Intent.EXTRA_STREAM)) {
-                runtime.show(Message(R.string.clipboard_result_text_only))
-            } else {
-                runtime.share(givenText(intent))
+            val handed = handedOver(hasFile = { intent.hasExtra(Intent.EXTRA_STREAM) }, text = { givenText(intent) })
+            when (handed) {
+                Handed.File -> runtime.show(Message(R.string.clipboard_result_text_only))
+                is Handed.Text -> runtime.share(handed.text)
             }
             finish()
             return
         }
-        runtime.refusalBeforeReading()?.let {
-            runtime.show(it)
+        val refusal = runtime.refusalBeforeReading()
+        if (refusal != null) {
+            runtime.show(refusal)
             finish()
+        } else {
+            handler.postDelayed(giveUp, FOCUS_TIMEOUT_MILLIS)
         }
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(giveUp)
+        super.onDestroy()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -57,13 +78,16 @@ class ClipboardSendActivity : Activity() {
         finish()
     }
 
-    private fun givenText(intent: Intent): String? = when (intent.action) {
+    private fun givenText(intent: Intent): CharSequence? = when (intent.action) {
         Intent.ACTION_SEND -> intent.getCharSequenceExtra(Intent.EXTRA_TEXT)
         Intent.ACTION_PROCESS_TEXT -> intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)
         else -> null
-    }?.toString()
+    }
 
     companion object {
+        /** How long the window may take to gain focus; it normally takes well under a second. */
+        private const val FOCUS_TIMEOUT_MILLIS = 2_000L
+
         /** Sends the clipboard. From outside an activity, add [Intent.FLAG_ACTIVITY_NEW_TASK]. */
         fun intent(context: Context): Intent = Intent(context, ClipboardSendActivity::class.java)
 
@@ -75,4 +99,24 @@ class ClipboardSendActivity : Activity() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
     }
+}
+
+/** What another app handed over through "Copy to computer". */
+internal sealed interface Handed {
+    data class Text(val text: String?) : Handed
+
+    /** A file, which is the file feature's to send, even when it holds plain text. */
+    data object File : Handed
+}
+
+/**
+ * Reads what another app handed over, [hasFile] and [text] reading the
+ * intent's extras. Any app can start the alias with any extras, and reading
+ * one whose class this app cannot load throws; that counts as nothing to
+ * share rather than ending the process, and every session with it.
+ */
+internal fun handedOver(hasFile: () -> Boolean, text: () -> CharSequence?): Handed = try {
+    if (hasFile()) Handed.File else Handed.Text(text()?.toString())
+} catch (_: RuntimeException) {
+    Handed.Text(null)
 }

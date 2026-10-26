@@ -32,7 +32,9 @@ import java.security.MessageDigest
  * phone shares only when the user asks, through [share]. A share goes to
  * every attached desktop whose `FeatureStatus` says `READY`. At most one
  * push per desktop waits for its answer: a newer share replaces one still
- * queued behind it, and only the newest is sent once the answer arrives.
+ * queued behind it, and only the newest is sent once the answer arrives,
+ * if the feature is still on here and `READY` there. A `DISABLED` answer
+ * counts as the desktop's status until its next `FeatureStatus`.
  *
  * The echo and relay rules hold for shares a device makes on its own: such
  * a share leaves out text received from any desktop, and text already pushed
@@ -55,6 +57,9 @@ class ClipboardEngine(
 
         /** The share to send once it has; a newer share replaces it. */
         var queued: Pending? = null
+
+        /** Counts the desktop's `FeatureStatus` messages, so an answer can tell whether a newer one came. */
+        var statusCount = 0
     }
 
     private class Pending(val clip: ClipText, val digest: ByteString) {
@@ -88,7 +93,10 @@ class ClipboardEngine(
 
     /** The desktop's `FeatureStatus` gives the feature [availability] there. */
     suspend fun onDesktopStatus(peer: ClipboardPeer, availability: FeatureAvailability) = lock.withLock {
-        desktops.firstOrNull { it.peer === peer }?.availability = availability
+        desktops.firstOrNull { it.peer === peer }?.let {
+            it.availability = availability
+            it.statusCount++
+        }
         publish()
     }
 
@@ -128,18 +136,36 @@ class ClipboardEngine(
                 automatic && digest in received.values -> return ShareResult.Pushed(emptyList())
             }
             desktops.mapNotNull { desktop ->
-                val ready = desktop.availability == FeatureAvailability.FEATURE_AVAILABILITY_READY
+                val refusal = refusal(desktop)
                 val outcome = when {
-                    automatic && (!ready || pushed[desktop.peer.desktopId] == digest) -> return@mapNotNull null
-                    ready -> enqueue(desktop, Pending(clip, digest))
-                    desktop.availability == FeatureAvailability.FEATURE_AVAILABILITY_DISABLED ->
-                        CompletableDeferred(PushOutcome.TURNED_OFF)
-                    else -> CompletableDeferred(PushOutcome.FAILED)
+                    automatic && (refusal != null || pushed[desktop.peer.desktopId] == digest) -> return@mapNotNull null
+                    refusal != null -> CompletableDeferred(refusal)
+                    else -> enqueue(desktop, Pending(clip, digest))
                 }
                 desktop.peer.name to outcome
             }
         }
         return ShareResult.Pushed(waits.map { (name, outcome) -> DesktopOutcome(name, outcome.await()) })
+    }
+
+    /**
+     * What a share would come to whatever its text, or null when it may
+     * reach a desktop: the feature is off here, no desktop is connected, or
+     * none is ready. Lets the phone skip reading the clipboard for nothing.
+     */
+    fun refusalBeforeSharing(): ShareResult? {
+        if (!enabled.value) return ShareResult.Disabled
+        val desktops = connected.value
+        return when {
+            desktops.isEmpty() -> ShareResult.NoDesktop
+            desktops.any { it.isReady } -> null
+            else -> ShareResult.Pushed(
+                desktops.map {
+                    val off = it.availability == FeatureAvailability.FEATURE_AVAILABILITY_DISABLED
+                    DesktopOutcome(it.name, if (off) PushOutcome.TURNED_OFF else PushOutcome.FAILED)
+                },
+            )
+        }
     }
 
     /** Sends [pending] to [desktop], or queues it behind the push in flight there. Called under the lock. */
@@ -162,9 +188,16 @@ class ClipboardEngine(
         try {
             while (next != null) {
                 val pending = next
-                val outcome = pushOne(desktop.peer, pending.clip)
+                // The feature may have been turned off, here or there, while this waited.
+                val (refusal, statusCount) = lock.withLock { refusal(desktop) to desktop.statusCount }
+                val outcome = refusal ?: pushOne(desktop.peer, pending.clip)
                 next = lock.withLock {
                     if (outcome == PushOutcome.SENT) pushed[desktop.peer.desktopId] = pending.digest
+                    // The desktop answered DISABLED, and no newer FeatureStatus says otherwise.
+                    if (refusal == null && outcome == PushOutcome.TURNED_OFF && desktop.statusCount == statusCount) {
+                        desktop.availability = FeatureAvailability.FEATURE_AVAILABILITY_DISABLED
+                        publish()
+                    }
                     pending.outcome.complete(outcome)
                     desktop.queued.also {
                         desktop.queued = null
@@ -204,6 +237,14 @@ class ClipboardEngine(
     } catch (_: Exception) {
         // The connection failed, and its session ends.
         PushOutcome.FAILED
+    }
+
+    /** Why nothing may be pushed to [desktop] now, as the push's outcome, or null when a push may go. Called under the lock. */
+    private fun refusal(desktop: Desktop): PushOutcome? = when {
+        !enabled.value -> PushOutcome.FAILED
+        desktop.availability == FeatureAvailability.FEATURE_AVAILABILITY_READY -> null
+        desktop.availability == FeatureAvailability.FEATURE_AVAILABILITY_DISABLED -> PushOutcome.TURNED_OFF
+        else -> PushOutcome.FAILED
     }
 
     /** Removes [desktop]; what is queued for it fails. Called under the lock. */

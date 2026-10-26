@@ -6,6 +6,7 @@ import dev.link2linux.protocol.v1.FeatureAvailability
 import dev.link2linux.protocol.v1.clipboardPush
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -232,6 +233,113 @@ class ClipboardEngineTest {
         assertEquals(listOf("1", "3", "4"), slow.texts())
         slow.calls[2].answer.complete(PushAnswer.Ack)
         assertEquals(pushed("a" to PushOutcome.SENT, "b" to PushOutcome.SENT), fourth.await())
+    }
+
+    /** Shares "1" (left waiting for its answer) and "2" (queued behind it) to [peer]. */
+    private suspend fun TestScope.inFlightAndQueued(engine: ClipboardEngine, peer: FakePeer): Pair<Deferred<ShareResult>, Deferred<ShareResult>> {
+        val first = async { engine.share(ClipText("1")) }
+        runCurrent()
+        val second = async { engine.share(ClipText("2")) }
+        runCurrent()
+        assertEquals(listOf("1"), peer.texts())
+        return first to second
+    }
+
+    @Test
+    fun aQueuedShareIsNotSentOnceThePhoneTurnsTheFeatureOff() = runTest {
+        val engine = engine()
+        val a = FakePeer("a")
+        engine.ready(a)
+        val (first, second) = inFlightAndQueued(engine, a)
+
+        enabled.value = false
+        a.calls[0].answer.complete(PushAnswer.Ack)
+
+        assertEquals(pushed("a" to PushOutcome.SENT), first.await())
+        assertEquals(pushed("a" to PushOutcome.FAILED), second.await())
+        assertEquals(listOf("1"), a.texts())
+    }
+
+    @Test
+    fun aQueuedShareIsNotSentOnceTheDesktopIsNoLongerReady() = runTest {
+        val cases = listOf(
+            FeatureAvailability.FEATURE_AVAILABILITY_DISABLED to PushOutcome.TURNED_OFF,
+            FeatureAvailability.FEATURE_AVAILABILITY_UNAVAILABLE to PushOutcome.FAILED,
+        )
+        for ((availability, expected) in cases) {
+            val engine = engine()
+            val a = FakePeer("a")
+            engine.ready(a)
+            val (first, second) = inFlightAndQueued(engine, a)
+
+            engine.onDesktopStatus(a, availability)
+            a.calls[0].answer.complete(PushAnswer.Ack)
+
+            assertEquals(pushed("a" to PushOutcome.SENT), first.await())
+            assertEquals("$availability", pushed("a" to expected), second.await())
+            assertEquals(listOf("1"), a.texts())
+        }
+    }
+
+    @Test
+    fun aDisabledAnswerHoldsSharesBackUntilTheDesktopIsReadyAgain() = runTest {
+        val engine = engine()
+        val a = FakePeer("a")
+        engine.ready(a)
+        val (first, second) = inFlightAndQueued(engine, a)
+
+        a.calls[0].answer.complete(PushAnswer.Error(ErrorCode.ERROR_CODE_DISABLED))
+
+        assertEquals(pushed("a" to PushOutcome.TURNED_OFF), first.await())
+        assertEquals(pushed("a" to PushOutcome.TURNED_OFF), second.await())
+        assertEquals(false, engine.connected.value.single().isReady)
+        assertEquals(pushed("a" to PushOutcome.TURNED_OFF), engine.share(ClipText("3")))
+
+        engine.onDesktopStatus(a, FeatureAvailability.FEATURE_AVAILABILITY_READY)
+        val fourth = async { engine.share(ClipText("4")) }
+        runCurrent()
+        a.calls[1].answer.complete(PushAnswer.Ack)
+        assertEquals(pushed("a" to PushOutcome.SENT), fourth.await())
+        assertEquals(listOf("1", "4"), a.texts())
+    }
+
+    @Test
+    fun aStatusThatCameDuringThePushOutranksItsDisabledAnswer() = runTest {
+        val engine = engine()
+        val a = FakePeer("a")
+        engine.ready(a)
+        val (first, second) = inFlightAndQueued(engine, a)
+
+        // The desktop turned the feature off, answered, then turned it on again.
+        engine.onDesktopStatus(a, FeatureAvailability.FEATURE_AVAILABILITY_READY)
+        a.calls[0].answer.complete(PushAnswer.Error(ErrorCode.ERROR_CODE_DISABLED))
+        runCurrent()
+
+        assertEquals(pushed("a" to PushOutcome.TURNED_OFF), first.await())
+        assertTrue(engine.connected.value.single().isReady)
+        assertEquals(listOf("1", "2"), a.texts())
+        a.calls[1].answer.complete(PushAnswer.Ack)
+        assertEquals(pushed("a" to PushOutcome.SENT), second.await())
+    }
+
+    @Test
+    fun theRefusalBeforeSharingSaysWhatAnyShareWouldComeTo() = runTest {
+        val engine = engine()
+        assertEquals(ShareResult.NoDesktop, engine.refusalBeforeSharing())
+
+        val off = FakePeer("o")
+        val unknown = FakePeer("u")
+        engine.attach(off)
+        engine.onDesktopStatus(off, FeatureAvailability.FEATURE_AVAILABILITY_DISABLED)
+        engine.attach(unknown)
+        assertEquals(pushed("o" to PushOutcome.TURNED_OFF, "u" to PushOutcome.FAILED), engine.refusalBeforeSharing())
+
+        engine.onDesktopStatus(unknown, FeatureAvailability.FEATURE_AVAILABILITY_READY)
+        assertEquals(null, engine.refusalBeforeSharing())
+
+        enabled.value = false
+        assertEquals(ShareResult.Disabled, engine.refusalBeforeSharing())
+        assertTrue(off.calls.isEmpty() && unknown.calls.isEmpty())
     }
 
     @Test
