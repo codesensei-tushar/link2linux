@@ -147,6 +147,9 @@ pub enum PairingFailure {
     ConnectionLost,
     /// Three code comparisons did not succeed.
     TooManyAttempts,
+    /// A phone with the same id is paired under another key. Pairing never
+    /// replaces it without asking, so the user removes it first.
+    AlreadyPaired,
 }
 
 /// A phone paired with this computer.

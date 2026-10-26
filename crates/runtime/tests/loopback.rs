@@ -608,6 +608,58 @@ async fn an_unfinished_pairing_the_phone_refuses_is_deleted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_code_pairing_never_replaces_a_phone_with_the_same_id_on_its_own() {
+    use link2linux_core::pairing::{PairingOutcome, SasDecision};
+    use link2linux_runtime::view::PairingFailure;
+
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "phone-6").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+
+    // Another key claims the phone's device id, and the codes match.
+    let claimant = Arc::new(TestPhone::bind(LOCALHOST, "phone-6").await);
+    rig.runtime.start_pairing(PairingMethod::Sas).unwrap();
+    let side = claimant.clone();
+    let phone_side = tokio::spawn(async move {
+        let mut connection = side.accept(PhoneTls::sas_mode()).await.unwrap();
+        connection
+            .pair_by_sas(&side, false, SasDecision::Confirmed)
+            .await
+    });
+    rig.runtime
+        .pair_with(PhoneTarget::Address {
+            address: claimant.addr().to_string(),
+        })
+        .unwrap();
+    rig.events
+        .pairing_matching(|state| matches!(state, PairingState::SasCode { .. }).then_some(()))
+        .await;
+    rig.runtime.answer_code(true).unwrap();
+
+    // The screen cannot ask about replacing the paired phone, so nothing is.
+    let report = phone_side.await.unwrap();
+    assert_eq!(report.desktop_outcome, Some(PairingOutcome::Declined));
+    let failure = rig
+        .events
+        .pairing_matching(|state| match state {
+            PairingState::Searching {
+                last_failure: Some(failure),
+                ..
+            } => Some(*failure),
+            _ => None,
+        })
+        .await;
+    assert_eq!(failure, PairingFailure::AlreadyPaired);
+    assert_eq!(rig.runtime.devices().len(), 1);
+
+    // The paired phone keeps its record and its task, which dials it.
+    rig.runtime.reconnect("phone-6");
+    tokio::time::timeout(WAIT, phone_session(&phone, desktop))
+        .await
+        .expect("the desktop dials the paired phone");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nothing_is_paired_with_a_phone_that_is_not_there() {
     use link2linux_runtime::view::PairingFailure;
 
