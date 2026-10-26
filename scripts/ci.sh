@@ -25,11 +25,27 @@ fi
 
 proto() {
   if command -v buf >/dev/null; then
-    buf lint
+    buf lint && proto_breaking
   else
     echo "buf not installed; checking that the schema compiles with protoc instead"
+    echo "wire compatibility with main is NOT checked; install buf before merging proto/ changes"
     protoc -I proto -o /dev/null $(find proto -name '*.proto')
   fi
+}
+
+# Checks the schema against the one this branch started from. The base is
+# exported with git archive rather than read through buf's .git input, which
+# fails in git worktrees.
+proto_breaking() {
+  local base tmp status
+  base=$(git merge-base origin/main HEAD) || { echo "no merge base with origin/main"; return 1; }
+  git cat-file -e "$base:proto" 2>/dev/null || { echo "no schema at the merge base; nothing to compare"; return 0; }
+  tmp=$(mktemp -d)
+  git archive "$base" proto buf.yaml | tar -x -C "$tmp"
+  buf breaking --against "$tmp"
+  status=$?
+  rm -rf "$tmp"
+  return $status
 }
 
 rust() {
