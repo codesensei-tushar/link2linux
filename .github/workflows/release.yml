@@ -92,12 +92,16 @@ jobs:
           bt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
           ks="$RUNNER_TEMP/release.jks"
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$ks"
+          # keytool makes PKCS12 keystores, which protect the key with the
+          # keystore password; only an older JKS keystore may need its own.
+          key_pass=env:KEYSTORE_PASSWORD
+          [ -z "$KEY_PASSWORD" ] || key_pass=env:KEY_PASSWORD
           mkdir dist
           # -P 16 aligns native libraries for 16 KB memory pages.
           "$bt/zipalign" -P 16 -f 4 \
             apps/android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
           "$bt/apksigner" sign --ks "$ks" --ks-pass env:KEYSTORE_PASSWORD \
-            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" --key-pass "$key_pass" \
             --out dist/link2linux.apk "$RUNNER_TEMP/aligned.apk"
           rm -f "$ks"
           "$bt/apksigner" verify --print-certs dist/link2linux.apk
