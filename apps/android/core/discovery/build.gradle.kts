@@ -5,6 +5,7 @@ plugins {
 dependencies {
     api(projects.core.data)
     api(projects.core.model)
+    implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(libs.kotlinx.coroutines.test)

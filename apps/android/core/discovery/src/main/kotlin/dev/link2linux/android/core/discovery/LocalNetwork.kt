@@ -4,21 +4,31 @@ import kotlinx.coroutines.flow.StateFlow
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 
 /** An address of the phone on a network, with the length of its subnet prefix. */
 data class NetworkAddress(val address: InetAddress, val prefixLength: Int)
 
 /**
- * A Wi-Fi or Ethernet network the phone is on. [handle] is the platform's
- * network object, which the sender binds its sockets to; it is null in tests.
+ * A network the phone is on or serves. [handle] is the platform's network
+ * object, which the sender binds its sockets to; it is null in tests and for
+ * [tethered] networks, which the platform does not expose as objects.
+ *
+ * A tethered network is one the phone hosts for a computer: its Wi-Fi
+ * hotspot, or USB or Bluetooth tethering. Its [id] is negative, so it never
+ * equals the id of a platform network.
  */
 data class LocalNetwork(
     val id: Long,
     val addresses: List<NetworkAddress>,
     val handle: Any? = null,
+    val tethered: Boolean = false,
 )
 
-/** The Wi-Fi and Ethernet networks the phone is on, whether or not they reach the internet. */
+/**
+ * The networks the phone is on, whether or not they reach the internet: Wi-Fi
+ * and Ethernet it has joined, and the hotspot or tethering networks it hosts.
+ */
 interface LocalNetworks {
     val networks: StateFlow<List<LocalNetwork>>
 }
@@ -39,6 +49,24 @@ object Subnets {
     /** The directed broadcast addresses of [network]'s IPv4 subnets. */
     fun broadcastAddresses(network: LocalNetwork): List<Inet4Address> =
         network.addresses.mapNotNull { (a, prefix) -> (a as? Inet4Address)?.let { broadcastAddress(it, prefix) } }
+
+    /**
+     * Where a beacon for [network] goes: the subnet broadcast addresses, and
+     * the [unicast] ones that are on the network. A network the phone joined
+     * also gets 255.255.255.255, through the socket bound to it (some access
+     * points drop one of the two). A tethered network is reached through an
+     * unbound socket, which would send 255.255.255.255 out of the default
+     * route instead, so it gets the directed broadcast only.
+     */
+    fun beaconTargets(network: LocalNetwork, unicast: List<InetSocketAddress>, port: Int): Set<InetSocketAddress> {
+        val targets = LinkedHashSet<InetSocketAddress>()
+        if (!network.tethered) targets += InetSocketAddress(LIMITED_BROADCAST, port)
+        broadcastAddresses(network).forEach { targets += InetSocketAddress(it, port) }
+        unicast.filterTo(targets) { isOnLink(network, it.address) }
+        return targets
+    }
+
+    private val LIMITED_BROADCAST: InetAddress = InetAddress.getByAddress(byteArrayOf(-1, -1, -1, -1))
 
     /** Whether [target] is in a subnet of [network]; link-local IPv6 never counts, as its interface is unknown. */
     fun isOnLink(network: LocalNetwork, target: InetAddress): Boolean {

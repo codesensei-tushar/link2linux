@@ -291,6 +291,38 @@ The phone's own hotspot is then a way out: the desktop joins it, and the
 phone listens and announces on the hotspot interface too. A VPN on either
 device that blocks local traffic has the same effect as isolation.
 
+#### Hotspot and tethering
+
+Android lists the networks the phone has joined, but not the ones it hosts:
+the downstream interface of a Wi-Fi hotspot, USB tethering or Bluetooth
+tethering is not a network an app can see. So the phone also looks at its
+network interfaces, on every connectivity change, on the system's tethering
+and hotspot state broadcasts, and every 10 seconds as a backstop. An
+interface counts as a tethered network when it is up, is not loopback, has a
+private IPv4 address (10/8, 172.16/12 or 192.168/16, with the interface's
+prefix length), does not belong to a network Android reports, and is not a
+mobile-data, VPN, 464XLAT or Wi-Fi Direct interface (names starting `lo`,
+`rmnet`, `r_rmnet`, `ccmni`, `ccinet`, `seth`, `sipa`, `epdg`, `tun`, `tap`,
+`ipsec`, `clat`, `v4-`, `dummy`, `p2p`). No interface name says "hotspot": the names differ by maker (`wlan1`,
+`ap0`, `swlan0`, `softap0`; `rndis0`, `ncm0`, `usb0` for USB; `bt-pan` for
+Bluetooth), so the phone excludes known non-tethering names instead of
+listing known tethering ones.
+
+A tethered network is treated like a joined one: the phone keeps its TLS
+listener open and keeps announcing while it is the only network, and the
+hotspot address is among the addresses the phone reports for itself. USB and
+Bluetooth tethering work the same way.
+
+Beacons reach a tethered network through an ordinary socket that is not bound
+to it, because there is no network object to bind to. The system routes the
+subnet's directed broadcast and the on-link unicast addresses onto the
+tethering interface by their addresses. 255.255.255.255 is not sent for a
+tethered network, as from an unbound socket it would leave by the default
+route. mDNS on tethering interfaces is best effort: the phone registers its
+service without naming a network, and whether Android announces it on the
+tethering interfaces is up to the system. The desktop does not depend on it;
+the beacons always go out.
+
 ### Choosing what to dial
 
 The desktop dials a phone when a record or beacon shows:

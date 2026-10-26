@@ -8,6 +8,12 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+### Fixed
+
+- The phone keeps listening, announcing and sending beacons while it hosts a
+  Wi-Fi hotspot, or USB or Bluetooth tethering, and has no other network, so a
+  computer that joins the phone's hotspot finds it.
+
 ## [0.1.0] - 2026-10-26
 
 The first release: an Android phone and a Linux desktop pair once, then find

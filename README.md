@@ -111,7 +111,8 @@ yourself from the [releases page](https://github.com/codesensei-tushar/link2linu
 ARM64 builds and Flatpak are planned.
 
 **Requirements:** a 64-bit Linux desktop and an Android phone on the same
-network. Calls need Bluetooth on the computer.
+network, or the computer joined to the phone's own hotspot. Calls need
+Bluetooth on the computer.
 
 ## Privacy and security
 

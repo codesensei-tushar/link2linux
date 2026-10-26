@@ -10,8 +10,6 @@ import kotlinx.coroutines.runInterruptible
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.Inet4Address
-import java.net.InetAddress
 import java.net.InetSocketAddress
 
 /**
@@ -20,18 +18,17 @@ import java.net.InetSocketAddress
  * datagram goes to 255.255.255.255 and the subnet's broadcast address (some
  * access points drop one of them) and, by unicast, to the desktop's
  * addresses that are on that network.
+ *
+ * A tethered network (the phone's hotspot, USB or Bluetooth tethering) has no
+ * platform handle to bind to. Its socket stays unbound, and the system routes
+ * the subnet's broadcast and the unicast targets onto the tethering interface
+ * by their addresses; see [Subnets.beaconTargets].
  */
 class UdpBeaconSender : BeaconSender {
 
     override suspend fun send(networks: List<LocalNetwork>, datagram: ByteArray, unicast: List<InetSocketAddress>) {
         for (network in networks) {
-            val targets = LinkedHashSet<InetSocketAddress>()
-            targets += InetSocketAddress(LIMITED_BROADCAST, DiscoveryConstants.BEACON_PORT)
-            Subnets.broadcastAddresses(network).forEach {
-                targets += InetSocketAddress(it, DiscoveryConstants.BEACON_PORT)
-            }
-            unicast.filterTo(targets) { Subnets.isOnLink(network, it.address) }
-            sendOn(network, datagram, targets)
+            sendOn(network, datagram, Subnets.beaconTargets(network, unicast, DiscoveryConstants.BEACON_PORT))
         }
     }
 
@@ -53,9 +50,5 @@ class UdpBeaconSender : BeaconSender {
                 // The network went away while we were binding.
             }
         }
-    }
-
-    private companion object {
-        val LIMITED_BROADCAST: InetAddress = Inet4Address.getByAddress(byteArrayOf(-1, -1, -1, -1))
     }
 }

@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 
 class SubnetsTest {
 
@@ -34,5 +35,27 @@ class SubnetsTest {
         assertTrue(Subnets.isOnLink(network, ip("fd00::20")))
         assertFalse(Subnets.isOnLink(network, ip("fd00:0:0:1::20")))
         assertFalse(Subnets.isOnLink(network, ip("fe80::2"))) // link-local: interface unknown
+    }
+
+    @Test
+    fun joinedNetworkGetsBothBroadcastsAndOnLinkUnicast() {
+        val port = 27381
+        val onLink = InetSocketAddress(ip("192.168.1.20"), port)
+        val elsewhere = InetSocketAddress(ip("10.0.0.9"), port)
+        assertEquals(
+            setOf(InetSocketAddress(ip("255.255.255.255"), port), InetSocketAddress(ip("192.168.1.255"), port), onLink),
+            Subnets.beaconTargets(network, listOf(onLink, elsewhere), port),
+        )
+    }
+
+    @Test
+    fun tetheredNetworkSkipsTheLimitedBroadcast() {
+        val port = 27381
+        val hotspot = LocalNetwork(-5, listOf(NetworkAddress(ip("192.168.43.1"), 24)), tethered = true)
+        val laptop = InetSocketAddress(ip("192.168.43.77"), port)
+        assertEquals(
+            setOf(InetSocketAddress(ip("192.168.43.255"), port), laptop),
+            Subnets.beaconTargets(hotspot, listOf(laptop, InetSocketAddress(ip("192.168.1.20"), port)), port),
+        )
     }
 }
