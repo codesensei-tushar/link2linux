@@ -9,7 +9,10 @@
 //! - [`transport`]: the TLS stream to a paired device;
 //! - [`session`]: the `Hello` exchange on that stream, which settles the
 //!   protocol version, who the peer is and which features both sides use,
-//!   then `Ping`/`Pong` liveness and the flow of feature messages.
+//!   then liveness, requests and their answers, and the flow of feature
+//!   messages, until a `Goodbye`;
+//! - [`sync`]: the cursor that follows a collection mirrored from the other
+//!   device.
 //!
 //! Then one module per [`Feature`], named as in both apps:
 //! [`notifications`], [`messages`], [`calls`], [`photos`], [`files`],
@@ -27,6 +30,7 @@ pub mod device;
 pub mod discovery;
 pub mod pairing;
 pub mod session;
+pub mod sync;
 pub mod transport;
 
 pub mod calls;
