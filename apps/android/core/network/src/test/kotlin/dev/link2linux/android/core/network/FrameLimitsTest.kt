@@ -5,10 +5,12 @@ import com.google.protobuf.InvalidProtocolBufferException
 import dev.link2linux.protocol.v1.ConversationMessage
 import dev.link2linux.protocol.v1.Envelope
 import dev.link2linux.protocol.v1.FeatureState
+import dev.link2linux.protocol.v1.FileInfo
 import dev.link2linux.protocol.v1.NotificationAction
 import dev.link2linux.protocol.v1.PhoneNotification
 import dev.link2linux.protocol.v1.envelope
 import dev.link2linux.protocol.v1.featureStatus
+import dev.link2linux.protocol.v1.fileOffer
 import dev.link2linux.protocol.v1.hello
 import dev.link2linux.protocol.v1.imageData
 import dev.link2linux.protocol.v1.notificationAction
@@ -40,6 +42,8 @@ class FrameLimitsTest {
         notificationPosted = notificationPosted { this.notification = notification }
     }
 
+    private fun offer(files: Int) = frame { fileOffer = fileOffer { this.files += List(files) { FileInfo.getDefaultInstance() } } }
+
     private val full = phoneNotification {
         actions += List(32) { notificationAction { replyChoices += List(16) { "ok" } } }
         messages += List(32) { ConversationMessage.getDefaultInstance() }
@@ -52,6 +56,7 @@ class FrameLimitsTest {
         check(batch(notifications = 100, removedKeys = 1000))
         check(posted(full))
         check(frame { notificationSyncBatch = notificationSyncBatch { notifications += List(100) { full } } })
+        check(offer(500))
     }
 
     @Test
@@ -75,6 +80,9 @@ class FrameLimitsTest {
             "NotificationAction.reply_choices",
             tooMany(posted(phoneNotification { actions += notificationAction { replyChoices += List(17) { "" } } })),
         )
+        assertEquals("FileOffer.files", tooMany(offer(501)))
+        // Offers merged from two copies count together.
+        assertEquals("FileOffer.files", tooMany(offer(300) + offer(300)))
     }
 
     @Test

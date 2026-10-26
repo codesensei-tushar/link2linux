@@ -30,6 +30,7 @@ internal object FrameLimits {
     private const val IMAGE_DATA = 18
     private const val NOTIFICATION_SYNC_BATCH = 101
     private const val NOTIFICATION_POSTED = 102
+    private const val FILE_OFFER = 300
 
     private class Limit(val field: String, val max: Int) {
         /** Counts one more entry after [count] and returns the new count. */
@@ -53,6 +54,8 @@ internal object FrameLimits {
     /** Per action. */
     private val REPLY_CHOICES = Limit("NotificationAction.reply_choices", 16)
 
+    private val FILES = Limit("FileOffer.files", 500)
+
     /**
      * Checks the frame body [body] (one serialized `Envelope`) before it is
      * parsed: the entries of its repeated fields, and that it is at most
@@ -63,6 +66,7 @@ internal object FrameLimits {
         var featureStates = 0
         var notifications = 0
         var removedKeys = 0
+        var files = 0
         var imageBytes = 0
         forEachField(body, 0, body.size) { payload, start, end ->
             when (payload) {
@@ -78,6 +82,7 @@ internal object FrameLimits {
                 NOTIFICATION_POSTED -> forEachField(body, start, end) { field, from, to ->
                     if (field == 1) notifications = notification(body, from, to, notifications)
                 }
+                FILE_OFFER -> files = count(body, start, end, 3, FILES, files)
             }
         }
         val length = body.size - imageBytes
