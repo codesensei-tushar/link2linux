@@ -21,7 +21,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, oneshot, watch};
 
@@ -52,6 +52,12 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long [`LinuxClipboard::open`] waits for each display server to
 /// answer. Xwayland may be started on the first connection to it.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long one read may take in all, however steadily the app that copied
+/// keeps sending: a slow app must not hold up the writes queued behind it.
+const READ_TIMEOUT: Duration = Duration::from_secs(8);
+/// How many times a read starts over because the clipboard changed while
+/// it was being read.
+const READ_ATTEMPTS: usize = 3;
 /// How long a read or write may take in all, so a display server that
 /// stops answering cannot hang the caller.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -322,6 +328,10 @@ impl<C: Send + 'static> Worker<C> {
         let (reply, result) = oneshot::channel();
         self.jobs
             .send(Box::new(move |context| {
+                // Its caller gave up while it waited in line.
+                if reply.is_closed() {
+                    return;
+                }
                 let _ = reply.send(job(context));
             }))
             .map_err(|_| stopped())?;
@@ -336,36 +346,75 @@ fn stopped() -> PlatformError {
     unavailable("the clipboard thread stopped")
 }
 
-/// What the types the clipboard is offered in say about its content.
+/// What the types the clipboard is offered in say about its content. Each
+/// type keeps the spelling it was offered in, which is the one to ask for.
 #[derive(Debug, PartialEq, Eq)]
 struct Offered<'a> {
     /// The text type to read, if any.
     text: Option<&'a str>,
     /// Files were copied, for certain.
     files: bool,
-    /// A list of URIs is offered, which names files if files were copied.
-    uri_list: bool,
-    /// The password hint is offered; its value says whether the text is
-    /// secret.
-    password_hint: bool,
+    /// A list of URIs, which names files if files were copied.
+    uri_list: Option<&'a str>,
+    /// The password hint, whose value says whether the text is secret.
+    password_hint: Option<&'a str>,
 }
 
 impl<'a> Offered<'a> {
     fn new(types: &[&'a str]) -> Self {
-        let offers = |wanted: &str| types.iter().any(|t| t.eq_ignore_ascii_case(wanted));
-        let text = TEXT_TYPES.iter().find_map(|wanted| {
+        let find = |wanted: &str| {
             types
                 .iter()
                 .find(|t| t.eq_ignore_ascii_case(wanted))
                 .copied()
-        });
+        };
         Self {
-            text,
-            files: offers(COPIED_FILES),
-            uri_list: offers(URI_LIST),
-            password_hint: offers(PASSWORD_HINT),
+            text: TEXT_TYPES.iter().find_map(|wanted| find(wanted)),
+            files: find(COPIED_FILES).is_some(),
+            uri_list: find(URI_LIST),
+            password_hint: find(PASSWORD_HINT),
         }
     }
+}
+
+/// A clipboard that is read one type at a time.
+trait Source {
+    /// Starts reading: the types the clipboard is offered in now, or `None`
+    /// when it holds nothing. Nothing may take longer than `deadline`.
+    fn begin(&mut self, deadline: Instant) -> Result<Option<Vec<String>>, PlatformError>;
+
+    /// The clipboard as `mime_type`, spelled as offered, up to `limit`
+    /// bytes. `None` when the app that copied refuses that type, or the
+    /// clipboard changed and the type is gone.
+    fn fetch(&mut self, mime_type: &str, limit: usize) -> Result<Option<Vec<u8>>, PlatformError>;
+
+    /// Whether the clipboard changed since [`begin`](Self::begin).
+    fn changed_since_begin(&mut self) -> Result<bool, PlatformError>;
+}
+
+/// Reads the clipboard text from `source`, giving up at `deadline`.
+///
+/// The types, the password hint and the text are fetched one after another,
+/// each from whatever app holds the clipboard by then. When another copy
+/// lands in between, the read starts over, so the text of one copy is never
+/// paired with the hint, or the lack of one, of another: a password copied
+/// meanwhile must not pass for plain text.
+fn read(
+    source: &mut impl Source,
+    deadline: Instant,
+) -> Result<Option<ClipboardText>, PlatformError> {
+    for _ in 0..READ_ATTEMPTS {
+        let Some(types) = source.begin(deadline)? else {
+            return Ok(None);
+        };
+        let types: Vec<&str> = types.iter().map(String::as_str).collect();
+        let text = read_text(&types, |mime_type, limit| source.fetch(mime_type, limit))?;
+        if !source.changed_since_begin()? {
+            return Ok(text);
+        }
+        tracing::debug!("the clipboard changed while it was read; reading it again");
+    }
+    Err(unavailable("the clipboard kept changing while it was read"))
 }
 
 /// Reads the clipboard text, given the types it is offered in and a way to
@@ -385,16 +434,19 @@ fn read_text(
     if offered.files {
         return Ok(None);
     }
-    if offered.uri_list && fetch(URI_LIST, MAX_READ_BYTES)?.is_some_and(|list| names_files(&list)) {
+    if let Some(uri_list) = offered.uri_list
+        && fetch(uri_list, MAX_READ_BYTES)?.is_some_and(|list| names_files(&list))
+    {
         return Ok(None);
     }
     // A hint that is offered but cannot be read counts as secret: the text
     // may be a password, and is then shared only where passwords are.
-    let sensitive = offered.password_hint
-        && fetch(PASSWORD_HINT, MAX_HINT_BYTES)
-            .ok()
-            .flatten()
-            .is_none_or(|hint| is_secret(&hint));
+    let sensitive = offered
+        .password_hint
+        .is_some_and(|hint| match fetch(hint, MAX_HINT_BYTES) {
+            Ok(Some(value)) => is_secret(&value),
+            Ok(None) | Err(_) => true,
+        });
     let Some(bytes) = fetch(text_type, MAX_READ_BYTES)? else {
         return Ok(None);
     };
@@ -415,9 +467,11 @@ fn names_files(uri_list: &[u8]) -> bool {
         })
 }
 
-/// Whether the password hint's value marks the text as secret.
+/// Whether the password hint's value marks the text as secret: `secret`,
+/// or no value at all, since a hint is offered only to mark secrets.
 fn is_secret(hint: &[u8]) -> bool {
-    hint.strip_suffix(b"\0").unwrap_or(hint).trim_ascii() == b"secret"
+    let value = hint.strip_suffix(b"\0").unwrap_or(hint).trim_ascii();
+    value.is_empty() || value == b"secret"
 }
 
 /// The text, read as UTF-8; bytes that are not are replaced. `None` when
@@ -455,9 +509,17 @@ mod tests {
             "text/uri-list",
             "UTF8_STRING",
         ]);
-        assert!(nautilus.files && nautilus.uri_list && !nautilus.password_hint);
+        assert!(nautilus.files);
+        assert_eq!(nautilus.uri_list, Some("text/uri-list"));
+        assert_eq!(nautilus.password_hint, None);
         let manager = Offered::new(&["text/plain;charset=utf-8", "x-kde-passwordManagerHint"]);
-        assert!(!manager.files && !manager.uri_list && manager.password_hint);
+        assert!(!manager.files);
+        assert_eq!(manager.uri_list, None);
+        assert_eq!(manager.password_hint, Some("x-kde-passwordManagerHint"));
+        // Each in the spelling it was offered in.
+        let shouting = Offered::new(&["UTF8_STRING", "TEXT/URI-LIST", "X-KDE-PASSWORDMANAGERHINT"]);
+        assert_eq!(shouting.uri_list, Some("TEXT/URI-LIST"));
+        assert_eq!(shouting.password_hint, Some("X-KDE-PASSWORDMANAGERHINT"));
     }
 
     #[test]
@@ -477,8 +539,10 @@ mod tests {
         assert!(is_secret(b"secret\n"));
         assert!(is_secret(b"secret\0"));
         assert!(!is_secret(b"public"));
-        assert!(!is_secret(b""));
         assert!(!is_secret(b"secrets"));
+        // A hint is offered only to mark secrets.
+        assert!(is_secret(b""));
+        assert!(is_secret(b"\n"));
     }
 
     #[test]
@@ -540,6 +604,101 @@ mod tests {
             ("x-kde-passwordManagerHint", b"public"),
         ]);
         assert!(!text.unwrap().unwrap().sensitive);
+    }
+
+    #[test]
+    fn asks_for_each_type_as_it_was_offered() {
+        let (text, fetched) = read_from(&[
+            ("UTF8_STRING", b"hunter2"),
+            ("TEXT/URI-LIST", b"https://example.com/"),
+            ("X-KDE-PASSWORDMANAGERHINT", b"secret"),
+        ]);
+        assert!(text.unwrap().unwrap().sensitive);
+        assert_eq!(
+            fetched,
+            ["TEXT/URI-LIST", "X-KDE-PASSWORDMANAGERHINT", "UTF8_STRING"]
+        );
+    }
+
+    #[test]
+    fn an_empty_password_hint_counts_as_secret() {
+        let (text, _) = read_from(&[
+            ("UTF8_STRING", b"hunter2"),
+            ("x-kde-passwordManagerHint", b""),
+        ]);
+        assert!(text.unwrap().unwrap().sensitive);
+    }
+
+    /// A clipboard copied to while it is read: each copy in `copies` lands
+    /// just before the text of the one before it is fetched.
+    struct Copying {
+        copies: Vec<Vec<(&'static str, &'static [u8])>>,
+        began: usize,
+        now: usize,
+        begun: usize,
+    }
+
+    impl Copying {
+        fn new(copies: Vec<Vec<(&'static str, &'static [u8])>>) -> Self {
+            Self {
+                copies,
+                began: 0,
+                now: 0,
+                begun: 0,
+            }
+        }
+    }
+
+    impl Source for Copying {
+        fn begin(&mut self, _: Instant) -> Result<Option<Vec<String>>, PlatformError> {
+            self.began = self.now;
+            self.begun += 1;
+            Ok(Some(
+                self.copies[self.now]
+                    .iter()
+                    .map(|(t, _)| (*t).to_owned())
+                    .collect(),
+            ))
+        }
+
+        fn fetch(&mut self, mime_type: &str, _: usize) -> Result<Option<Vec<u8>>, PlatformError> {
+            let is_text = TEXT_TYPES.contains(&mime_type);
+            if is_text && self.now + 1 < self.copies.len() {
+                self.now += 1;
+            }
+            Ok(self.copies[self.now]
+                .iter()
+                .find(|(t, _)| *t == mime_type)
+                .map(|(_, data)| data.to_vec()))
+        }
+
+        fn changed_since_begin(&mut self) -> Result<bool, PlatformError> {
+            Ok(self.now != self.began)
+        }
+    }
+
+    #[test]
+    fn a_read_spanning_two_copies_starts_over() {
+        // Plain text, then a password copied before that text was fetched:
+        // the password must not come back unmarked.
+        let mut clipboard = Copying::new(vec![
+            vec![("UTF8_STRING", b"note")],
+            vec![
+                ("UTF8_STRING", b"hunter2"),
+                ("x-kde-passwordManagerHint", b"secret"),
+            ],
+        ]);
+        let text = read(&mut clipboard, Instant::now()).unwrap().unwrap();
+        assert_eq!((text.text.as_str(), text.sensitive), ("hunter2", true));
+        assert_eq!(clipboard.begun, 2);
+    }
+
+    #[test]
+    fn a_clipboard_that_keeps_changing_fails_the_read() {
+        let copy = vec![("UTF8_STRING", &b"again"[..])];
+        let mut clipboard = Copying::new(vec![copy; READ_ATTEMPTS + 2]);
+        assert!(read(&mut clipboard, Instant::now()).is_err());
+        assert_eq!(clipboard.begun, READ_ATTEMPTS);
     }
 
     #[test]
@@ -609,58 +768,28 @@ mod tests {
         );
     }
 
-    /// Live tests replace the clipboard of the display server they reach,
-    /// so they run on a private one, as `env -u WAYLAND_DISPLAY xvfb-run -a`
-    /// starts, and refuse the desktop session's unless
-    /// `L2L_LIVE_SESSION_CLIPBOARD=1` is set. The session's are X display 0,
-    /// any X display while `WAYLAND_DISPLAY` is set (that is Xwayland), and
-    /// Wayland socket `wayland-0`. Says whether the test runs on the session.
-    pub(super) fn guard_session_clipboard(x11: bool, wayland: bool) -> bool {
-        let env = |name| std::env::var(name).ok();
-        let display = env("DISPLAY");
-        let wayland_display = env("WAYLAND_DISPLAY");
-        let on_x11_session = x11
-            && display.as_deref().is_some_and(|display| {
-                wayland_display.is_some() || x_display_number(display) == Some(0)
-            });
-        let on_wayland_session = wayland && wayland_display.as_deref() == Some("wayland-0");
-        let on_session = on_x11_session || on_wayland_session;
+    /// Tests that use the display servers the environment names replace the
+    /// clipboard of whatever session that is, so they run only when
+    /// `L2L_LIVE_SESSION_CLIPBOARD=1` says to. Tests that start their own
+    /// Xvfb need no such word.
+    pub(super) fn require_session_opt_in() {
         assert!(
-            !on_session || env("L2L_LIVE_SESSION_CLIPBOARD").as_deref() == Some("1"),
-            "refusing to replace the desktop session's clipboard: run this test on a private \
-             display server (for X11, under `env -u WAYLAND_DISPLAY xvfb-run -a`), or set \
-             L2L_LIVE_SESSION_CLIPBOARD=1"
+            std::env::var("L2L_LIVE_SESSION_CLIPBOARD").as_deref() == Ok("1"),
+            "refusing to replace the clipboard of the session in the environment: set \
+             L2L_LIVE_SESSION_CLIPBOARD=1 to run this test (on a private server: \
+             `env -u WAYLAND_DISPLAY L2L_LIVE_SESSION_CLIPBOARD=1 xvfb-run -a cargo test ...`)"
         );
-        on_session
     }
 
-    /// The display number in an X display name such as `:0`, `:1.0` or
-    /// `localhost:10.0`.
-    fn x_display_number(display: &str) -> Option<u32> {
-        let (_, number) = display.rsplit_once(':')?;
-        number.split('.').next()?.parse().ok()
-    }
-
-    #[test]
-    fn reads_x_display_numbers() {
-        assert_eq!(x_display_number(":0"), Some(0));
-        assert_eq!(x_display_number(":0.0"), Some(0));
-        assert_eq!(x_display_number("unix:0"), Some(0));
-        assert_eq!(x_display_number(":99"), Some(99));
-        assert_eq!(x_display_number("localhost:10.0"), Some(10));
-        assert_eq!(x_display_number(""), None);
-        assert_eq!(x_display_number("wayland-0"), None);
-    }
-
-    /// Needs a session that lets apps use the clipboard in the background,
-    /// and replaces its clipboard while it runs (the text on it before is
-    /// put back). Refuses the desktop session's (see
-    /// [`guard_session_clipboard`]); run it on a private X server:
-    /// `env -u WAYLAND_DISPLAY xvfb-run -a cargo test -p link2linux-platform -- --ignored --test-threads=1 background_clipboard`
+    /// Opens the clipboard as the app does, through the display servers the
+    /// environment names, and replaces the clipboard of that session while
+    /// it runs (the text on it before is put back), so it runs only when
+    /// `L2L_LIVE_SESSION_CLIPBOARD=1` says to; on a private X server:
+    /// `env -u WAYLAND_DISPLAY L2L_LIVE_SESSION_CLIPBOARD=1 xvfb-run -a cargo test -p link2linux-platform -- --ignored background_clipboard`
     #[tokio::test]
-    #[ignore = "replaces the clipboard: run under `env -u WAYLAND_DISPLAY xvfb-run -a`"]
+    #[ignore = "replaces the session's clipboard: needs L2L_LIVE_SESSION_CLIPBOARD=1"]
     async fn background_clipboard() {
-        let on_session = guard_session_clipboard(true, true);
+        require_session_opt_in();
         let clipboard = LinuxClipboard::open();
         assert_eq!(
             clipboard.access(),
@@ -684,11 +813,9 @@ mod tests {
             Some(saved) => clipboard.write(&saved).await,
             None => Ok(()),
         };
-        if on_session {
-            // A clipboard manager, such as GNOME's, keeps the last text it
-            // copied once the app that wrote it exits: give it time to.
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
+        // A clipboard manager, such as GNOME's, keeps the last text it copied
+        // once the app that wrote it exits: give it time to.
+        tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(outcome.unwrap(), Some(written));
         restored.unwrap();
     }
@@ -739,13 +866,13 @@ mod tests {
     }
 
     /// A private X server, stopped when dropped.
-    struct PrivateX {
+    pub(super) struct PrivateX {
         server: std::process::Child,
-        display: String,
+        pub(super) display: String,
     }
 
     impl PrivateX {
-        fn start() -> Self {
+        pub(super) fn start() -> Self {
             use std::io::BufRead;
             // Xvfb picks a free display and writes its number to stdout.
             let mut server = std::process::Command::new("Xvfb")
@@ -955,6 +1082,32 @@ mod tests {
         );
         // Not dropped, as when the app exits.
         std::mem::forget((holder, reader, staller));
+    }
+
+    #[tokio::test]
+    async fn the_worker_skips_jobs_nobody_waits_for() {
+        let worker = Worker::spawn("test-worker", Vec::new()).unwrap();
+        let (release, released) = mpsc::channel::<()>();
+        let mut busy = std::pin::pin!(worker.run(move |_: &mut Vec<u32>| {
+            let _ = released.recv();
+            Ok(())
+        }));
+        // Each is sent to the thread when first polled; the second waits in
+        // line behind the first, and its caller gives up.
+        let wait = Duration::from_millis(20);
+        assert!(tokio::time::timeout(wait, &mut busy).await.is_err());
+        let abandoned = worker.run(|seen: &mut Vec<u32>| {
+            seen.push(1);
+            Ok(())
+        });
+        assert!(tokio::time::timeout(wait, abandoned).await.is_err());
+        release.send(()).unwrap();
+        busy.await.unwrap();
+        let seen = worker
+            .run(|seen: &mut Vec<u32>| Ok(seen.clone()))
+            .await
+            .unwrap();
+        assert!(seen.is_empty());
     }
 
     #[tokio::test]
