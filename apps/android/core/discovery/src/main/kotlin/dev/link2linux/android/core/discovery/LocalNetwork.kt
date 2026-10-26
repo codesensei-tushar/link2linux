@@ -46,9 +46,9 @@ interface LocalNetworks {
 /** Address arithmetic for beacons. */
 object Subnets {
 
-    /** The directed broadcast address of an IPv4 subnet, or null for prefixes that have none. */
+    /** The directed broadcast address of an IPv4 subnet, or null for prefixes that have none or are too wide to be local. */
     fun broadcastAddress(address: Inet4Address, prefixLength: Int): Inet4Address? {
-        if (prefixLength !in 1..30) return null
+        if (prefixLength !in MIN_IPV4_PREFIX..30) return null
         val mask = (-1 shl (32 - prefixLength))
         val value = address.address.fold(0) { acc, b -> (acc shl 8) or (b.toInt() and 0xff) }
         val broadcast = value or mask.inv()
@@ -78,13 +78,24 @@ object Subnets {
 
     private val LIMITED_BROADCAST: InetAddress = InetAddress.getByAddress(byteArrayOf(-1, -1, -1, -1))
 
-    /** Whether [target] is in a subnet of [network]; link-local IPv6 never counts, as its interface is unknown. */
+    /**
+     * Whether [target] is in a subnet of [network]; link-local IPv6 never
+     * counts, as its interface is unknown. A subnet wider than /8 (IPv4) or
+     * /48 (IPv6) is no local network, so it never counts either: unicast
+     * beacons, which may go to addresses from a scanned code, stay on the
+     * phone's own links.
+     */
     fun isOnLink(network: LocalNetwork, target: InetAddress): Boolean {
         if (target is Inet6Address && target.isLinkLocalAddress) return false
         return network.addresses.any { (own, prefix) ->
-            own.javaClass == target.javaClass && sharesPrefix(own.address, target.address, prefix)
+            own.javaClass == target.javaClass &&
+                prefix >= (if (own is Inet4Address) MIN_IPV4_PREFIX else MIN_IPV6_PREFIX) &&
+                sharesPrefix(own.address, target.address, prefix)
         }
     }
+
+    private const val MIN_IPV4_PREFIX = 8
+    private const val MIN_IPV6_PREFIX = 48
 
     /** The 4 bytes of an IPv4-mapped IPv6 address (::ffff:a.b.c.d); any other address as it is. */
     fun unmapped(address: ByteArray): ByteArray {

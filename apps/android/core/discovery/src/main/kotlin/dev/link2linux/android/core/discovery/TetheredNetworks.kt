@@ -44,7 +44,7 @@ object TetheredNetworks {
             .filter { it.isUp && !it.isLoopback && it.name !in claimed && !isExcludedName(it.name) }
             .mapNotNull { snapshot ->
                 val addresses = snapshot.addresses.filter { (a, prefix) ->
-                    a is Inet4Address && a.isSiteLocalAddress && prefix in 1..30
+                    a is Inet4Address && a.isSiteLocalAddress && prefix in 8..30
                 }
                 if (addresses.isEmpty()) {
                     null

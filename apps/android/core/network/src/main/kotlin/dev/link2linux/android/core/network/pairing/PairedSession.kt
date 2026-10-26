@@ -15,6 +15,9 @@ import dev.link2linux.protocol.v1.FeatureStatus
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.PresenceUpdate
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -56,10 +59,18 @@ interface SessionHooks {
  * desktop's messages.
  *
  * - `KeyRotation` stores the announced key as the record's next key and is
- *   answered with `Ack`.
+ *   answered with `Ack`, unless the key is this phone's or another paired
+ *   desktop's: a desktop cannot claim a key it does not own.
  * - `Goodbye` ends the session; with `GOODBYE_REASON_UNPAIRED` the record is
  *   deleted too.
  * - A pairing message outside pairing is a protocol error.
+ *
+ * The session lasts only while its pairing does. When no record accepts
+ * the desktop's key or holds this pairing's presence key any more (removed
+ * on either side, replaced by a pairing with another key, or lost), the
+ * session ends with `Goodbye(UNPAIRED)`. A key rotation keeps the presence
+ * key and re-pairing with the same key keeps the key, so neither counts:
+ * their older session is replaced as usual.
  */
 internal class PairedSession(
     private val devices: PairedDeviceRepository,
@@ -68,9 +79,16 @@ internal class PairedSession(
     private val onRecordsChanged: suspend () -> Unit = {},
 ) {
 
-    /** @param key the key the desktop presented on this connection. */
-    suspend fun run(key: KeyFingerprint, session: Session) {
-        val desktop = devices.find(key) ?: return session.close()
+    /**
+     * @param key the key the desktop presented on this connection.
+     * @param phoneKey the key this phone presented.
+     */
+    suspend fun run(key: KeyFingerprint, phoneKey: KeyFingerprint, session: Session) = coroutineScope {
+        val desktop = devices.find(key) ?: return@coroutineScope session.close()
+        val unpaired = launch {
+            devices.pairedDevices.first { list -> list.none { it.accepts(key) || it.presenceKey == desktop.presenceKey } }
+            session.goodbye(GoodbyeReason.GOODBYE_REASON_UNPAIRED)
+        }
         try {
             session.send { featureStatus = hooks.featureStatus() }
             session.send {
@@ -79,24 +97,27 @@ internal class PairedSession(
             hooks.onEstablished(desktop, session)
             while (true) {
                 val envelope = session.next() ?: break
-                if (!handle(key, session, envelope)) break
+                if (!handle(key, phoneKey, session, envelope)) break
             }
         } finally {
+            unpaired.cancel()
             session.close()
             withContext(NonCancellable) { hooks.onEnded(desktop, session) }
         }
     }
 
     /** Returns false when the session is over. */
-    private suspend fun handle(key: KeyFingerprint, session: Session, envelope: Envelope): Boolean {
+    private suspend fun handle(key: KeyFingerprint, phoneKey: KeyFingerprint, session: Session, envelope: Envelope): Boolean {
         val desktop = devices.find(key) ?: return false // removed on this phone meanwhile
         when (envelope.payloadCase) {
             PayloadCase.KEY_ROTATION -> {
-                val next = envelope.keyRotation.nextSpkiSha256.toByteArray()
-                if (next.size != KeyFingerprint.SIZE) {
-                    reply(session, envelope) { errorReply = error(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, "next_spki_sha256 has ${next.size} bytes") }
+                val refusal = rotationRefusal(desktop, phoneKey, envelope.keyRotation.nextSpkiSha256.toByteArray())
+                if (refusal != null) {
+                    reply(session, envelope) { errorReply = error(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, refusal) }
                 } else {
-                    devices.update(desktop.fingerprint) { it.copy(nextFingerprint = KeyFingerprint.of(next)) }
+                    val next = KeyFingerprint.of(envelope.keyRotation.nextSpkiSha256.toByteArray())
+                    // Announcing the current key again changes nothing.
+                    if (next != desktop.fingerprint) devices.update(desktop.fingerprint) { it.copy(nextFingerprint = next) }
                     onRecordsChanged()
                     reply(session, envelope) { ack = Ack.getDefaultInstance() }
                 }
@@ -120,6 +141,15 @@ internal class PairedSession(
             }
         }
         return true
+    }
+
+    /** Why [desktop] may not announce [next] as its next key, or null if it may. */
+    private suspend fun rotationRefusal(desktop: PairedDevice, phoneKey: KeyFingerprint, next: ByteArray): String? {
+        if (next.size != KeyFingerprint.SIZE) return "next_spki_sha256 has ${next.size} bytes"
+        val key = KeyFingerprint.of(next)
+        if (key == phoneKey) return "next_spki_sha256 is this phone's key"
+        val taken = devices.pairedDevices.first().any { it.fingerprint != desktop.fingerprint && it.accepts(key) }
+        return if (taken) "next_spki_sha256 belongs to another paired device" else null
     }
 
     private suspend fun reply(session: Session, request: Envelope, fill: Envelope.Builder.() -> Unit) =

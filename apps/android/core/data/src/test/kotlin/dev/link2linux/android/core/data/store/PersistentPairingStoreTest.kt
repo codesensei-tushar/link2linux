@@ -9,6 +9,7 @@ import dev.link2linux.android.core.model.PresenceKey
 import dev.link2linux.android.core.security.AesGcmSecretBox
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -22,6 +23,7 @@ import java.io.IOException
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.security.InvalidKeyException
 import javax.crypto.KeyGenerator
 
 /** The store with a software key; on a phone the key lives in the Keystore. */
@@ -108,12 +110,43 @@ class PersistentPairingStoreTest {
     }
 
     @Test
-    fun aTamperedFileStartsOver() = runBlocking {
+    fun aTamperedFileStartsOverAndIsKeptAside() = runBlocking {
         store().save(desk)
         val bytes = file.readBytes()
         bytes[bytes.size / 2] = (bytes[bytes.size / 2].toInt() xor 1).toByte()
         file.writeBytes(bytes)
         assertTrue(store().pairedDevices.first().isEmpty())
+        assertArrayEquals(bytes, File(file.parentFile, "pairings.bin.unreadable").readBytes())
+    }
+
+    @Test
+    fun aTruncatedFileStartsOver() = runBlocking {
+        store().save(desk)
+        file.writeBytes(file.readBytes().copyOf(5))
+        assertTrue(store().pairedDevices.first().isEmpty())
+    }
+
+    @Test
+    fun aKeystoreErrorThatMayPassLeavesTheFileAlone() = runBlocking {
+        val first = store()
+        first.save(desk)
+        val id = first.localDevice().id
+        val sealed = file.readBytes()
+
+        // Like a Keystore hiccup: the key cannot be used once, then it can.
+        var failures = 1
+        val flaky = object : AesGcmSecretBox({ key }) {
+            override fun open(sealed: ByteArray, associatedData: ByteArray): ByteArray {
+                if (failures-- > 0) throw InvalidKeyException("Keystore is busy")
+                return super.open(sealed, associatedData)
+            }
+        }
+        val store = store(flaky)
+
+        assertEquals(listOf(desk), store.pairedDevices.first())
+        assertEquals(id, store.localDevice().id)
+        assertArrayEquals(sealed, file.readBytes())
+        assertFalse(File(file.parentFile, "pairings.bin.unreadable").exists())
     }
 
     @Test
@@ -130,6 +163,30 @@ class PersistentPairingStoreTest {
 
         store.forget(fingerprint(3))
         assertEquals(listOf(fingerprint(2)), store().pairedDevices.first().map { it.fingerprint })
+    }
+
+    @Test
+    fun aCurrentKeyWinsOverAnotherRecordsNextKey() = runBlocking {
+        val store = store()
+        // desk names fingerprint(2) as its next key, though another desktop now holds it.
+        store.save(desk)
+        val other = laptop.copy(fingerprint = fingerprint(2))
+        store.save(other)
+
+        assertEquals(other, store.find(fingerprint(2)))
+        // Saving kept desk, without its claim on the key.
+        assertEquals(listOf(desk.copy(nextFingerprint = null), other), store().pairedDevices.first())
+    }
+
+    @Test
+    fun anUpdateDropsOnlyARecordWithTheSameCurrentKey() = runBlocking {
+        val store = store()
+        store.save(laptop.copy(nextFingerprint = fingerprint(7)))
+        store.save(desk)
+        // desk takes key 7 as its current key: the laptop keeps its record, not its claim on 7.
+        store.update(fingerprint(1)) { it.copy(fingerprint = fingerprint(7), nextFingerprint = null) }
+        assertEquals(listOf(fingerprint(3), fingerprint(7)), store.pairedDevices.first().map { it.fingerprint })
+        assertNull(store.find(fingerprint(3))?.nextFingerprint)
     }
 
     @Test
