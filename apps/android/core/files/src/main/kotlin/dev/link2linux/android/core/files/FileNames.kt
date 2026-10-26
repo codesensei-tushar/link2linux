@@ -53,9 +53,12 @@ object FileNames {
      */
     fun numbered(name: String, n: Int): String {
         require(n > 0) { "Numbers start at 1" }
+        val number = " ($n)"
         val (base, extension) = split(name)
-        val suffix = " ($n)$extension"
-        return fit(base, MAX_BYTES - utf8Length(suffix)) + suffix
+        val room = MAX_BYTES - utf8Length(number + extension)
+        // An "extension" that leaves no room for the rest of the name is part of the name.
+        if (room < 1) return prefix(name, MAX_BYTES - utf8Length(number)) + number
+        return fit(base, room) + number + extension
     }
 
     /** The number of bytes [text] takes in UTF-8. */

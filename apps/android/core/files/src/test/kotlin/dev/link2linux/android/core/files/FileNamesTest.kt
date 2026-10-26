@@ -95,4 +95,17 @@ class FileNamesTest {
         assertEquals(255, FileNames.utf8Length(numbered))
         assertTrue(numbered.endsWith(" (3).jpg"))
     }
+
+    @Test
+    fun aDotNearTheStartOfALongNameDoesNotPushTheNumberPastTheLimit() {
+        // safe() keeps a name of 255 bytes as it is, and its "extension" here is 250 bytes.
+        val name = "v1." + "x".repeat(250) + "z"
+        assertEquals(name, FileNames.safe(name))
+        for (n in listOf(1, 12, 999)) {
+            val numbered = FileNames.numbered(name, n)
+            assertTrue(numbered, FileNames.utf8Length(numbered) <= 255)
+            assertTrue(numbered.startsWith("v1.xxx"))
+            assertTrue(numbered.endsWith(" ($n)"))
+        }
+    }
 }
