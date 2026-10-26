@@ -265,9 +265,11 @@ impl Backend for LiveBackend {
     }
 
     fn set_settings(&self, settings: Settings) -> Result<(), BackendError> {
-        *self.settings.lock().expect("not poisoned") = settings;
+        let before = std::mem::replace(&mut *self.settings.lock().expect("not poisoned"), settings);
         self.popups.set_show_text(settings.show_notification_text);
-        self.runtime.set_clipboard_settings(settings.clipboard());
+        if before.clipboard() != settings.clipboard() {
+            self.runtime.set_clipboard_settings(settings.clipboard());
+        }
         settings.save(&self.settings_path).map_err(|error| {
             tracing::warn!(%error, "could not save the settings");
             BackendError::NotSaved

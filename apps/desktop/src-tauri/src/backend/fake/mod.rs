@@ -15,6 +15,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use link2linux_runtime::view::{
+    ClipboardActivity, ClipboardDirection, ClipboardMode, ClipboardPhone, ClipboardPhoneState,
+    ClipboardProblem, ClipboardProblemKind, ClipboardStatus, DeviceStatus,
+};
+
 use super::{Backend, BackendError, Device, EventSink, PairingMethod, PairingState, PhoneTarget};
 
 pub use machine::Machine;
@@ -105,6 +110,70 @@ impl Shared {
 pub struct FakeBackend {
     shared: Arc<Shared>,
     timer: Option<JoinHandle<()>>,
+    clipboard: Mutex<FakeClipboard>,
+}
+
+/// What the clipboard page shows of the scripted phones.
+#[derive(Default)]
+struct FakeClipboard {
+    /// Newest first.
+    activity: Vec<ClipboardActivity>,
+    problem: Option<ClipboardProblem>,
+}
+
+impl FakeClipboard {
+    /// The page for `devices`, which share automatically while connected.
+    fn status(&self, devices: &[Device]) -> ClipboardStatus {
+        ClipboardStatus {
+            mode: ClipboardMode::Automatic,
+            phones: devices
+                .iter()
+                .map(|device| ClipboardPhone {
+                    device_id: device.id.clone(),
+                    name: device.name.clone(),
+                    state: if device.status == DeviceStatus::Connected {
+                        ClipboardPhoneState::Ready
+                    } else {
+                        ClipboardPhoneState::Disconnected
+                    },
+                })
+                .collect(),
+            activity: self.activity.clone(),
+            problem: self.problem.clone(),
+            held: None,
+        }
+    }
+
+    /// The user sent the clipboard at `now`: it reaches every connected
+    /// phone, or none is there to take it.
+    fn send(&mut self, devices: &[Device], now: i64) {
+        let ready: Vec<_> = devices
+            .iter()
+            .filter(|device| device.status == DeviceStatus::Connected)
+            .collect();
+        self.problem = ready.is_empty().then_some(ClipboardProblem {
+            kind: ClipboardProblemKind::NoPhone,
+            device_id: None,
+            phone_name: None,
+            bytes: None,
+            at_unix_ms: now,
+        });
+        for device in ready {
+            self.activity.insert(
+                0,
+                ClipboardActivity {
+                    device_id: device.id.clone(),
+                    phone_name: device.name.clone(),
+                    direction: ClipboardDirection::Sent,
+                    bytes: 18,
+                    sensitive: false,
+                    at_unix_ms: now,
+                },
+            );
+        }
+        self.activity
+            .truncate(link2linux_runtime::clipboard::MAX_ACTIVITY);
+    }
 }
 
 impl FakeBackend {
@@ -129,7 +198,11 @@ impl FakeBackend {
                 move || timer_loop(&shared)
             })
             .ok();
-        Self { shared, timer }
+        Self {
+            shared,
+            timer,
+            clipboard: Mutex::default(),
+        }
     }
 
     /// Uses the script named by `L2L_FAKE_SCRIPT`, defaulting to `success`.
@@ -211,6 +284,30 @@ impl Backend for FakeBackend {
     fn unpair(&self, device_id: &str) -> Result<(), BackendError> {
         self.shared.run(|m, _| m.unpair(device_id).map(|c| (c, ())))
     }
+
+    fn clipboard(&self) -> ClipboardStatus {
+        let devices = self.devices();
+        self.lock_clipboard().status(&devices)
+    }
+
+    fn send_clipboard(&self) -> Result<(), BackendError> {
+        let devices = self.devices();
+        let status = {
+            let mut clipboard = self.lock_clipboard();
+            clipboard.send(&devices, self.shared.clock.now().unix_ms);
+            clipboard.status(&devices)
+        };
+        self.shared.sink.clipboard_changed(&status);
+        Ok(())
+    }
+}
+
+impl FakeBackend {
+    fn lock_clipboard(&self) -> MutexGuard<'_, FakeClipboard> {
+        self.clipboard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +337,13 @@ mod tests {
                 .unwrap()
                 .push(format!("devices:{}", devices.len()));
         }
+
+        fn clipboard_changed(&self, status: &ClipboardStatus) {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("clipboard:{}", status.activity.len()));
+        }
     }
 
     #[test]
@@ -262,5 +366,38 @@ mod tests {
             ["pairing:qrOffer", "pairing:idle"]
         );
         drop(backend); // joins the timer thread
+    }
+
+    #[test]
+    fn the_scripted_phones_share_the_clipboard_while_connected() {
+        let recorder = Arc::new(Recorder::default());
+        let backend = FakeBackend::new(Script::Demo, recorder.clone());
+        let status = backend.clipboard();
+        assert_eq!(status.mode, ClipboardMode::Automatic);
+        let states: Vec<_> = status
+            .phones
+            .iter()
+            .map(|phone| (phone.name.as_str(), phone.state))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("Pixel 9", ClipboardPhoneState::Ready),
+                ("Old Galaxy", ClipboardPhoneState::Disconnected)
+            ]
+        );
+
+        backend.send_clipboard().unwrap();
+        let status = backend.clipboard();
+        assert_eq!(status.activity.len(), 1);
+        assert_eq!(status.activity[0].phone_name, "Pixel 9");
+        assert!(status.problem.is_none());
+        assert_eq!(*recorder.log.lock().unwrap(), ["clipboard:1"]);
+
+        // Without a connected phone, nobody takes it.
+        let alone = FakeBackend::new(Script::Success, Arc::new(Recorder::default()));
+        alone.send_clipboard().unwrap();
+        let problem = alone.clipboard().problem.unwrap();
+        assert_eq!(problem.kind, ClipboardProblemKind::NoPhone);
     }
 }
