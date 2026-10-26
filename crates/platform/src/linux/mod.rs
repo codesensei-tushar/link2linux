@@ -20,19 +20,33 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{CallAudio, Clipboard, FileStore, PlatformError};
+use crate::{CallAudio, Clipboard, ClipboardAccess, ClipboardText, FileStore, PlatformError};
 
 /// The desktop clipboard: Wayland data-control where the compositor offers
 /// it, X11 selections otherwise.
 #[derive(Debug, Default)]
 pub struct LinuxClipboard;
 
+impl LinuxClipboard {
+    /// The clipboard of the desktop session the app runs in. Never fails
+    /// and never blocks: without a way to reach the clipboard in the
+    /// background, its access is [`ClipboardAccess::FocusOnly`].
+    #[must_use]
+    pub fn open() -> Self {
+        Self
+    }
+}
+
 impl Clipboard for LinuxClipboard {
-    async fn read_text(&self) -> Result<Option<String>, PlatformError> {
+    fn access(&self) -> ClipboardAccess {
+        ClipboardAccess::FocusOnly
+    }
+
+    async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
         Err(PlatformError::Unsupported("clipboard"))
     }
 
-    async fn write_text(&self, _text: &str) -> Result<(), PlatformError> {
+    async fn write(&self, _text: &ClipboardText) -> Result<(), PlatformError> {
         Err(PlatformError::Unsupported("clipboard"))
     }
 
@@ -135,7 +149,7 @@ mod tests {
     #[tokio::test]
     async fn stubs_report_unsupported() {
         assert!(matches!(
-            LinuxClipboard.read_text().await,
+            LinuxClipboard.read().await,
             Err(PlatformError::Unsupported(_))
         ));
         assert!(matches!(

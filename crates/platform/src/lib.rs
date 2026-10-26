@@ -4,7 +4,8 @@
 //! from it is a trait here, implemented once per OS:
 //!
 //! - [`NotificationSink`]: show phone notifications on the desktop;
-//! - [`Clipboard`]: read, write and watch the desktop clipboard;
+//! - [`Clipboard`]: read, write and watch the desktop clipboard, as far as
+//!   the desktop session allows ([`ClipboardAccess`]);
 //! - [`FileStore`]: where received files go, and opening them;
 //! - [`CallAudio`]: carry call audio between the phone and the desktop's
 //!   microphone and speakers over Bluetooth;
@@ -209,15 +210,57 @@ pub trait NotificationSink: Send + Sync {
     ) -> impl Future<Output = Result<NotificationResponse, PlatformError>> + Send;
 }
 
+/// Text on the desktop clipboard.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClipboardText {
+    /// The text, as it was copied.
+    pub text: String,
+    /// The app it was copied from marked it as a secret, as password
+    /// managers do with the `x-kde-passwordManagerHint` type set to
+    /// `secret`. Written back with the same mark, so clipboard managers
+    /// leave it out of their history.
+    pub sensitive: bool,
+}
+
+impl std::fmt::Debug for ClipboardText {
+    // Clipboard text is the user's, and may be a password: never logged.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardText")
+            .field("bytes", &self.text.len())
+            .field("sensitive", &self.sensitive)
+            .finish()
+    }
+}
+
+/// How much of the clipboard the desktop session lets the app use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardAccess {
+    /// Reading, writing and change reports all work while the app's window
+    /// is in the background.
+    Background,
+    /// The clipboard can be used only while the app's own window has focus,
+    /// as on a Wayland session whose compositor offers no clipboard access
+    /// to background apps. [`Clipboard::changed`] never resolves.
+    FocusOnly,
+}
+
 /// The desktop clipboard.
 pub trait Clipboard: Send + Sync {
-    /// The current text content, or `None` when the clipboard holds no text.
-    fn read_text(&self) -> impl Future<Output = Result<Option<String>, PlatformError>> + Send;
+    /// What the desktop session allows.
+    fn access(&self) -> ClipboardAccess;
 
-    /// Replaces the clipboard content with `text`.
-    fn write_text(&self, text: &str) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// The current text, or `None` when the clipboard holds no text, or
+    /// holds copied files rather than text.
+    fn read(&self) -> impl Future<Output = Result<Option<ClipboardText>, PlatformError>> + Send;
 
-    /// Resolves the next time another application changes the clipboard.
+    /// Replaces the clipboard content with `text`, and keeps serving it to
+    /// other apps until something else is copied.
+    fn write(&self, text: &ClipboardText)
+    -> impl Future<Output = Result<(), PlatformError>> + Send;
+
+    /// Resolves the next time the clipboard changes, also after this app's
+    /// own [`write`](Self::write): callers compare the content to tell the
+    /// two apart. Never resolves with [`ClipboardAccess::FocusOnly`].
     fn changed(&self) -> impl Future<Output = Result<(), PlatformError>> + Send;
 }
 
