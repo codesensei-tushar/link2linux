@@ -15,8 +15,14 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import dev.link2linux.android.MainActivity
 import dev.link2linux.android.R
+import dev.link2linux.android.core.data.DesktopListener
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.android.ConnectivityLocalNetworks
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 
@@ -38,6 +44,9 @@ class ConnectionService : Service() {
 
     @Inject lateinit var discovery: DiscoveryController
     @Inject lateinit var networks: ConnectivityLocalNetworks
+    @Inject lateinit var listener: DesktopListener
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()
@@ -52,6 +61,8 @@ class ConnectionService : Service() {
         )
         networks.start()
         discovery.start()
+        // Listening for as long as the service runs lets paired desktops reconnect outside a pairing window.
+        scope.launch { listener.start() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -66,8 +77,12 @@ class ConnectionService : Service() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
         networks.stop()
-        runBlocking { discovery.stop() }
+        runBlocking {
+            listener.stop()
+            discovery.stop()
+        }
         super.onDestroy()
     }
 
