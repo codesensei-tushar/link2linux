@@ -1,0 +1,31 @@
+[package]
+name = "link2linux-runtime"
+description = "The desktop runtime of link2linux: discovery, dialing, pairing and sessions with paired phones"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+link2linux-core.workspace = true
+link2linux-platform.workspace = true
+link2linux-protocol.workspace = true
+serde.workspace = true
+specta = { version = "=2.0.0-rc.26", features = ["derive"] }
+specta-typescript = "0.0.13"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+rustls.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "test-util", "time"] }
+tokio-rustls.workspace = true
+tokio-util.workspace = true

@@ -14,6 +14,7 @@ publish = false
 link2linux-core = { path = "crates/core" }
 link2linux-platform = { path = "crates/platform" }
 link2linux-protocol = { path = "crates/protocol" }
+link2linux-runtime = { path = "crates/runtime" }
 
 # Wire format.
 bytes = "1.12"
