@@ -12,13 +12,13 @@ use std::thread;
 use std::time::Instant;
 
 use rustix::event::{PollFd, PollFlags, Timespec};
-use tokio::sync::watch;
 use wl_clipboard_rs::copy;
 use wl_clipboard_rs::paste::{self, ClipboardType, Seat};
 use wl_clipboard_rs::watch::{CancelHandle, ClipboardType as Watched, Watcher};
 
 use super::{
-    OPEN_TIMEOUT, PlatformError, TRANSFER_TIMEOUT, Worker, read_text, too_long, unavailable,
+    OPEN_TIMEOUT, PlatformError, Reporter, TRANSFER_TIMEOUT, Worker, read_text, too_long,
+    unavailable,
 };
 use crate::ClipboardText;
 
@@ -37,7 +37,7 @@ impl WaylandClipboard {
     /// The clipboard through data-control. Fails when the session is not
     /// Wayland, the compositor does not offer data-control, or it does not
     /// answer in time; it is tried once.
-    pub(super) fn open(changes: watch::Sender<()>) -> Result<Self, PlatformError> {
+    pub(super) fn open(changes: Reporter) -> Result<Self, PlatformError> {
         let (ready, started) = std::sync::mpsc::sync_channel(1);
         thread::Builder::new()
             .name("wayland-clipboard-watch".into())
@@ -68,7 +68,7 @@ impl WaylandClipboard {
 /// `changes`. Says on `ready` whether it could start.
 fn watch_changes(
     ready: &std::sync::mpsc::SyncSender<Result<CancelHandle, paste::Error>>,
-    changes: &watch::Sender<()>,
+    changes: &Reporter,
 ) {
     let mut watcher = match Watcher::new(Watched::Regular, Seat::Unspecified) {
         Ok(watcher) => watcher,
@@ -89,7 +89,7 @@ fn watch_changes(
     loop {
         match watcher.next_event() {
             Ok(Some(_)) => {
-                changes.send_replace(());
+                changes.report_change();
             }
             Ok(None) => return,
             Err(error) => {
@@ -181,6 +181,7 @@ mod tests {
     use std::io::Write;
 
     use super::super::MAX_READ_BYTES;
+    use super::super::link;
     use super::super::tests::guard_session_clipboard;
     use super::*;
 
@@ -222,20 +223,19 @@ mod tests {
     #[ignore = "replaces the clipboard: needs a private compositor with data-control"]
     async fn wayland_clipboard_round_trip() {
         let on_session = guard_session_clipboard(false, true);
-        let (changes, mut changed) = watch::channel(());
-        let clipboard = WaylandClipboard::open(changes).expect("data-control");
+        let (reporter, changed) = link();
+        let clipboard = WaylandClipboard::open(reporter).expect("data-control");
         let saved = clipboard.read().await.unwrap();
         let outcome = async {
             let secret = ClipboardText {
                 text: "ü".repeat(128 << 10),
                 sensitive: true,
             };
-            changed.mark_unchanged();
+            changed.changes.lock().await.mark_unchanged();
             clipboard.write(secret.clone()).await?;
             tokio::time::timeout(TRANSFER_TIMEOUT, changed.changed())
                 .await
-                .map_err(|_| unavailable("no change reported in time"))?
-                .map_err(unavailable)?;
+                .map_err(|_| unavailable("no change reported in time"))??;
             let read = clipboard.read().await?;
             let plain = ClipboardText {
                 text: "plain".into(),

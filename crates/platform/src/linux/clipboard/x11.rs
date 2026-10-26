@@ -20,7 +20,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec};
-use tokio::sync::watch;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::errors::{ConnectionError, ReplyError, ReplyOrIdError};
 use x11rb::protocol::Event;
@@ -35,8 +34,8 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
 use super::{
-    MAX_READ_BYTES, OPEN_TIMEOUT, PlatformError, TRANSFER_TIMEOUT, Worker, read_text, too_long,
-    unavailable,
+    MAX_READ_BYTES, OPEN_TIMEOUT, PlatformError, Reporter, TRANSFER_TIMEOUT, Worker, read_text,
+    too_long, unavailable,
 };
 use crate::ClipboardText;
 
@@ -78,17 +77,14 @@ impl X11Clipboard {
     /// when `None`. Fails when there is no such server, it refuses the
     /// connection or lacks XFixes, or it does not answer in time; it is
     /// tried once.
-    pub(super) fn open(
-        changes: watch::Sender<()>,
-        display: Option<&str>,
-    ) -> Result<Self, PlatformError> {
+    pub(super) fn open(changes: Reporter, display: Option<&str>) -> Result<Self, PlatformError> {
         Self::open_with(changes, display, None)
     }
 
     /// With `part_bytes`, the owner sends text over that size in parts of
     /// that size, so tests can make it.
     fn open_with(
-        changes: watch::Sender<()>,
+        changes: Reporter,
         display: Option<&str>,
         part_bytes: Option<usize>,
     ) -> Result<Self, PlatformError> {
@@ -105,7 +101,7 @@ impl X11Clipboard {
     }
 
     fn start(
-        changes: watch::Sender<()>,
+        changes: Reporter,
         display: Option<&str>,
         part_bytes: Option<usize>,
     ) -> Result<Self, PlatformError> {
@@ -542,12 +538,7 @@ impl Owner {
         })
     }
 
-    fn run(
-        mut self,
-        commands: &mpsc::Receiver<Take>,
-        wake: &UnixStream,
-        changes: &watch::Sender<()>,
-    ) {
+    fn run(mut self, commands: &mpsc::Receiver<Take>, wake: &UnixStream, changes: &Reporter) {
         if let Err(error) = self.serve(commands, wake, changes) {
             tracing::warn!(%error, "the X11 clipboard connection closed");
         }
@@ -558,7 +549,7 @@ impl Owner {
         &mut self,
         commands: &mpsc::Receiver<Take>,
         mut wake: &UnixStream,
-        changes: &watch::Sender<()>,
+        changes: &Reporter,
     ) -> Result<(), ReplyOrIdError> {
         wake.set_nonblocking(true)
             .map_err(ConnectionError::IoError)?;
@@ -622,10 +613,10 @@ impl Owner {
         Ok(())
     }
 
-    fn handle(&mut self, event: Event, changes: &watch::Sender<()>) -> Result<(), ReplyOrIdError> {
+    fn handle(&mut self, event: Event, changes: &Reporter) -> Result<(), ReplyOrIdError> {
         match event {
             Event::XfixesSelectionNotify(notify) if notify.selection == self.atoms.CLIPBOARD => {
-                changes.send_replace(());
+                changes.report_change();
             }
             Event::SelectionRequest(request) => self.answer(&request)?,
             Event::SelectionClear(clear)
@@ -819,6 +810,7 @@ impl Owner {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{NO_X_SERVER, guard_session_clipboard};
+    use super::super::{Link, link};
     use super::*;
 
     fn transfer(text: &[u8]) -> Transfer {
@@ -867,21 +859,21 @@ mod tests {
         // No server on that display, and a name like an unset `DISPLAY`.
         for display in [NO_X_SERVER, ""] {
             let started = Instant::now();
-            let (changes, _) = watch::channel(());
-            assert!(X11Clipboard::open(changes, Some(display)).is_err());
+            let (reporter, _) = link();
+            assert!(X11Clipboard::open(reporter, Some(display)).is_err());
             assert!(started.elapsed() < OPEN_TIMEOUT, "{display:?}");
         }
     }
 
     /// Opens the clipboard of the X server in `DISPLAY`.
-    fn open(part_bytes: Option<usize>) -> (X11Clipboard, watch::Receiver<()>) {
-        let (changes, changed) = watch::channel(());
-        let clipboard = X11Clipboard::open_with(changes, None, part_bytes).expect("an X server");
-        (clipboard, changed)
+    fn open(part_bytes: Option<usize>) -> (X11Clipboard, Link) {
+        let (reporter, link) = link();
+        let clipboard = X11Clipboard::open_with(reporter, None, part_bytes).expect("an X server");
+        (clipboard, link)
     }
 
-    async fn next_change(changed: &mut watch::Receiver<()>) -> Result<(), String> {
-        tokio::time::timeout(TRANSFER_TIMEOUT, changed.changed())
+    async fn next_change(link: &Link) -> Result<(), String> {
+        tokio::time::timeout(TRANSFER_TIMEOUT, link.changed())
             .await
             .map_err(|_| "no change reported in time")?
             .map_err(|e| e.to_string())
@@ -897,14 +889,16 @@ mod tests {
     }
 
     /// Needs an X server, and replaces its clipboard while it runs (the
-    /// text on it before is put back). Run it on a private one:
-    /// `xvfb-run -a cargo test -p link2linux-platform -- --ignored x11_clipboard`
+    /// text on it before is put back). Refuses the desktop session's: X
+    /// display 0, or any while `WAYLAND_DISPLAY` is set, unless
+    /// `L2L_LIVE_SESSION_CLIPBOARD=1`. Run it on a private one:
+    /// `env -u WAYLAND_DISPLAY xvfb-run -a cargo test -p link2linux-platform -- --ignored --test-threads=1 x11_clipboard`
     #[tokio::test]
-    #[ignore = "replaces the clipboard: run under `xvfb-run -a`"]
+    #[ignore = "replaces the clipboard: run under `env -u WAYLAND_DISPLAY xvfb-run -a`"]
     async fn x11_clipboard_round_trip() {
         let on_session = guard_session_clipboard(true, false);
         // Another app, as far as the X server can tell: its own connections.
-        let (reader, mut changed) = open(None);
+        let (reader, changed) = open(None);
         let saved = reader.read().await.unwrap();
         let outcome = async {
             // Sends anything over 4 KiB in parts.
@@ -913,12 +907,12 @@ mod tests {
                 text: "ü".repeat(128 << 10),
                 sensitive: true,
             };
-            changed.mark_unchanged();
+            changed.changes.lock().await.mark_unchanged();
             writer
                 .write(secret.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-            next_change(&mut changed).await?;
+            next_change(&changed).await?;
             expect_text(&reader, &secret).await?;
             // Its own text too.
             expect_text(&writer, &secret).await?;
@@ -931,7 +925,7 @@ mod tests {
                 .write(plain.clone())
                 .await
                 .map_err(|e| e.to_string())?;
-            next_change(&mut changed).await?;
+            next_change(&changed).await?;
             expect_text(&reader, &plain).await?;
 
             // 256 KiB in one request, as BIG-REQUESTS allows.

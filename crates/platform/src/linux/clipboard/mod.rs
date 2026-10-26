@@ -18,7 +18,8 @@ mod x11;
 
 use std::fmt::Display;
 use std::io;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -51,6 +52,9 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long [`LinuxClipboard::open`] waits for each display server to
 /// answer. Xwayland may be started on the first connection to it.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a read or write may take in all, so a display server that
+/// stops answering cannot hang the caller.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn unavailable(reason: impl Display) -> PlatformError {
     PlatformError::Unavailable {
@@ -68,11 +72,12 @@ fn too_long() -> PlatformError {
 
 /// The desktop clipboard: Wayland data-control where the compositor offers
 /// it, X11 selections otherwise.
+///
+/// Dropping it never blocks: its threads stop on their own once a call in
+/// progress ends, and none of them keeps the process from exiting.
 pub struct LinuxClipboard {
     backend: Backend,
-    /// Clipboard changes. Held across calls to [`Clipboard::changed`], so a
-    /// change made while no call waits is reported to the next one.
-    changes: Mutex<watch::Receiver<()>>,
+    link: Link,
 }
 
 enum Backend {
@@ -91,15 +96,21 @@ impl std::fmt::Debug for LinuxClipboard {
         };
         f.debug_struct("LinuxClipboard")
             .field("backend", &backend)
+            .field("alive", &self.link.is_alive())
             .finish_non_exhaustive()
     }
 }
 
 impl LinuxClipboard {
-    /// The clipboard of the desktop session the app runs in. Never fails,
-    /// and waits only a moment for the display server: without a way to
-    /// reach the clipboard in the background, its access is
-    /// [`ClipboardAccess::FocusOnly`].
+    /// The clipboard of the desktop session the app runs in. Never fails:
+    /// without a way to reach the clipboard in the background, its access
+    /// is [`ClipboardAccess::FocusOnly`].
+    ///
+    /// Blocks the calling thread while it tries Wayland data-control, then
+    /// X11: a display server that is missing or refuses the connection
+    /// fails at once, but one that accepts it and does not answer is given
+    /// up on after 2 seconds each, so up to 4 seconds in all. Call it at
+    /// startup or from a blocking task, not on an async runtime's thread.
     #[must_use]
     pub fn open() -> Self {
         Self::open_with(true, None)
@@ -109,22 +120,29 @@ impl LinuxClipboard {
     /// `x11_display` (`DISPLAY` when `None`), each once, and says which it
     /// got in one line of log.
     fn open_with(wayland: bool, x11_display: Option<&str>) -> Self {
-        let (sender, changes) = watch::channel(());
         let no_wayland = if wayland {
-            match wayland::WaylandClipboard::open(sender.clone()) {
+            let (reporter, link) = link();
+            match wayland::WaylandClipboard::open(reporter) {
                 Ok(clipboard) => {
                     tracing::info!("clipboard through Wayland data-control");
-                    return Self::with(Backend::Wayland(clipboard), changes);
+                    return Self {
+                        backend: Backend::Wayland(clipboard),
+                        link,
+                    };
                 }
                 Err(error) => error.to_string(),
             }
         } else {
             "not tried".to_owned()
         };
-        let backend = match x11::X11Clipboard::open(sender, x11_display) {
+        let (reporter, link) = link();
+        match x11::X11Clipboard::open(reporter, x11_display) {
             Ok(clipboard) => {
                 tracing::info!(%no_wayland, "clipboard through X11 selections");
-                Backend::X11(clipboard)
+                Self {
+                    backend: Backend::X11(clipboard),
+                    link,
+                }
             }
             Err(no_x11) => {
                 tracing::info!(
@@ -132,62 +150,150 @@ impl LinuxClipboard {
                     %no_x11,
                     "clipboard only while the app's window has focus"
                 );
-                Backend::FocusOnly
+                Self {
+                    backend: Backend::FocusOnly,
+                    link: Link::none(),
+                }
             }
-        };
-        Self::with(backend, changes)
+        }
     }
 
-    fn with(backend: Backend, changes: watch::Receiver<()>) -> Self {
-        Self {
-            backend,
-            changes: Mutex::new(changes),
+    /// Why the clipboard cannot be used in the background.
+    fn no_access(&self) -> PlatformError {
+        match self.backend {
+            Backend::FocusOnly => {
+                unavailable("this desktop session lets only the focused window use the clipboard")
+            }
+            Backend::Wayland(_) | Backend::X11(_) => lost(),
         }
     }
 }
 
 impl Clipboard for LinuxClipboard {
+    /// [`ClipboardAccess::Background`] while the backend reaches its display
+    /// server; once it lost it, [`ClipboardAccess::FocusOnly`].
     fn access(&self) -> ClipboardAccess {
-        match self.backend {
-            Backend::Wayland(_) | Backend::X11(_) => ClipboardAccess::Background,
-            Backend::FocusOnly => ClipboardAccess::FocusOnly,
+        if self.link.is_alive() {
+            ClipboardAccess::Background
+        } else {
+            ClipboardAccess::FocusOnly
         }
     }
 
     async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
+        if !self.link.is_alive() {
+            return Err(self.no_access());
+        }
         match &self.backend {
             Backend::Wayland(wayland) => wayland.read().await,
             Backend::X11(x11) => x11.read().await,
-            Backend::FocusOnly => Err(no_background_access()),
+            Backend::FocusOnly => Err(self.no_access()),
         }
     }
 
     async fn write(&self, text: &ClipboardText) -> Result<(), PlatformError> {
+        if !self.link.is_alive() {
+            return Err(self.no_access());
+        }
         match &self.backend {
             Backend::Wayland(wayland) => wayland.write(text.clone()).await,
             Backend::X11(x11) => x11.write(text.clone()).await,
-            Backend::FocusOnly => Err(no_background_access()),
+            Backend::FocusOnly => Err(self.no_access()),
         }
     }
 
+    /// Also fails, once, when the backend loses its display server; from
+    /// then on [`access`](Self::access) is [`ClipboardAccess::FocusOnly`]
+    /// and this never resolves.
     async fn changed(&self) -> Result<(), PlatformError> {
-        if matches!(self.backend, Backend::FocusOnly) {
-            return std::future::pending().await;
-        }
-        let mut changes = self.changes.lock().await;
-        changes
-            .changed()
-            .await
-            .map_err(|_| unavailable("the connection to the clipboard closed"))
+        self.link.changed().await
     }
 }
 
-fn no_background_access() -> PlatformError {
-    unavailable("this desktop session lets only the focused window use the clipboard")
+fn lost() -> PlatformError {
+    unavailable("lost the connection to the display server")
+}
+
+/// Creates the two ends that tie a backend's watching thread to the
+/// clipboard.
+fn link() -> (Reporter, Link) {
+    let (changes, receiver) = watch::channel(());
+    let alive = Arc::new(AtomicBool::new(true));
+    let reporter = Reporter {
+        changes,
+        alive: alive.clone(),
+    };
+    let link = Link {
+        alive,
+        loss_reported: AtomicBool::new(false),
+        changes: Mutex::new(receiver),
+    };
+    (reporter, link)
+}
+
+/// Held by the thread that watches the clipboard for a backend. Dropped when
+/// that thread ends, as it does when its connection to the display server
+/// fails, and then marks the backend dead.
+struct Reporter {
+    changes: watch::Sender<()>,
+    alive: Arc<AtomicBool>,
+}
+
+impl Reporter {
+    fn report_change(&self) {
+        self.changes.send_replace(());
+    }
+}
+
+impl Drop for Reporter {
+    // Runs before the fields drop, so the backend counts as dead by the time
+    // the closed channel wakes `Link::changed`.
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
+    }
+}
+
+/// The clipboard's end of a [`Reporter`].
+struct Link {
+    alive: Arc<AtomicBool>,
+    /// `changed` already failed for the loss of the display server.
+    loss_reported: AtomicBool,
+    /// Held across calls to `changed`, so a change made while no call waits
+    /// is reported to the next one.
+    changes: Mutex<watch::Receiver<()>>,
+}
+
+impl Link {
+    /// The end of a link to no backend at all.
+    fn none() -> Self {
+        let (_, link) = link();
+        link.loss_reported.store(true, Ordering::Release);
+        link
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    /// The next change; an error, once, when the backend is lost; after
+    /// that, or without a backend, never.
+    async fn changed(&self) -> Result<(), PlatformError> {
+        if !self.loss_reported.load(Ordering::Acquire) {
+            let mut changes = self.changes.lock().await;
+            if changes.changed().await.is_ok() {
+                return Ok(());
+            }
+            if !self.loss_reported.swap(true, Ordering::AcqRel) {
+                return Err(lost());
+            }
+        }
+        std::future::pending().await
+    }
 }
 
 /// A thread that makes blocking clipboard calls one at a time, with a
-/// context of type `C` that only it uses. It stops when dropped.
+/// context of type `C` that only it uses. It stops when dropped, once the
+/// call in progress ends; it is never joined.
 struct Worker<C> {
     jobs: mpsc::Sender<Job<C>>,
 }
@@ -205,8 +311,9 @@ impl<C: Send + 'static> Worker<C> {
         Ok(Self { jobs })
     }
 
-    /// Runs `job` on the thread and waits for its result. Cancel-safe: a
-    /// result nobody waits for any more is dropped.
+    /// Runs `job` on the thread and waits for its result, up to
+    /// [`CALL_TIMEOUT`]. Cancel-safe: a result nobody waits for any more is
+    /// dropped.
     async fn run<T: Send + 'static>(
         &self,
         job: impl FnOnce(&mut C) -> Result<T, PlatformError> + Send + 'static,
@@ -217,7 +324,10 @@ impl<C: Send + 'static> Worker<C> {
                 let _ = reply.send(job(context));
             }))
             .map_err(|_| stopped())?;
-        result.await.map_err(|_| stopped())?
+        tokio::time::timeout(CALL_TIMEOUT, result)
+            .await
+            .map_err(|_| unavailable("the display server did not answer in time"))?
+            .map_err(|_| stopped())?
     }
 }
 
@@ -499,14 +609,20 @@ mod tests {
     }
 
     /// Live tests replace the clipboard of the display server they reach,
-    /// so they run on a private one, as `xvfb-run -a` starts, and refuse
-    /// the desktop session's (X display 0, Wayland socket `wayland-0`)
-    /// unless `L2L_LIVE_SESSION_CLIPBOARD=1` is set. Says whether the test
-    /// runs on the session.
+    /// so they run on a private one, as `env -u WAYLAND_DISPLAY xvfb-run -a`
+    /// starts, and refuse the desktop session's unless
+    /// `L2L_LIVE_SESSION_CLIPBOARD=1` is set. The session's are X display 0,
+    /// any X display while `WAYLAND_DISPLAY` is set (that is Xwayland), and
+    /// Wayland socket `wayland-0`. Says whether the test runs on the session.
     pub(super) fn guard_session_clipboard(x11: bool, wayland: bool) -> bool {
         let env = |name| std::env::var(name).ok();
-        let on_x11_session = x11 && env("DISPLAY").as_deref().and_then(x_display_number) == Some(0);
-        let on_wayland_session = wayland && env("WAYLAND_DISPLAY").as_deref() == Some("wayland-0");
+        let display = env("DISPLAY");
+        let wayland_display = env("WAYLAND_DISPLAY");
+        let on_x11_session = x11
+            && display.as_deref().is_some_and(|display| {
+                wayland_display.is_some() || x_display_number(display) == Some(0)
+            });
+        let on_wayland_session = wayland && wayland_display.as_deref() == Some("wayland-0");
         let on_session = on_x11_session || on_wayland_session;
         assert!(
             !on_session || env("L2L_LIVE_SESSION_CLIPBOARD").as_deref() == Some("1"),
@@ -537,8 +653,9 @@ mod tests {
 
     /// Needs a session that lets apps use the clipboard in the background,
     /// and replaces its clipboard while it runs (the text on it before is
-    /// put back). Run it on a private X server:
-    /// `env -u WAYLAND_DISPLAY xvfb-run -a cargo test -p link2linux-platform -- --ignored background_clipboard`
+    /// put back). Refuses the desktop session's (see
+    /// [`guard_session_clipboard`]); run it on a private X server:
+    /// `env -u WAYLAND_DISPLAY xvfb-run -a cargo test -p link2linux-platform -- --ignored --test-threads=1 background_clipboard`
     #[tokio::test]
     #[ignore = "replaces the clipboard: run under `env -u WAYLAND_DISPLAY xvfb-run -a`"]
     async fn background_clipboard() {
@@ -573,6 +690,145 @@ mod tests {
         }
         assert_eq!(outcome.unwrap(), Some(written));
         restored.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reports_changes_then_the_loss_once() {
+        let (reporter, link) = link();
+        assert!(link.is_alive());
+        // Made while nobody waited, and reported once though made twice.
+        reporter.report_change();
+        reporter.report_change();
+        link.changed().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), link.changed())
+                .await
+                .is_err()
+        );
+
+        // The backend's thread ends, as when its connection fails, while a
+        // call waits.
+        let (waited, ()) = tokio::join!(link.changed(), async move {
+            tokio::task::yield_now().await;
+            drop(reporter);
+        });
+        assert!(matches!(waited, Err(PlatformError::Unavailable { .. })));
+        assert!(!link.is_alive());
+        // Once only: then it waits, as without background access.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), link.changed())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_loss_before_the_call_is_reported_too() {
+        let (reporter, link) = link();
+        drop(reporter);
+        assert!(!link.is_alive());
+        assert!(link.changed().await.is_err());
+        let none = Link::none();
+        assert!(!none.is_alive());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), none.changed())
+                .await
+                .is_err()
+        );
+    }
+
+    /// A private X server, stopped when dropped.
+    struct PrivateX {
+        server: std::process::Child,
+        display: String,
+    }
+
+    impl PrivateX {
+        fn start() -> Self {
+            use std::io::BufRead;
+            // Xvfb picks a free display and writes its number to stdout.
+            let mut server = std::process::Command::new("Xvfb")
+                .args(["-displayfd", "1", "-nolisten", "tcp"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("Xvfb");
+            let mut number = String::new();
+            io::BufReader::new(server.stdout.take().expect("piped"))
+                .read_line(&mut number)
+                .expect("a display number");
+            let display = format!(":{}", number.trim());
+            Self { server, display }
+        }
+
+        fn stop(&mut self) {
+            let _ = self.server.kill();
+            let _ = self.server.wait();
+        }
+    }
+
+    impl Drop for PrivateX {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    /// Starts its own Xvfb, so it never reaches the desktop session:
+    /// `cargo test -p link2linux-platform -- --ignored own_xvfb`
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_losing_the_server_ends_background_access() {
+        let mut server = PrivateX::start();
+        let clipboard = LinuxClipboard::open_with(false, Some(&server.display));
+        assert_eq!(clipboard.access(), ClipboardAccess::Background);
+        server.stop();
+        let lost = tokio::time::timeout(TRANSFER_TIMEOUT, clipboard.changed())
+            .await
+            .expect("the loss reported in time");
+        assert!(matches!(lost, Err(PlatformError::Unavailable { .. })));
+        assert_eq!(clipboard.access(), ClipboardAccess::FocusOnly);
+        assert!(clipboard.read().await.is_err());
+        let text = ClipboardText {
+            text: "x".into(),
+            sensitive: false,
+        };
+        assert!(clipboard.write(&text).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), clipboard.changed())
+                .await
+                .is_err()
+        );
+    }
+
+    /// Starts its own Xvfb, so it never reaches the desktop session:
+    /// `cargo test -p link2linux-platform -- --ignored own_xvfb`
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_dropping_the_clipboard_lets_go_of_the_server() {
+        let server = PrivateX::start();
+        let holder = LinuxClipboard::open_with(false, Some(&server.display));
+        let other = LinuxClipboard::open_with(false, Some(&server.display));
+        let text = ClipboardText {
+            text: "held".into(),
+            sensitive: false,
+        };
+        holder.write(&text).await.unwrap();
+        tokio::time::timeout(TRANSFER_TIMEOUT, other.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.read().await.unwrap(), Some(text));
+
+        let started = std::time::Instant::now();
+        drop(holder);
+        assert!(started.elapsed() < Duration::from_millis(100));
+        // Its threads end and close their connections, and the text, which
+        // no clipboard manager copied, goes with them.
+        tokio::time::timeout(TRANSFER_TIMEOUT, other.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.read().await.unwrap(), None);
     }
 
     #[tokio::test]
