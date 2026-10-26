@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 
 import { useDesktopApi } from "@/lib/api";
-import type { ImageRef, MirroredNotification } from "./types";
+import { X } from "lucide-react";
+
+import { Button } from "@/components/ui";
+import { NotificationActions } from "./NotificationActions";
+import type { ImageRef, MirroredNotification, NotificationActionInfo } from "./types";
 import { relativeTime } from "./relative-time";
 
 /** The app's icon when the phone shared one, else its first letter. */
@@ -66,10 +70,22 @@ export interface NotificationCardProps {
   notification: MirroredNotification;
   /** The time the page shows relative times against. */
   now: number;
+  onDismiss: (notification: MirroredNotification) => void;
+  onRunAction: (
+    notification: MirroredNotification,
+    action: NotificationActionInfo,
+    replyText?: string,
+  ) => void;
 }
 
 /** One mirrored notification. */
-export function NotificationCard({ deviceId, notification: n, now }: NotificationCardProps) {
+export function NotificationCard({
+  deviceId,
+  notification: n,
+  now,
+  onDismiss,
+  onRunAction,
+}: NotificationCardProps) {
   const conversation = n.messages.length > 0;
   const { progress } = n;
 
@@ -82,6 +98,18 @@ export function NotificationCard({ deviceId, notification: n, now }: Notificatio
           <time dateTime={new Date(n.whenUnixMs).toISOString()}>
             {relativeTime(n.whenUnixMs, now)}
           </time>
+          {n.dismissible && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={X}
+              className="notification__dismiss"
+              aria-label={`Dismiss ${n.title || n.appName}`}
+              onClick={() => {
+                onDismiss(n);
+              }}
+            />
+          )}
         </header>
         {n.title && <p className="notification__title">{n.title}</p>}
         {conversation ? (
@@ -90,6 +118,14 @@ export function NotificationCard({ deviceId, notification: n, now }: Notificatio
           n.text && <p className="notification__text">{n.text}</p>
         )}
         {n.subText && <p className="notification__sub">{n.subText}</p>}
+        {n.actions.length > 0 && (
+          <NotificationActions
+            actions={n.actions}
+            onRun={(action, replyText) => {
+              onRunAction(n, action, replyText);
+            }}
+          />
+        )}
         {progress && (
           <progress
             className="notification__progress"
