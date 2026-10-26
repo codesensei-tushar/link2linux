@@ -39,13 +39,14 @@ class DesktopPeer(private val socket: SSLSocket, private val desktop: TestDeskto
     /** The phone's next envelope, or null when it closed the connection. */
     fun read(): Envelope? = runCatching { codec.read(input) }.getOrNull()
 
-    fun sendHello(method: PairingMethod, deviceId: String = DEVICE_ID) = send {
+    fun sendHello(method: PairingMethod, deviceId: String = DEVICE_ID, features: List<String> = emptyList()) = send {
         hello = hello {
             protocolVersion = 1
             this.deviceId = deviceId
             deviceName = "Test desktop"
             kind = DeviceKind.DEVICE_KIND_DESKTOP
             pairingMethod = method
+            this.features += features
         }
     }
 
