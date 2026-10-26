@@ -198,6 +198,10 @@ fn advertise(runtime: Arc<Runtime>) {
 }
 
 impl Backend for LiveBackend {
+    fn shutdown(&self) {
+        self.runtime.shutdown_and_wait(std::time::Duration::from_secs(2));
+    }
+
     fn devices(&self) -> Vec<Device> {
         self.runtime.devices()
     }

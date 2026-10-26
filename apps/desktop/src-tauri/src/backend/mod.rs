@@ -129,6 +129,10 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
+    /// The app is closing: ends the sessions and cleans up what is
+    /// unfinished, without waiting long.
+    fn shutdown(&self) {}
+
     /// Why the backend did not start, if it did not.
     fn startup_error(&self) -> Option<StartupError> {
         None

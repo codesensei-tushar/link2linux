@@ -1706,7 +1706,8 @@ async fn files_go_both_ways_and_arrive_with_a_banner_that_opens_them() {
         .clone();
     assert!(!format!("{banner:?}").contains("photo.jpg"), "{banner:?}");
     let keys: Vec<&str> = banner.actions.iter().map(|a| a.key.as_str()).collect();
-    assert_eq!(keys, ["files-open", "files-show"]);
+    // A click on a banner never opens a file, as the banner names none.
+    assert_eq!(keys, ["files-show"]);
     rig.respond
         .send(NotificationResponse::Action {
             id,
@@ -2165,6 +2166,40 @@ async fn unpairing_a_phone_deletes_what_it_had_not_finished_sending() {
     assert_eq!(partials(&rig), 1);
 
     rig.runtime.unpair("files-5").unwrap();
+    within(async {
+        while partials(&rig) > 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_the_app_deletes_what_a_phone_had_not_finished_sending() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "files-6").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+    let sources = tempfile::tempdir().unwrap();
+    std::fs::write(
+        sources.path().join("big.bin"),
+        file_data(3 * 1024 * 1024, 6),
+    )
+    .unwrap();
+    let session = within(files_session(&phone, desktop)).await;
+    let on_phone = tempfile::tempdir().unwrap();
+    let phone_files = PhoneFiles::start(
+        session,
+        FileService::new(on_phone.path().into()),
+        Some(Stop::DropAfterSending(512 * 1024)),
+    );
+    phone_files.send(vec![sources.path().join("big.bin")]).await;
+    within(phone_files.task).await.unwrap();
+    rig.events
+        .transfer_where("files-6", |t| t.status == TransferStatus::Interrupted)
+        .await;
+    assert_eq!(partials(&rig), 1);
+
+    rig.runtime.shutdown();
     within(async {
         while partials(&rig) > 0 {
             tokio::time::sleep(Duration::from_millis(50)).await;

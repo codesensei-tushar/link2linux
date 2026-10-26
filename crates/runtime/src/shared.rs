@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -200,6 +200,9 @@ pub(crate) struct Core {
     pub clipboard_nudge: Notify,
     /// Each phone's file transfers.
     pub files: FilesFactory,
+    /// How many device tasks are still running, for a shutdown that waits
+    /// for them to clean up.
+    pub supervisors: AtomicUsize,
 }
 
 impl Core {
@@ -259,6 +262,7 @@ impl Core {
             clipboard_page: Mutex::default(),
             clipboard_nudge: Notify::new(),
             files,
+            supervisors: AtomicUsize::new(0),
         });
         // Following the hub before any phone's service can report.
         let clipboard_events = core.clipboard_hub.subscribe();
@@ -362,6 +366,7 @@ impl Core {
             wake,
             cancel,
         };
+        self.supervisors.fetch_add(1, Ordering::SeqCst);
         self.handle.spawn(device::supervise(
             self.clone(),
             record.id.clone(),

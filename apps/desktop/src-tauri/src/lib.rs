@@ -112,8 +112,16 @@ pub fn run() {
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("failed to start the link2linux desktop app");
+        .build(tauri::generate_context!())
+        .expect("failed to start the link2linux desktop app")
+        .run(|app, event| {
+            // Phones hear a Goodbye and their unfinished downloads go.
+            if matches!(event, tauri::RunEvent::Exit)
+                && let Some(state) = app.try_state::<AppState>()
+            {
+                state.backend().shutdown();
+            }
+        });
 }
 
 /// Tells the page about files dragged over the window, and keeps the paths
