@@ -30,6 +30,17 @@ aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-
 base64 = "0.23.1"
 zeroize = "1.8.2"
 
+# TLS and the identity certificate, on the same aws-lc-rs; TLS 1.2 support
+# is left out.
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs"] }
+
+# The QR code URI and the pairing records file.
+percent-encoding = "2.3.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
 mdns-sd = { version = "0.21.6", default-features = false, features = ["async"] }
 socket2 = { version = "0.6.5", features = ["all"] }
 # Local interface addresses, for the on-link check before dialing.
@@ -39,8 +50,9 @@ if-addrs = "0.15.0"
 # the tokio runtime and leaves async-io out.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
-# Property tests.
+# Tests.
 proptest = "1.12"
+tempfile = "3.27.0"
 
 # Errors and logging.
 thiserror = "2.0.21"
