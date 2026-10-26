@@ -11,14 +11,14 @@
 //! - [`browser`] and [`tracker`]: browsing mDNS and deciding which phones
 //!   matter;
 //! - [`reconnect`]: when to dial a paired phone again;
+//! - [`onlink`]: which reported addresses may be dialed at all;
 //! - [`lan`]: [`LanDiscovery`], which joins all of the above behind the
 //!   [`Discovery`] trait.
 //!
 //! Everything discovery reports is a hint that only leads to a dial
 //! attempt. Before dialing an address from a record or beacon, the dialer
-//! must check that it is on-link for one of the desktop's interfaces
-//! (`docs/protocol.md`, "Choosing what to dial"); that check needs the
-//! interface list and belongs to the dialer.
+//! checks it with [`is_on_link`] against [`local_addresses`]
+//! (`docs/protocol.md`, "Choosing what to dial").
 
 use std::net::SocketAddr;
 
@@ -28,12 +28,14 @@ pub mod beacon;
 pub mod browser;
 pub mod lan;
 pub mod listener;
+pub mod onlink;
 pub mod presence;
 pub mod reconnect;
 pub mod tracker;
 
 pub use beacon::BeaconSender;
 pub use lan::{LanConfig, LanDiscovery};
+pub use onlink::{LocalAddress, is_on_link, local_addresses};
 pub use presence::{DiscoveryKeys, PairedKey, SecretBytes};
 pub use tracker::{Match, PhoneRecord, Sighting};
 
