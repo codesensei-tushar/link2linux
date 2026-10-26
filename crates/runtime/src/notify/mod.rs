@@ -22,6 +22,7 @@ use link2linux_platform::{
 /// A boxed future, so the traits here can be used as `dyn`.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+pub mod dto;
 mod service;
 
 pub use service::{ServiceDriver, ServiceFactory};

@@ -22,6 +22,13 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+pub use crate::notify::dto::{
+    ConversationMessageInfo, ImageRef, MirroredNotification, NotificationActionInfo,
+    NotificationActionKindView, NotificationCategoryView, NotificationContentView,
+    NotificationEvent, NotificationImportanceView, NotificationProgressInfo,
+    NotificationVisibilityView,
+};
+
 /// How the user pairs a new phone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -192,4 +199,6 @@ pub enum BackendError {
 pub trait EventSink: Send + Sync {
     fn pairing_changed(&self, state: &PairingState);
     fn devices_changed(&self, devices: &[Device]);
+    /// A phone's mirrored notifications changed.
+    fn notification_changed(&self, _device_id: &str, _event: &NotificationEvent) {}
 }
