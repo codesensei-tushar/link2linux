@@ -4,13 +4,14 @@
 //! [`XdgFileStore`] opens a file through the desktop portal
 //! (`org.freedesktop.portal.OpenURI`), which starts the user's default
 //! application. The portal gets the open file rather than its name. It does
-//! not ask before opening by itself, so for a file that could run as a
-//! program (see [`can_run_code`]) the call sets `ask`, which makes the
-//! desktop show its application chooser, and no other route opens such a
-//! file: if the portal fails, the open fails. Showing a file in its folder
+//! not ask before opening by itself, so unless the file is a plain
+//! document or media type without an execute bit (see
+//! [`opens_without_asking`]) the call sets `ask`, which makes the desktop
+//! show its application chooser. No other route opens a file: if the portal
+//! fails, the open fails. Showing a file in its folder
 //! asks the file manager to select it (`org.freedesktop.FileManager1`,
-//! which the common file managers implement). For other files, and without
-//! either service, `xdg-open` opens the file, or the folder.
+//! which the common file managers implement), or without it `xdg-open` shows
+//! the folder.
 
 use std::collections::HashMap;
 use std::env;
@@ -120,18 +121,16 @@ impl FileStore for XdgFileStore {
 
     async fn open(&self, path: &Path) -> Result<(), PlatformError> {
         let path = absolute(path)?;
-        let ask = can_run_code(path);
+        let ask = !opens_without_asking(path);
         if let Some(bus) = self.bus().await {
             match open_with_portal(bus, path, ask).await {
                 Ok(()) => return Ok(()),
                 Err(error) => tracing::debug!(%error, "the desktop portal did not open a file"),
             }
         }
-        if ask {
-            // `xdg-open` would start the default handler without asking.
-            return Err(unavailable("a file that could run needs the portal to ask"));
-        }
-        run(&self.opener, path)
+        // `xdg-open` would start the default handler without asking, so it
+        // opens nothing: the caller shows the folder instead.
+        Err(unavailable("the portal could not open the file"))
     }
 
     async fn show_in_folder(&self, path: &Path) -> Result<(), PlatformError> {
@@ -160,73 +159,35 @@ fn absolute(path: &Path) -> Result<&Path, PlatformError> {
     }
 }
 
-/// File name extensions of files that can run code when opened, in lower
-/// case: programs, libraries, scripts, launchers and Windows executables.
-const RUNNABLE_EXTENSIONS: &[&str] = &[
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "csh",
-    "ksh",
-    "py",
-    "pyw",
-    "pl",
-    "pm",
-    "rb",
-    "php",
-    "lua",
-    "tcl",
-    "js",
-    "mjs",
-    "jar",
-    "so",
-    "desktop",
-    "appimage",
-    "run",
-    "bin",
-    "elf",
-    "exe",
-    "dll",
-    "msi",
-    "bat",
-    "cmd",
-    "com",
-    "scr",
-    "ps1",
-    "vbs",
-    "vbe",
-    "wsf",
-    "lnk",
-    "reg",
-    "cpl",
-    "pif",
-    "hta",
-    "jse",
-    "wsh",
-    "msp",
-    "apk",
-    "deb",
-    "rpm",
-    "flatpakref",
-    "flatpakrepo",
+/// Last file name extensions, in lower case, of plain document, image,
+/// audio and video files. Their type is settled by the name, so the desktop
+/// opens them in a viewer or player without sniffing the contents. Anything
+/// else (archives, SVG, scripts, programs, installers, unknown types) is not
+/// listed on purpose.
+const PLAIN_EXTENSIONS: &[&str] = &[
+    "pdf", "txt", "md", "csv", "rtf", "odt", "ods", "odp", "doc", "docx", "xls", "xlsx", "ppt",
+    "pptx", "epub", "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "mp3", "m4a", "aac", "ogg",
+    "opus", "flac", "wav", "mp4", "m4v", "mov", "mkv", "webm", "avi",
 ];
 
-/// Whether opening the file at `path` could run code: its extension is on
-/// [`RUNNABLE_EXTENSIONS`] (also as a trailing `.so.1`-style version), or it
-/// has an execute bit set.
-fn can_run_code(path: &Path) -> bool {
+/// Whether the file at `path` may be opened without asking the user first:
+/// its last extension is on [`PLAIN_EXTENSIONS`] and it has no execute bit.
+/// This fails closed. A name with no extension, an unknown one, or a double
+/// extension such as `invoice.pdf.exe` gets the application chooser, because
+/// the desktop types such a file from its contents and could start a program
+/// (Wine for a Windows executable, say) without any question.
+fn opens_without_asking(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     if fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0) {
-        return true;
+        return false;
     }
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
     let name = name.to_ascii_lowercase();
-    name.split('.')
-        .skip(1)
-        .any(|part| RUNNABLE_EXTENSIONS.contains(&part))
+    // A name that is only an extension (`.pdf`) has no type of its own.
+    name.rsplit_once('.')
+        .is_some_and(|(stem, extension)| !stem.is_empty() && PLAIN_EXTENSIONS.contains(&extension))
 }
 
 async fn open_with_portal(bus: &Connection, path: &Path, ask: bool) -> Result<(), PlatformError> {
@@ -465,7 +426,11 @@ mod tests {
         let dir = TempDir::new("opener");
         let path = dir.0.join("a.txt");
         fs::write(&path, b"a").unwrap();
-        store.open(&path).await.unwrap();
+        // Only the folder is shown by the opener; a file is never opened by it.
+        assert!(matches!(
+            store.open(&path).await,
+            Err(PlatformError::Unavailable { .. })
+        ));
         store.show_in_folder(&path).await.unwrap();
 
         let missing = XdgFileStore {
@@ -473,7 +438,7 @@ mod tests {
             opener: PathBuf::from("/nonexistent/opener"),
         };
         assert!(matches!(
-            missing.open(&path).await,
+            missing.show_in_folder(&path).await,
             Err(PlatformError::Unavailable { .. })
         ));
         assert!(matches!(
@@ -483,36 +448,47 @@ mod tests {
     }
 
     #[test]
-    fn files_that_could_run_are_told_by_name_and_mode() {
+    fn only_plain_documents_and_media_open_without_asking() {
         let dir = TempDir::new("runnable");
+        for name in [
+            "photo.jpg",
+            "notes.TXT",
+            "report.pdf",
+            "song.flac",
+            "a.b.mp4",
+        ] {
+            assert!(opens_without_asking(&dir.0.join(name)), "{name}");
+        }
         for name in [
             "setup.EXE",
             "run.sh",
-            "tool.py",
-            "a.desktop",
-            "libx.so.1",
-            "app.AppImage",
-            "x.jar",
+            "invoice",
+            "invoice.dat",
             "invoice.pdf.exe",
+            "invoice.ex_e",
+            "archive.zip",
+            "image.svg",
+            "tool.jnlp",
+            "libx.so.1",
+            "pdf",
+            ".pdf",
+            "report.pdf.",
         ] {
-            assert!(can_run_code(&dir.0.join(name)), "{name}");
+            assert!(!opens_without_asking(&dir.0.join(name)), "{name}");
         }
-        for name in ["photo.jpg", "notes.txt", "report.pdf", "archive.zip", "exe"] {
-            assert!(!can_run_code(&dir.0.join(name)), "{name}");
-        }
-        let plain = dir.0.join("data.bin2");
+        let plain = dir.0.join("data.pdf");
         fs::write(&plain, b"x").unwrap();
-        assert!(!can_run_code(&plain));
+        assert!(opens_without_asking(&plain));
         let mut mode = fs::metadata(&plain).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
         fs::set_permissions(&plain, mode).unwrap();
-        assert!(can_run_code(&plain));
+        assert!(!opens_without_asking(&plain));
     }
 
     #[tokio::test]
-    async fn a_file_that_could_run_is_opened_only_through_the_portal_and_asks() {
+    async fn a_file_that_may_run_is_opened_only_through_the_portal_and_asks() {
         let dir = TempDir::new("asks");
-        let path = dir.0.join("setup.exe");
+        let path = dir.0.join("invoice");
         fs::write(&path, b"MZ").unwrap();
         let (store, _server, seen) = store("/nonexistent/opener").await;
         store.open(&path).await.unwrap();
