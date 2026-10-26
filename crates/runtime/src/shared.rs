@@ -472,15 +472,19 @@ impl Core {
             None => ClipboardMode::Unavailable,
         };
         let records = self.paired_in_order();
-        let held = self.clipboard_hub.held().map(|held| HeldClipboard {
-            phone_name: records
-                .iter()
-                .find(|record| record.id == held.device_id)
-                .map_or_else(|| held.device_id.clone(), |record| record.name.clone()),
-            device_id: held.device_id,
-            bytes: clipboard::bytes(held.clip.len()),
-            sensitive: held.clip.is_sensitive(),
-        });
+        let held = self
+            .clipboard_hub
+            .held()
+            .filter(|held| records.iter().any(|record| record.id == held.device_id))
+            .map(|held| HeldClipboard {
+                phone_name: records
+                    .iter()
+                    .find(|record| record.id == held.device_id)
+                    .map_or_else(|| held.device_id.clone(), |record| record.name.clone()),
+                device_id: held.device_id,
+                bytes: clipboard::bytes(held.clip.len()),
+                sensitive: held.clip.is_sensitive(),
+            });
         let paired = records
             .into_iter()
             .map(|record| (record.id, record.name))
@@ -501,6 +505,17 @@ impl Core {
             .list()
             .iter()
             .any(|record| record.id == id)
+    }
+
+    /// Drops text that waits for the window if it came from a phone that
+    /// is no longer paired, as a push its session took after the phone was
+    /// unpaired.
+    pub fn drop_unpaired_held(&self) {
+        if let Some(held) = self.clipboard_hub.held()
+            && !self.is_paired(&held.device_id)
+        {
+            self.clipboard_hub.forget_phone(&held.device_id);
+        }
     }
 
     /// Whether any paired phone takes the clipboard now.

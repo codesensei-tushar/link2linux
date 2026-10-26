@@ -353,14 +353,12 @@ impl<C: Clipboard> ClipboardService<C> {
     /// Puts `clip` on the clipboard. Returns whether it worked.
     async fn write(&self, clip: &Clip) -> bool {
         let marked = self.hub.mark(clip.digest());
-        match self.clipboard.write(clip.text()).await {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(%error, "could not set the clipboard");
-                self.hub.restore(marked);
-                false
-            }
+        let written = self.clipboard.write(clip.text()).await;
+        if let Err(error) = &written {
+            tracing::warn!(%error, "could not set the clipboard");
         }
+        self.hub.written(marked, written.is_ok());
+        written.is_ok()
     }
 
     /// Reports the phone's state if it changed.

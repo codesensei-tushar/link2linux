@@ -26,9 +26,9 @@ use link2linux_platform::{
 };
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    ClipboardPush, GoodbyeReason, NotificationAction, NotificationCategory, NotificationContent,
-    NotificationImportance, NotificationPosted, NotificationSyncBatch, PairingProof,
-    PhoneNotification, SyncCursor,
+    ClipboardPush, ErrorCode, GoodbyeReason, NotificationAction, NotificationCategory,
+    NotificationContent, NotificationImportance, NotificationPosted, NotificationSyncBatch,
+    PairingProof, PhoneNotification, SyncCursor,
 };
 use link2linux_runtime::clipboard::ClipboardPort;
 use link2linux_runtime::notify::{
@@ -36,8 +36,8 @@ use link2linux_runtime::notify::{
 };
 use link2linux_runtime::paths::DataDir;
 use link2linux_runtime::view::{
-    ClipboardDirection, ClipboardMode, ClipboardPhoneState, ClipboardStatus, Device, DeviceStatus,
-    EventSink, NotificationEvent, PairingMethod, PairingState, PhoneTarget,
+    ClipboardDirection, ClipboardMode, ClipboardPhoneState, ClipboardProblemKind, ClipboardStatus,
+    Device, DeviceStatus, EventSink, NotificationEvent, PairingMethod, PairingState, PhoneTarget,
 };
 use link2linux_runtime::{Runtime, RuntimeConfig, Shell};
 use support::{PhoneTls, TestPhone};
@@ -128,6 +128,18 @@ struct FakeClipboard {
     reported: AtomicU64,
     reads: AtomicUsize,
     touched: Notify,
+    /// Writes fail, as when the clipboard cannot be set.
+    fail_writes: AtomicBool,
+    /// The next read takes the content, says so through `read_started`,
+    /// and returns it once `release_read` is told: a slow read that a
+    /// phone's write can overtake.
+    stall_next_read: AtomicBool,
+    read_started: Notify,
+    release_read: Notify,
+    /// Likewise for the next write, which takes effect once released.
+    stall_next_write: AtomicBool,
+    write_started: Notify,
+    release_write: Notify,
 }
 
 impl FakeClipboard {
@@ -140,6 +152,13 @@ impl FakeClipboard {
             reported: AtomicU64::new(0),
             reads: AtomicUsize::new(0),
             touched: Notify::new(),
+            fail_writes: AtomicBool::new(false),
+            stall_next_read: AtomicBool::new(false),
+            read_started: Notify::new(),
+            release_read: Notify::new(),
+            stall_next_write: AtomicBool::new(false),
+            write_started: Notify::new(),
+            release_write: Notify::new(),
         })
     }
 
@@ -181,12 +200,26 @@ impl Clipboard for FakeClipboard {
 
     async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
         let text = self.text();
+        if self.stall_next_read.swap(false, Ordering::Relaxed) {
+            self.read_started.notify_one();
+            self.release_read.notified().await;
+        }
         self.reads.fetch_add(1, Ordering::Relaxed);
         self.touched.notify_waiters();
         Ok(text)
     }
 
     async fn write(&self, text: &ClipboardText) -> Result<(), PlatformError> {
+        if self.fail_writes.load(Ordering::Relaxed) {
+            return Err(PlatformError::Unavailable {
+                service: "clipboard",
+                reason: "the clipboard cannot be set".into(),
+            });
+        }
+        if self.stall_next_write.swap(false, Ordering::Relaxed) {
+            self.write_started.notify_one();
+            self.release_write.notified().await;
+        }
         self.set(text.clone());
         Ok(())
     }
@@ -576,7 +609,8 @@ async fn clipboard_session(
     session
 }
 
-/// The phone pushes `text` and returns the desktop's answer.
+/// The phone pushes `text` and returns the desktop's answer. A push from
+/// the desktop meanwhile fails the test: nothing is to go to the phone.
 async fn push_from_phone(
     session: &mut Session<TlsStream<TcpStream>>,
     text: &str,
@@ -590,11 +624,29 @@ async fn push_from_phone(
         .start_request(Payload::ClipboardPush(push))
         .await
         .unwrap();
+    reply_to(session, seq).await
+}
+
+/// The desktop's answer to the phone's request `seq`. A push from the
+/// desktop meanwhile fails the test.
+async fn reply_to(session: &mut Session<TlsStream<TcpStream>>, seq: u64) -> Reply {
     loop {
-        if let SessionEvent::Reply(reply) = next_event(session).await
-            && reply.request == seq
-        {
-            return reply;
+        match next_event(session).await {
+            SessionEvent::Reply(reply) if reply.request == seq => return reply,
+            SessionEvent::Request {
+                payload: Payload::ClipboardPush(push),
+                ..
+            } => panic!("the desktop pushed {} bytes", push.text.len()),
+            _ => {}
+        }
+    }
+}
+
+/// Waits for the desktop's `Goodbye`.
+async fn goodbye(session: &mut Session<TlsStream<TcpStream>>) -> GoodbyeReason {
+    loop {
+        if let SessionEvent::Goodbye(goodbye) = next_event(session).await {
+            return goodbye.reason;
         }
     }
 }
@@ -1270,7 +1322,7 @@ async fn a_feature_failing_on_the_phones_feature_status_keeps_it_from_no_one() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_desktop_copy_made_while_text_waited_wins_and_the_popup_still_puts_the_text_on() {
+async fn on_focus_the_phones_text_wins_and_what_the_clipboard_held_stays_here() {
     let clipboard = FakeClipboard::new(ClipboardAccess::FocusOnly);
     clipboard.copy("before");
     let rig = start_with(Some(clipboard.clone()));
@@ -1278,32 +1330,21 @@ async fn a_desktop_copy_made_while_text_waited_wins_and_the_popup_still_puts_the
     let (desktop, _) = pair(&rig, &phone).await;
     let mut session = within(clipboard_session(&phone, desktop)).await;
 
-    // The window had focus once, so the desktop knows what the clipboard
-    // held.
+    // The window had focus once, with "before" on the clipboard.
     rig.runtime.set_active(true);
     assert_eq!(within(take_push(&mut session)).await.text, "before");
     rig.runtime.set_active(false);
 
-    // The phone's text waits, and the user copies something else meanwhile.
+    // The user copies something in another app, then shares from the
+    // phone.
+    clipboard.copy("copied elsewhere");
     let reply = within(push_from_phone(&mut session, "from the phone", false)).await;
     assert!(matches!(reply.payload, Payload::Ack(_)), "{reply:?}");
     let (id, _) = rig.sink.wait_for_banners(1).await[0].clone();
-    clipboard.copy("copied here");
 
-    // The desktop copy wins: it goes to the phone and stays on the
-    // clipboard.
+    // The window gains focus: the phone's text goes on the clipboard, and
+    // the pop-up goes.
     rig.runtime.set_active(true);
-    assert_eq!(within(take_push(&mut session)).await.text, "copied here");
-    assert_eq!(clipboard.text().unwrap().text, "copied here");
-
-    // A click on the pop-up puts the phone's text on, though the window
-    // has focus, and the pop-up goes.
-    rig.respond
-        .send(NotificationResponse::Action {
-            id,
-            key: OPEN_KEY.into(),
-        })
-        .unwrap();
     clipboard
         .wait_for(|clipboard| {
             clipboard
@@ -1315,6 +1356,44 @@ async fn a_desktop_copy_made_while_text_waited_wins_and_the_popup_still_puts_the
         rig.sink.closed.lock().unwrap().contains(&id).then_some(())
     })
     .await;
+
+    // What the clipboard held never went to the phone: the next push it
+    // gets is the next copy.
+    rig.runtime.set_active(false);
+    clipboard.copy("later");
+    rig.runtime.set_active(true);
+    assert_eq!(within(take_push(&mut session)).await.text, "later");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_click_on_the_popup_puts_the_text_on_while_the_window_has_focus() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::FocusOnly);
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-11").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+    rig.runtime.set_active(true);
+    clipboard
+        .wait_for(|clipboard| clipboard.reads.load(Ordering::Relaxed) >= 1)
+        .await;
+
+    // The window has focus, but the phone's text cannot go on the clipboard
+    // right now: it waits, and a pop-up offers it.
+    clipboard.fail_writes.store(true, Ordering::Relaxed);
+    let reply = within(push_from_phone(&mut session, "waits", false)).await;
+    assert!(matches!(reply.payload, Payload::Ack(_)), "{reply:?}");
+    let (id, _) = rig.sink.wait_for_banners(1).await[0].clone();
+
+    clipboard.fail_writes.store(false, Ordering::Relaxed);
+    rig.respond
+        .send(NotificationResponse::Action {
+            id,
+            key: OPEN_KEY.into(),
+        })
+        .unwrap();
+    clipboard
+        .wait_for(|clipboard| clipboard.text().is_some_and(|text| text.text == "waits"))
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1344,4 +1423,184 @@ async fn unpairing_a_phone_drops_its_text_that_waits() {
         .wait_for(|clipboard| clipboard.reads.load(Ordering::Relaxed) >= 1)
         .await;
     assert!(clipboard.text().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phones_text_written_while_the_desktop_reads_is_not_mistaken_for_a_copy() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-7").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+
+    // The desktop starts reading a copy, slowly...
+    clipboard.stall_next_read.store(true, Ordering::Relaxed);
+    clipboard.copy("copied here");
+    within(clipboard.read_started.notified()).await;
+    // ...while the phone's text goes on the clipboard.
+    let reply = within(push_from_phone(&mut session, "from the phone", false)).await;
+    assert!(matches!(reply.payload, Payload::Ack(_)), "{reply:?}");
+    clipboard.release_read.notify_one();
+
+    // The read was overtaken: neither it nor the phone's text goes to the
+    // phone, and the next push is the next copy.
+    clipboard
+        .wait_for(|clipboard| clipboard.reads.load(Ordering::Relaxed) >= 2)
+        .await;
+    clipboard.copy("later");
+    assert_eq!(within(take_push(&mut session)).await.text, "later");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_read_while_a_phones_text_fails_to_go_on_is_still_shared() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-8").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+
+    // The desktop starts reading the user's copy, slowly, and the phone's
+    // text cannot go on the clipboard meanwhile.
+    clipboard.stall_next_read.store(true, Ordering::Relaxed);
+    clipboard.copy("just copied");
+    within(clipboard.read_started.notified()).await;
+    clipboard.fail_writes.store(true, Ordering::Relaxed);
+    let reply = within(push_from_phone(&mut session, "from the phone", false)).await;
+    assert!(
+        matches!(&reply.payload, Payload::ErrorReply(error) if error.code() == ErrorCode::Unavailable),
+        "{reply:?}"
+    );
+    clipboard.release_read.notify_one();
+
+    // The copy is read again and shared.
+    assert_eq!(within(take_push(&mut session)).await.text, "just copied");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_while_a_push_waits_for_its_answer_names_no_unknown_phone() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-9").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+
+    // The phone never answers this push, and the user unpairs it.
+    clipboard.copy("unanswered");
+    loop {
+        if let SessionEvent::Request {
+            payload: Payload::ClipboardPush(_),
+            ..
+        } = next_event(&mut session).await
+        {
+            break;
+        }
+    }
+    rig.runtime.unpair("clip-9").unwrap();
+    assert_eq!(within(goodbye(&mut session)).await, GoodbyeReason::Unpaired);
+
+    // A later change reaches the page after the failed push did.
+    clipboard.set(ClipboardText {
+        text: "hunter2".into(),
+        sensitive: true,
+    });
+    rig.events
+        .clipboard_where(|status| {
+            status
+                .problem
+                .as_ref()
+                .is_some_and(|problem| problem.kind == ClipboardProblemKind::PasswordNotShared)
+        })
+        .await;
+    let statuses = rig.events.clipboard.lock().unwrap().clone();
+    assert!(
+        statuses.iter().all(|status| status
+            .problem
+            .as_ref()
+            .is_none_or(|problem| problem.device_id.as_deref() != Some("clip-9"))),
+        "{statuses:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_push_taken_after_its_phone_was_unpaired_is_not_offered() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::FocusOnly);
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-10").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+
+    // The phone pushes as the user unpairs it: the desktop may take the
+    // push before or after the unpairing.
+    let push = ClipboardPush {
+        text: "late".into(),
+        sensitive: false,
+    };
+    session
+        .start_request(Payload::ClipboardPush(push))
+        .await
+        .unwrap();
+    rig.runtime.unpair("clip-10").unwrap();
+    assert_eq!(within(goodbye(&mut session)).await, GoodbyeReason::Unpaired);
+
+    // Nothing waits, and focus puts nothing on the clipboard.
+    rig.events
+        .clipboard_where(|status| status.phones.is_empty() && status.held.is_none())
+        .await;
+    rig.runtime.set_active(true);
+    clipboard
+        .wait_for(|clipboard| clipboard.reads.load(Ordering::Relaxed) >= 1)
+        .await;
+    assert!(clipboard.text().is_none());
+    // No pop-up names the phone by its raw id, and any pop-up went.
+    let shown = rig.sink.shown.lock().unwrap().clone();
+    assert!(
+        shown
+            .iter()
+            .all(|(_, popup)| popup.summary != "Clipboard from clip-10"),
+        "{shown:?}"
+    );
+    let closed = rig.sink.closed.lock().unwrap().clone();
+    assert!(shown.iter().all(|(id, _)| closed.contains(id)), "{shown:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_during_a_phones_write_neither_echoes_nor_relays_the_phones_text() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let rig = start_with(Some(clipboard.clone()));
+    let sender = Arc::new(TestPhone::bind(LOCALHOST, "clip-12").await);
+    let (desktop, _) = pair(&rig, &sender).await;
+    let mut sending = within(clipboard_session(&sender, desktop)).await;
+    // The pairing helpers look through every state so far: start afresh.
+    rig.events.pairing.lock().unwrap().clear();
+    let other = Arc::new(TestPhone::bind(LOCALHOST, "clip-13").await);
+    let (desktop, _) = pair(&rig, &other).await;
+    let mut watching = within(clipboard_session(&other, desktop)).await;
+
+    // The sender's text is being written, slowly, when the user copies
+    // something; the phone's text then replaces it.
+    clipboard.stall_next_write.store(true, Ordering::Relaxed);
+    let push = ClipboardPush {
+        text: "from the phone".into(),
+        sensitive: false,
+    };
+    let seq = sending
+        .start_request(Payload::ClipboardPush(push))
+        .await
+        .unwrap();
+    within(clipboard.write_started.notified()).await;
+    clipboard.copy("copied here");
+    // Time for a read that does not wait for the write to run.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    clipboard.release_write.notify_one();
+    let reply = within(reply_to(&mut sending, seq)).await;
+    assert!(matches!(reply.payload, Payload::Ack(_)), "{reply:?}");
+
+    // The phone's text is not relayed to the other phone, nor is what the
+    // read saw: the next push either phone gets is the next copy.
+    clipboard
+        .wait_for(|clipboard| clipboard.reads.load(Ordering::Relaxed) >= 1)
+        .await;
+    clipboard.copy("later");
+    assert_eq!(within(take_push(&mut watching)).await.text, "later");
+    assert_eq!(within(take_push(&mut sending)).await.text, "later");
 }
