@@ -7,16 +7,21 @@ import dev.link2linux.protocol.v1.FeatureAvailability
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.clipboardPush
 import dev.link2linux.protocol.v1.envelope
+import dev.link2linux.protocol.v1.errorReply
 import dev.link2linux.protocol.v1.featureState
 import dev.link2linux.protocol.v1.featureStatus
 import dev.link2linux.protocol.v1.hello
 import dev.link2linux.protocol.v1.notificationPosted
 import dev.link2linux.protocol.v1.phoneNotification
 import dev.link2linux.protocol.v1.ping
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -29,6 +34,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 
 /** Sessions over loopback TCP; TLS is the transport's job and is not involved here. */
 class SessionTest {
@@ -78,8 +85,30 @@ class SessionTest {
         }
     }
 
+    private val stuckTransports = mutableListOf<StuckTransport>()
+
     @After
     fun closeSockets() = sockets.forEach(Socket::close)
+
+    @After
+    fun closeStuckTransports() = stuckTransports.forEach(StuckTransport::close)
+
+    /** A paired phone session over a [StuckTransport], Hellos exchanged. */
+    private suspend fun stuckSession(writeTimeoutMillis: Long = Session.WRITE_TIMEOUT_MILLIS): Pair<Session, StuckTransport> {
+        val transport = StuckTransport().also { stuckTransports += it }
+        transport.feed(envelope { seq = 1; hello = desktopHello })
+        val phone = Session(transport, writeTimeoutMillis = writeTimeoutMillis)
+        withTimeout(5_000) { phone.handshake(phoneHello) }
+        phone.markPaired()
+        return phone to transport
+    }
+
+    /** Makes [phone]'s writer stick on a frame the peer does not read. */
+    private fun stickWriter(phone: Session, transport: StuckTransport) {
+        transport.stick()
+        phone.post { ping = ping { nonce = 99 } }
+        transport.awaitBlockedWrite()
+    }
 
     @Test
     fun bothSidesExchangeHello() = runBlocking {
@@ -509,6 +538,125 @@ class SessionTest {
             ack = Ack.getDefaultInstance()
         }
         assertEquals(request.seq, withTimeout(5_000) { pending.await() }.replyTo)
+        desktop.close()
+        assertNull(withTimeout(5_000) { reader.await() })
+    }
+
+    @Test
+    fun aPostedAnswerIsBuiltAtOnceSoTheQueueHoldsNothingElse() = runBlocking {
+        val (phone, transport) = stuckSession()
+        stickWriter(phone, transport)
+        var built = false
+
+        phone.post {
+            built = true
+            ping = ping { nonce = 5 }
+        }
+
+        // Built although the writer is stuck: what the answer was made from is not kept.
+        assertTrue(built)
+    }
+
+    @Test
+    fun aPeerThatLeavesTooManyAnswersUnreadIsCutOff() = runBlocking {
+        val (byCount, countTransport) = stuckSession()
+        stickWriter(byCount, countTransport)
+        repeat(Session.MAX_POSTED) { byCount.post { ping = ping { nonce = it.toLong() } } }
+        assertTrue(byCount.state.value is SessionState.Established)
+        byCount.post { ping = ping { } }
+        assertEquals(SessionState.Closed, byCount.state.value)
+
+        val (byBytes, bytesTransport) = stuckSession()
+        stickWriter(byBytes, bytesTransport)
+        val large: Envelope.Builder.() -> Unit = { errorReply = errorReply { detail = "x".repeat(16 * 1024) } }
+        val fit = (Session.MAX_POSTED_BYTES / Envelope.newBuilder().apply(large).build().serializedSize).toInt()
+        repeat(fit) { byBytes.post(large) }
+        assertTrue(byBytes.state.value is SessionState.Established)
+        byBytes.post(large)
+        assertEquals(SessionState.Closed, byBytes.state.value)
+    }
+
+    @Test
+    fun aFailedWriteFailsWhatIsQueuedAndEveryOpenRequest() = runBlocking {
+        val (phone, transport) = stuckSession(writeTimeoutMillis = 300)
+        val open = phone.sendRequest { clipboardPush = push }
+        transport.stick()
+        val stuck = async(start = CoroutineStart.UNDISPATCHED) { runCatching { phone.send { ping = ping { nonce = 1 } } }.exceptionOrNull() }
+        transport.awaitBlockedWrite()
+        val queuedSend = async(start = CoroutineStart.UNDISPATCHED) { runCatching { phone.send { ping = ping { nonce = 2 } } }.exceptionOrNull() }
+        val queuedRequest = async(start = CoroutineStart.UNDISPATCHED) { runCatching { phone.sendRequest { clipboardPush = push } }.exceptionOrNull() }
+
+        val errors = withTimeout(5_000) {
+            listOf(stuck.await(), queuedSend.await(), queuedRequest.await(), runCatching { open.await() }.exceptionOrNull())
+        }
+
+        errors.forEach { assertTrue("got $it", it is SessionException) }
+        assertTrue(errors[0]!!.message!!.contains("took longer than 300 ms"))
+        assertEquals(SessionState.Closed, phone.state.value)
+    }
+
+    @Test
+    fun goodbyeClosesWithinItsGraceWhileTheWriterIsStuck() = runBlocking {
+        val (phone, transport) = stuckSession()
+        stickWriter(phone, transport)
+
+        val started = System.nanoTime()
+        phone.goodbye(GoodbyeReason.GOODBYE_REASON_SHUTDOWN)
+        val tookMillis = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue("took $tookMillis ms", tookMillis < Session.GOODBYE_GRACE_MILLIS + 1_500)
+        assertEquals(SessionState.Closed, phone.state.value)
+    }
+
+    @Test
+    fun aQueuedSendCancelledBeforeItsTurnIsNotWrittenAndTakesNoSeq() = runBlocking {
+        val (phone, transport) = stuckSession()
+        transport.stick()
+        val first = async(start = CoroutineStart.UNDISPATCHED) { phone.send { ping = ping { nonce = 1 } } }
+        transport.awaitBlockedWrite()
+        val cancelled = launch(start = CoroutineStart.UNDISPATCHED) { phone.send { ping = ping { nonce = 2 } } }
+        val third = async(start = CoroutineStart.UNDISPATCHED) { phone.send { ping = ping { nonce = 3 } } }
+        cancelled.cancelAndJoin()
+        transport.release()
+
+        assertEquals(withTimeout(5_000) { first.await() } + 1, withTimeout(5_000) { third.await() })
+        val pings = transport.envelopes().filter { it.hasPing() }
+        assertEquals(listOf(1L, 3L), pings.map { it.ping.nonce })
+        assertEquals(pings[0].seq + 1, pings[1].seq)
+    }
+
+    @Test
+    fun aRequestQueuedRightBehindARefusedOneStillGetsItsAnswer() = runBlocking {
+        val (phone, desktop) = establishedPair()
+        phone.markPaired()
+        desktop.markPaired()
+        val reader = async(Dispatchers.IO) { phone.next() }
+        val tooLarge = clipboardPush { text = "x".repeat(600 * 1024) }
+        // The refused request's caller resumes only once the request queued behind it
+        // is out, so its clean-up runs after the other request took the same seq.
+        val gate = CountDownLatch(1)
+        val callerThread = Executors.newSingleThreadExecutor()
+        callerThread.execute { gate.await() }
+        val caller = callerThread.asCoroutineDispatcher()
+        try {
+            val refused = async(caller, start = CoroutineStart.UNDISPATCHED) {
+                runCatching { phone.sendRequest { clipboardPush = tooLarge } }.exceptionOrNull()
+            }
+            val pending = phone.sendRequest { clipboardPush = push }
+            val request = withTimeout(5_000) { desktop.next()!! }
+            assertEquals(pending.seq, request.seq)
+
+            gate.countDown()
+            assertTrue(withTimeout(5_000) { refused.await() } is FrameTooLargeException)
+            desktop.send {
+                replyTo = request.seq
+                ack = Ack.getDefaultInstance()
+            }
+            assertEquals(request.seq, withTimeout(5_000) { pending.await() }.replyTo)
+        } finally {
+            gate.countDown()
+            caller.close()
+        }
         desktop.close()
         assertNull(withTimeout(5_000) { reader.await() })
     }

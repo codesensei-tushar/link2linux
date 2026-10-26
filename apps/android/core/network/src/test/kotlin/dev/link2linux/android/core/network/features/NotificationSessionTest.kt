@@ -12,6 +12,7 @@ import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.model.PresenceKey
 import dev.link2linux.android.core.network.FrameCodec
 import dev.link2linux.android.core.network.Session
+import dev.link2linux.android.core.network.StuckTransport
 import dev.link2linux.android.core.network.Transport
 import dev.link2linux.android.core.network.pairing.DesktopPeer
 import dev.link2linux.android.core.network.pairing.PairedSession
@@ -42,6 +43,7 @@ import dev.link2linux.protocol.v1.envelope
 import dev.link2linux.protocol.v1.hello
 import dev.link2linux.protocol.v1.notificationDismissRequest
 import dev.link2linux.protocol.v1.notificationSyncRequest
+import dev.link2linux.protocol.v1.ping
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -475,6 +477,64 @@ class NotificationSessionTest {
             dead.close()
             live.close()
             sessionsScope.cancel()
+        }
+    }
+
+    @Test
+    fun aRequestFromASessionThatIsNotAttachedIsAnsweredOffTheReader() = runBlocking {
+        engine.onListenerConnected(emptyList())
+        withTimeout(5_000) { engine.availability.first { it == NotificationAvailability.READY } }
+        val transport = StuckTransport()
+        try {
+            transport.feed(
+                envelope {
+                    seq = 1
+                    hello = hello {
+                        protocolVersion = 1
+                        deviceId = DesktopPeer.DEVICE_ID
+                        deviceName = "Test desktop"
+                        kind = WireDeviceKind.DEVICE_KIND_DESKTOP
+                        features += "notifications"
+                    }
+                },
+            )
+            val session = Session(transport)
+            withTimeout(5_000) {
+                session.handshake(
+                    hello {
+                        protocolVersion = 1
+                        deviceId = "phone-1"
+                        deviceName = "Phone"
+                        kind = WireDeviceKind.DEVICE_KIND_PHONE
+                        features += "notifications"
+                    },
+                )
+            }
+            transport.stick()
+            session.post { ping = ping { nonce = 1 } }
+            transport.awaitBlockedWrite()
+            // Never established, so the session is not attached and the engine sends the answers itself.
+            val hooks = NotificationSessionHooks(engine, scope)
+            val record = PairedDevice(
+                device = Device(DeviceId(DesktopPeer.DEVICE_ID), "Test desktop", DeviceKind.DESKTOP),
+                fingerprint = KeyFingerprint.of(ByteArray(32) { 2 }),
+                pairedAtEpochMillis = 0,
+                presenceKey = PresenceKey.of(ByteArray(32) { 9 }),
+            )
+            val sync = envelope {
+                seq = 2
+                expectsReply = true
+                notificationSyncRequest = notificationSyncRequest { }
+            }
+
+            // The reader's call returns while the writer is still stuck.
+            assertTrue(withTimeout(2_000) { hooks.onMessage(record, session, sync) })
+
+            transport.release()
+            withTimeout(5_000) { while (transport.envelopes().none { it.replyTo == 2L }) delay(10) }
+            assertEquals(PayloadCase.NOTIFICATION_SYNC_BATCH, transport.envelopes().first { it.replyTo == 2L }.payloadCase)
+        } finally {
+            transport.close()
         }
     }
 }

@@ -28,10 +28,15 @@ class FrameCodec(val maxFrameBytes: Int = DEFAULT_MAX_FRAME_BYTES) {
 
     /** Writes one frame. The caller flushes. */
     fun write(envelope: Envelope, output: OutputStream) {
+        checkSize(envelope)
+        envelope.writeDelimitedTo(output)
+    }
+
+    /** Throws [FrameTooLargeException] when [envelope] is too large for one frame. */
+    fun checkSize(envelope: Envelope) {
         val size = envelope.serializedSize
         val limit = if (envelope.hasImageData()) maxFrameBytes else maxMessageBytes
         if (size > limit) throw FrameTooLargeException(size.toLong(), limit)
-        envelope.writeDelimitedTo(output)
     }
 
     /**

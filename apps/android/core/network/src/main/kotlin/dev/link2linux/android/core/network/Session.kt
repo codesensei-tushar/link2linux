@@ -28,6 +28,7 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One connection's worth of envelopes over an established [Transport].
@@ -72,18 +73,23 @@ class Session(
     private var nextSeq = 1L // touched only by the writer
     private var lastPeerSeq = 0L // touched only by the single reader
 
-    /** One frame for the writer. [written] gets its seq, or is null for a frame nobody waits for ([post]). */
+    /** One frame for the writer. */
     private class Write(
         val fill: Envelope.Builder.() -> Unit,
-        val beforeWriting: (Long) -> Unit,
-        val written: CompletableDeferred<Long>?,
+        /** A request's answer: it waits from just before the frame goes out, so the answer cannot come first. */
+        val answer: CompletableDeferred<Envelope>? = null,
+        /** Gets the frame's seq once it is written; null for a posted frame, which nobody waits for. */
+        val written: CompletableDeferred<Long>? = null,
+        /** A posted frame's size, counted against [MAX_POSTED_BYTES] until the writer takes it. */
+        val postedBytes: Int = 0,
     )
 
     /** The frames waiting for the writer, in order. Closing the session fails them. */
     private val writes = Channel<Write>(Channel.UNLIMITED) { it.written?.completeExceptionally(SessionException("The session ended")) }
 
-    /** Posted frames the writer has not taken yet. */
-    private val posted = AtomicInteger()
+    // Posted frames the writer has not taken yet.
+    private val postedFrames = AtomicInteger()
+    private val postedBytes = AtomicLong()
 
     /** This side's requests that wait for their answer, by seq. */
     private val waiting = ConcurrentHashMap<Long, CompletableDeferred<Envelope>>()
@@ -144,22 +150,26 @@ class Session(
     }
 
     /** Sends one envelope and returns its sequence number once it is written. */
-    suspend fun send(fill: Envelope.Builder.() -> Unit): Long = write(fill) {}
+    suspend fun send(fill: Envelope.Builder.() -> Unit): Long = write(fill)
 
     /**
      * Queues one envelope and returns at once, without waiting for it to be
      * written: for answers given while reading, since the reader must never
-     * wait for a write. The envelope goes out in order behind those queued
-     * before it, within the same deadline, and a failed write ends the
-     * session. A peer that leaves [MAX_POSTED] posted frames waiting has
+     * wait for a write. [fill] runs at once, so the queue holds the answer
+     * alone and not what it was made from, such as the request. The envelope
+     * goes out in order behind those queued before it, within the same
+     * deadline, and a failed write ends the session. A peer that leaves more
+     * than [MAX_POSTED] posted frames, or [MAX_POSTED_BYTES], waiting has
      * stopped reading, and is cut off.
      */
     fun post(fill: Envelope.Builder.() -> Unit) {
-        if (posted.incrementAndGet() > MAX_POSTED) {
+        val answer = Envelope.newBuilder().apply(fill).build()
+        val size = answer.serializedSize
+        if (postedFrames.incrementAndGet() > MAX_POSTED || postedBytes.addAndGet(size.toLong()) > MAX_POSTED_BYTES) {
             close()
             return
         }
-        writes.trySend(Write(fill, {}, null))
+        writes.trySend(Write(fill = { mergeFrom(answer) }, postedBytes = size))
     }
 
     /**
@@ -172,16 +182,11 @@ class Session(
      */
     suspend fun sendRequest(timeoutMillis: Long = REQUEST_TIMEOUT_MILLIS, fill: Envelope.Builder.() -> Unit): PendingRequest {
         val answer = CompletableDeferred<Envelope>()
-        var seq = 0L
-        try {
-            // Waiting before the frame goes out, so the answer cannot come first.
-            write({ fill(); expectsReply = true }) {
-                seq = it
-                waiting[it] = answer
-            }
+        val seq = try {
+            write({ fill(); expectsReply = true }, answer)
         } catch (e: Throwable) {
-            // Only this request's entry: a frame refused for its size gives its seq to the next one.
-            waiting.remove(seq, answer)
+            // By value: a seq may since belong to another request.
+            waiting.values.remove(answer)
             throw e
         }
         // Closed meanwhile: close() may have missed this request.
@@ -203,9 +208,9 @@ class Session(
     fun isReadyOnPeer(feature: String): Boolean =
         peerFeatures.value[feature] == FeatureAvailability.FEATURE_AVAILABILITY_READY
 
-    private suspend fun write(fill: Envelope.Builder.() -> Unit, beforeWriting: (Long) -> Unit): Long {
+    private suspend fun write(fill: Envelope.Builder.() -> Unit, answer: CompletableDeferred<Envelope>? = null): Long {
         val written = CompletableDeferred<Long>()
-        if (writes.trySend(Write(fill, beforeWriting, written)).isFailure) throw SessionException("The session ended")
+        if (writes.trySend(Write(fill, answer, written)).isFailure) throw SessionException("The session ended")
         return try {
             written.await()
         } catch (e: CancellationException) {
@@ -215,31 +220,36 @@ class Session(
         }
     }
 
-    /** The writer: writes the queued frames one at a time, each within [writeTimeoutMillis]. */
+    /**
+     * The writer: writes the queued frames one at a time, each within
+     * [writeTimeoutMillis]. A frame that cannot be built, or is too large,
+     * fails before it takes a seq or registers as a request.
+     */
     private suspend fun writeAll() {
         for (write in writes) {
-            if (write.written == null) posted.decrementAndGet()
+            if (write.written == null) {
+                postedFrames.decrementAndGet()
+                postedBytes.addAndGet(-write.postedBytes.toLong())
+            }
             if (write.written?.isCancelled == true) continue
+            val seq = nextSeq
             val envelope = try {
-                Envelope.newBuilder().apply(write.fill).setSeq(nextSeq).build()
+                Envelope.newBuilder().apply(write.fill).setSeq(seq).build().also(frames::checkSize)
             } catch (e: Exception) {
                 write.written?.completeExceptionally(e)
                 continue
             }
-            val seq = nextSeq++
+            nextSeq++
             try {
-                write.beforeWriting(seq)
+                write.answer?.let { waiting[seq] = it }
                 closingAfter(writeTimeoutMillis, "Writing envelope $seq") {
                     frames.write(envelope, transport.output)
                     transport.output.flush()
                 }
-                write.written?.complete(seq)
+                // Its sender gave up while it went out, so nobody will take the answer.
+                if (write.written?.complete(seq) == false) write.answer?.let { waiting.remove(seq, it) }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: FrameTooLargeException) {
-                // Refused before a byte was written: the next frame takes this seq.
-                nextSeq = seq
-                write.written?.completeExceptionally(e)
             } catch (e: Exception) {
                 write.written?.completeExceptionally(e)
                 close()
@@ -362,6 +372,9 @@ class Session(
 
         /** Posted frames that may wait for the writer; more means the peer stopped reading. */
         const val MAX_POSTED: Int = 1024
+
+        /** The bytes posted frames may hold while they wait. Answers are small; this is about a thousand of them. */
+        const val MAX_POSTED_BYTES: Long = 1024 * 1024
 
         private const val NANOS_PER_MILLI = 1_000_000L
 
