@@ -3,6 +3,7 @@ package dev.link2linux.android.core.discovery
 import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.InMemoryPairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.discovery.android.NsdAdvertiser
 import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
 import dev.link2linux.android.core.model.DeviceKind
@@ -232,5 +233,10 @@ class DiscoveryControllerTest {
         assertEquals(setOf("v", "n", "t", "t2"), txt.keys)
         val nonce = java.util.Base64.getUrlDecoder().decode(txt.getValue("n"))
         assertEquals(Tags.presence(other.presenceKey, nonce).toBase64Url(), txt["t"])
+    }
+
+    @Test
+    fun legacyNamesAreUnescaped() {
+        assertEquals("l2l-ab12 (2)", NsdAdvertiser.unescapeName("""l2l-ab12\032(2)"""))
     }
 }
