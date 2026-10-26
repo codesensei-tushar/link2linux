@@ -22,6 +22,8 @@ import dev.link2linux.protocol.v1.featureStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -61,19 +63,15 @@ class NotificationSessionHooks(
         if (!isActive(session)) return
         val reportedAtStart = reported
         val updates = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            var last = reportedAtStart
             // A change between the status the session started with and this
             // subscription would otherwise be lost.
-            if (engine.availability.value != last) {
-                last = engine.availability.value
-                runCatching { session.send { featureStatus = statusOf(last) } }
-            }
-            engine.availabilityChanges.collect { change ->
-                last = change
-                session.send { featureStatus = statusOf(change) }
-            }
+            val now = engine.availability.value
+            if (now != reportedAtStart && !sendStatus(session, now)) return@launch
+            // A failed send means the connection is gone; its reader ends the
+            // session, which cancels this. Until then nothing more goes out.
+            engine.availabilityChanges.takeWhile { sendStatus(session, it) }.collect()
         }
-        val transport = SessionTransport(session)
+        val transport = SessionTransport(session, scope)
         lock.withLock {
             attached.put(session, Attached(transport, updates))?.let { old ->
                 old.statusUpdates.cancel()
@@ -95,7 +93,7 @@ class NotificationSessionHooks(
         // Only a request is answered; a request message sent as a one-way event is ignored.
         if (!envelope.expectsReply) return true
         // A session that already ended still gets its answer, but no live events.
-        val from = lock.withLock { attached[session]?.transport } ?: SessionTransport(session)
+        val from = lock.withLock { attached[session]?.transport } ?: SessionTransport(session, scope)
         engine.handle(request, RepliesTo(session, envelope.seq), from)
         return true
     }
@@ -107,6 +105,9 @@ class NotificationSessionHooks(
             engine.detach(ended.transport)
         }
     }
+
+    private suspend fun sendStatus(session: Session, availability: NotificationAvailability): Boolean =
+        runCatching { session.send { featureStatus = statusOf(availability) } }.isSuccess
 
     private fun isActive(session: Session): Boolean {
         val state = session.state.value
@@ -127,7 +128,7 @@ class NotificationSessionHooks(
         }
     }
 
-    private class SessionTransport(private val session: Session) : NotificationTransport {
+    private class SessionTransport(private val session: Session, private val scope: CoroutineScope) : NotificationTransport {
         override suspend fun send(event: NotificationEvent) {
             when (event) {
                 is NotificationEvent.Posted -> session.send { notificationPosted = event.message }
@@ -135,8 +136,11 @@ class NotificationSessionHooks(
             }
         }
 
-        // The desktop reconnects and syncs again.
-        override fun abandon() = session.close()
+        // The desktop reconnects and syncs again. The engine calls this under
+        // its lock, so the socket is closed on another thread.
+        override fun abandon() {
+            scope.launch { session.close() }
+        }
     }
 
     /** Answers one request: every envelope carries the request's `seq` as `reply_to`. */

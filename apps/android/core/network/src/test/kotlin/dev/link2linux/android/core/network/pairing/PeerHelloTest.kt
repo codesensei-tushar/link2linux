@@ -53,6 +53,14 @@ class PeerHelloTest {
     }
 
     @Test
+    fun invisibleCharactersAreDroppedFromTheName() {
+        // Zero-width space, byte order mark, word joiner, soft hyphen, and a tag character outside the BMP.
+        assertEquals("Desk", PeerHello.checked(desktop { deviceName = "De\u200Bs\uFEFFk\u2060\u00AD\uDB40\uDC41" }).deviceName)
+        // Line and paragraph separators would break the prompt that shows the name.
+        assertEquals("Desk two", PeerHello.checked(desktop { deviceName = "Desk\u2028 two\u2029" }).deviceName)
+    }
+
+    @Test
     fun tooManyOrTooLongFeaturesAreRefused() {
         assertThrows(IllegalArgumentException::class.java) {
             PeerHello.checked(desktop { features += List(10_000) { "" } })

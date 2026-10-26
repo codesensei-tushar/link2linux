@@ -38,24 +38,37 @@ class ConnectionStatusTest {
 
     @Test
     fun theListenerRunsForAPairedDesktopWhileTheSwitchIsOn() {
-        assertTrue(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true, onLocalNetwork = true))
-        assertFalse(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = false, onLocalNetwork = true))
-        assertFalse(ListenerPolicy.shouldListen(emptyList(), PairingState.Idle, switchOn = true, onLocalNetwork = true))
+        assertTrue(ConnectionPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true, onLocalNetwork = true))
+        assertFalse(ConnectionPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = false, onLocalNetwork = true))
+        assertFalse(ConnectionPolicy.shouldListen(emptyList(), PairingState.Idle, switchOn = true, onLocalNetwork = true))
     }
 
     @Test
     fun aPairingUnderWayNeedsTheListenerEvenWithoutAPairedDesktop() {
         val verifying = PairingState.Verifying(PairingMethod.SAS, "x")
-        assertTrue(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = true, onLocalNetwork = true))
-        assertTrue(ListenerPolicy.shouldListen(emptyList(), PairingState.ConfirmCode(SasCode(123456), "x"), switchOn = true, onLocalNetwork = true))
-        assertFalse(ListenerPolicy.shouldListen(emptyList(), PairingState.Failed(PairingFailure.TIMED_OUT), switchOn = true, onLocalNetwork = true))
-        assertFalse(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = false, onLocalNetwork = true))
+        assertTrue(ConnectionPolicy.shouldListen(emptyList(), verifying, switchOn = true, onLocalNetwork = true))
+        assertTrue(ConnectionPolicy.shouldListen(emptyList(), PairingState.ConfirmCode(SasCode(123456), "x"), switchOn = true, onLocalNetwork = true))
+        assertFalse(ConnectionPolicy.shouldListen(emptyList(), PairingState.Failed(PairingFailure.TIMED_OUT), switchOn = true, onLocalNetwork = true))
+        assertFalse(ConnectionPolicy.shouldListen(emptyList(), verifying, switchOn = false, onLocalNetwork = true))
     }
 
     @Test
     fun theListenerClosesOffALocalNetwork() {
         val verifying = PairingState.Verifying(PairingMethod.SAS, "x")
-        assertFalse(ListenerPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true, onLocalNetwork = false))
-        assertFalse(ListenerPolicy.shouldListen(emptyList(), verifying, switchOn = true, onLocalNetwork = false))
+        assertFalse(ConnectionPolicy.shouldListen(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true, onLocalNetwork = false))
+        assertFalse(ConnectionPolicy.shouldListen(emptyList(), verifying, switchOn = true, onLocalNetwork = false))
+    }
+
+    @Test
+    fun theServiceRunsOnlyWithAPairingOrOneUnderWayAndTheSwitchOn() {
+        val waiting = PairingState.AwaitingDesktop.Sas(untilEpochMillis = 0, attemptsLeft = 3)
+        // A fresh install: nothing paired, nothing started.
+        assertFalse(ConnectionPolicy.shouldRun(emptyList(), PairingState.Idle, switchOn = true))
+        assertFalse(ConnectionPolicy.shouldRun(emptyList(), PairingState.Failed(PairingFailure.TIMED_OUT), switchOn = true))
+        assertTrue(ConnectionPolicy.shouldRun(emptyList(), waiting, switchOn = true))
+        assertTrue(ConnectionPolicy.shouldRun(listOf(desktop("a", 1)), PairingState.Idle, switchOn = true))
+        // The user turned it off.
+        assertFalse(ConnectionPolicy.shouldRun(listOf(desktop("a", 1)), PairingState.Idle, switchOn = false))
+        assertFalse(ConnectionPolicy.shouldRun(emptyList(), waiting, switchOn = false))
     }
 }

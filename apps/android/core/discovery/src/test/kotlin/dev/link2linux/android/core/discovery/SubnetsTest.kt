@@ -90,4 +90,62 @@ class SubnetsTest {
         assertFalse(networks.ownsAddress(ip("127.0.0.1")))
         assertFalse(emptyList<LocalNetwork>().ownsAddress(ip("192.168.1.5")))
     }
+
+    @Test
+    fun aConnectionCountsAsLocalOnlyFromAHostOnTheLinkItArrivedOn() {
+        val wifi = LocalNetwork(
+            1,
+            listOf(NetworkAddress(ip("192.168.1.5"), 24), NetworkAddress(ip("2001:db8:1::5"), 64), NetworkAddress(ip("fe80::1"), 64)),
+        )
+        val networks = listOf(wifi)
+        assertTrue(networks.carries(ip("192.168.1.5"), ip("192.168.1.20")))
+        assertTrue(networks.carries(ip("2001:db8:1::5"), ip("2001:db8:1::9")))
+        assertTrue(networks.carries(ip("fe80::1"), ip("fe80::2")))
+        val mapped = Inet6Address.getByAddress(null, ByteArray(10) + byteArrayOf(-1, -1, -64, -88, 1, 20), -1)
+        assertTrue(networks.carries(ip("192.168.1.5"), mapped))
+
+        // The internet reaching the phone's global IPv6 address, or its IPv4 address through a forwarded port.
+        assertFalse(networks.carries(ip("2001:db8:1::5"), ip("2001:db8:ffff::1")))
+        assertFalse(networks.carries(ip("192.168.1.5"), ip("203.0.113.9")))
+        assertFalse(networks.carries(ip("192.168.1.5"), ip("100.64.0.9"))) // a carrier's customers
+        // Link-local only to the phone's own link-local address: elsewhere its link is unknown.
+        assertFalse(networks.carries(ip("2001:db8:1::5"), ip("fe80::2")))
+        // A host on the link, but to an address the phone does not have there (mobile data, a VPN).
+        assertFalse(networks.carries(ip("10.20.30.40"), ip("192.168.1.20")))
+        assertFalse(emptyList<LocalNetwork>().carries(ip("192.168.1.5"), ip("192.168.1.20")))
+    }
+
+    @Test
+    fun aHotspotTakesConnectionsFromItsClientsOverIPv4AndIPv6() {
+        val hotspot = LocalNetwork(
+            -5,
+            listOf(NetworkAddress(ip("192.168.43.1"), 24)),
+            tethered = true,
+            ownAddresses = listOf(ip("192.168.43.1"), ip("2001:db8:43::1"), ip("fe80::43")),
+        )
+        val networks = listOf(hotspot)
+        assertTrue(networks.carries(ip("192.168.43.1"), ip("192.168.43.77")))
+        assertTrue(networks.carries(ip("2001:db8:43::1"), ip("2001:db8:43::77")))
+        assertTrue(networks.carries(ip("fe80::43"), ip("fe80::77")))
+        assertFalse(networks.carries(ip("2001:db8:43::1"), ip("2001:db8:99::1")))
+        assertFalse(networks.carries(ip("192.168.43.1"), ip("198.51.100.7")))
+    }
+
+    @Test
+    fun aDesktopOnAnotherPrivateSubnetCanConnect() {
+        val wifi = LocalNetwork(1, listOf(NetworkAddress(ip("192.168.1.5"), 24), NetworkAddress(ip("2001:db8:1::5"), 64)))
+        val networks = listOf(wifi)
+        // A wired desktop behind the same router, or in the office's other subnet, paired by typed address.
+        for (desktop in listOf("192.168.2.40", "10.1.2.3", "172.20.0.9", "fd12:3456::9", "127.0.0.1")) {
+            assertTrue(desktop, networks.carries(ip("192.168.1.5"), ip(desktop)))
+        }
+        val mapped = Inet6Address.getByAddress(null, ByteArray(10) + byteArrayOf(-1, -1, 10, 1, 2, 3), -1)
+        assertTrue(networks.carries(ip("192.168.1.5"), mapped))
+        // Public sources off the link are not a local network's.
+        for (internet in listOf("203.0.113.9", "8.8.8.8", "172.32.0.1", "2001:db8:ffff::1", "2a00:1450::1")) {
+            assertFalse(internet, networks.carries(ip("192.168.1.5"), ip(internet)))
+        }
+        // Whatever the source, the connection must arrive on the phone's address on a local network.
+        assertFalse(networks.carries(ip("100.64.20.30"), ip("10.1.2.3")))
+    }
 }

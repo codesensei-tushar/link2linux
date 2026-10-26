@@ -11,12 +11,13 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import androidx.core.content.ContextCompat
+import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.discovery.InterfaceSnapshot
 import dev.link2linux.android.core.discovery.LocalNetwork
 import dev.link2linux.android.core.discovery.LocalNetworks
 import dev.link2linux.android.core.discovery.NetworkAddress
 import dev.link2linux.android.core.discovery.TetheredNetworks
-import dev.link2linux.android.core.discovery.ownsAddress
+import dev.link2linux.android.core.discovery.carries
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -82,7 +83,7 @@ class ConnectivityLocalNetworks(context: Context) : LocalNetworks {
         callback = cb
         connectivity.registerNetworkCallback(request, cb)
 
-        val poller = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val poller = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the network scan"))
         scope = poller
 
         // System broadcasts: not-exported receivers get them. Neither needs a permission.
@@ -120,14 +121,15 @@ class ConnectivityLocalNetworks(context: Context) : LocalNetworks {
     }
 
     /**
-     * Whether [address], one of the phone's own, is on a network the phone is
-     * on or hosts: the listener asks this for every connection. While [start]
-     * has not run (a pairing can start the listener with the connection
-     * service off) it looks at the networks now.
+     * Whether a connection from [remote] to [local], one of the phone's own
+     * addresses, came over a network the phone is on or hosts (see
+     * [carries]): the listener asks this for every connection. While [start]
+     * has not run, or has not heard about the networks yet, it looks at the
+     * networks now.
      */
-    fun isLocalAddress(address: InetAddress): Boolean {
+    fun isLocalConnection(local: InetAddress, remote: InetAddress): Boolean {
         val tracked = synchronized(this) { state.value.takeIf { callback != null } }
-        return (tracked ?: lookNow()).ownsAddress(address)
+        return (tracked ?: lookNow()).carries(local, remote)
     }
 
     /** The networks [publish] would report, found without the callback. */

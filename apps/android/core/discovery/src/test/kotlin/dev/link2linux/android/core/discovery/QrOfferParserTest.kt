@@ -95,6 +95,20 @@ class QrOfferParserTest {
     }
 
     @Test
+    fun invisibleCharactersAreDroppedFromTheName() {
+        fun name(encoded: String) = (QrOfferParser.parse(uri("n=$encoded")) as QrParseResult.Parsed).offer.desktopName
+        // Right-to-left override, zero-width space, left-to-right isolate, line separator.
+        assertEquals("kseD", name("%E2%80%AEkseD"))
+        assertEquals("Desk", name("Desk%E2%80%8B"))
+        assertEquals("Desk", name("%E2%81%A6Desk"))
+        assertEquals("Desk", name("De%E2%80%A8sk"))
+        // Emoji sequences keep their joiner.
+        assertEquals("\uD83D\uDC69\u200D\uD83D\uDCBB", name("%F0%9F%91%A9%E2%80%8D%F0%9F%92%BB"))
+        // Nothing visible left.
+        assertEquals(Reason.MISSING_OR_BAD_NAME, invalid(uri("n=%E2%80%8B%E2%80%AE")))
+    }
+
+    @Test
     fun addressesAreLiteralsWithOptionalPorts() {
         assertEquals(emptyList<InetSocketAddress>(), offer("a=").beaconAddresses)
         assertEquals(

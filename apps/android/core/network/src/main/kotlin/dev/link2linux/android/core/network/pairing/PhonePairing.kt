@@ -116,31 +116,47 @@ class PhonePairing(
         coroutineScope {
             // The desktop may end the attempt while the user is still deciding.
             val desktop = readAsync(channel)
-            val user = async { withTimeoutOrNull(userTimeoutMillis) { approval.approve(code) } }
-            val early = select {
-                desktop.onAwait { it }
-                user.onAwait { null }
+            try {
+                decideAndStore(channel, code, approval, store, desktop)
+            } catch (e: Throwable) {
+                // That read blocks until the connection closes, and this scope waits for it.
+                channel.session.close()
+                throw e
             }
-            if (early != null) {
-                user.cancel()
-                failOn(channel, early.getOrElse { lost(channel, it) })
-            }
-            when (user.await()) {
-                null -> fail(channel, PairingFailure.TIMED_OUT, "The user did not decide in time")
-                false -> fail(channel, PairingFailure.DECLINED, "The user declined")
-                true -> Unit
-            }
-            channel.session.send { pairingResult = result(PairingOutcome.PAIRING_OUTCOME_ACCEPTED) }
-            val answer = withTimeoutOrNull(resultTimeoutMillis) { desktop.await() }
-                ?: fail(channel, PairingFailure.TIMED_OUT, "No verdict from the desktop")
-            val verdict = answer.getOrElse { lost(channel, it) }
-            if (verdict == null || !verdict.hasPairingResult() ||
-                verdict.pairingResult.outcome != PairingOutcome.PAIRING_OUTCOME_ACCEPTED
-            ) {
-                failOn(channel, verdict)
-            }
-            store()
         }
+
+    private suspend fun CoroutineScope.decideAndStore(
+        channel: PairingChannel,
+        code: SasCode?,
+        approval: PairingApproval,
+        store: suspend () -> Unit,
+        desktop: Deferred<Result<Envelope?>>,
+    ) {
+        val user = async { withTimeoutOrNull(userTimeoutMillis) { approval.approve(code) } }
+        val early = select {
+            desktop.onAwait { it }
+            user.onAwait { null }
+        }
+        if (early != null) {
+            user.cancel()
+            failOn(channel, early.getOrElse { lost(channel, it) })
+        }
+        when (user.await()) {
+            null -> fail(channel, PairingFailure.TIMED_OUT, "The user did not decide in time")
+            false -> fail(channel, PairingFailure.DECLINED, "The user declined")
+            true -> Unit
+        }
+        channel.session.send { pairingResult = result(PairingOutcome.PAIRING_OUTCOME_ACCEPTED) }
+        val answer = withTimeoutOrNull(resultTimeoutMillis) { desktop.await() }
+            ?: fail(channel, PairingFailure.TIMED_OUT, "No verdict from the desktop")
+        val verdict = answer.getOrElse { lost(channel, it) }
+        if (verdict == null || !verdict.hasPairingResult() ||
+            verdict.pairingResult.outcome != PairingOutcome.PAIRING_OUTCOME_ACCEPTED
+        ) {
+            failOn(channel, verdict)
+        }
+        store()
+    }
 
     private fun CoroutineScope.readAsync(channel: PairingChannel): Deferred<Result<Envelope?>> =
         async { runCatching { channel.session.next() } }

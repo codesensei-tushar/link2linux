@@ -12,8 +12,10 @@ import androidx.core.content.ContextCompat
  * with comes in range, and starts the app if it is not running. That is one
  * of the few moments an app may start a foreground service from the
  * background, so the connection service starts here, then announces the
- * phone with a beacon burst. A presence event is only a reason to announce:
- * it proves nothing about the computer.
+ * phone with a beacon burst, unless the user turned the connection off. A
+ * presence event is only a reason to announce: it proves nothing about the
+ * computer. Unpairing the computer removes the association
+ * ([CompanionAssociations]), so it stops waking the app.
  *
  * Presence observing needs Android 12 or later, so the service does nothing
  * before that. Which callback Android uses depends on its version (the address form
@@ -38,6 +40,8 @@ class DesktopPresenceService : CompanionDeviceService() {
     }
 
     private fun desktopAppeared() {
+        // Turned off stays off: the user turns it on again in the app.
+        if (!PreferencesConnectionSwitch.isOn(this)) return
         // The connection service then starts its beacon burst, in onStartCommand.
         ContextCompat.startForegroundService(this, ConnectionService.desktopNearby(this))
     }

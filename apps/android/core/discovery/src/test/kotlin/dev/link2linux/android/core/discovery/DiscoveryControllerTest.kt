@@ -13,7 +13,14 @@ import dev.link2linux.android.core.model.PairingSecret
 import dev.link2linux.android.core.model.PairingState
 import dev.link2linux.android.core.model.PresenceKey
 import dev.link2linux.android.core.model.QrPairingOffer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -21,13 +28,20 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DiscoveryControllerTest {
@@ -102,12 +116,12 @@ class DiscoveryControllerTest {
         lastKnownAddresses = listOf(InetSocketAddress(InetAddress.getByName("192.168.1.20"), 27381)),
     )
 
-    private fun TestScope.controller(): DiscoveryController {
+    private fun TestScope.controller(elapsedRealtime: () -> Long = { currentTime }): DiscoveryController {
         var n = 0
         val announcer = Announcer { size -> ByteArray(size) { (n++).toByte() } }
         return DiscoveryController(
             backgroundScope, repository, pairing, connections, networks, advertiser, sender, locks, locks,
-            announcer, wallClockMillis = { 1_000_000 + currentTime },
+            elapsedRealtimeMillis = elapsedRealtime, announcer = announcer, wallClockMillis = { 1_000_000 + currentTime },
         ).also { it.start() }
     }
 
@@ -259,5 +273,90 @@ class DiscoveryControllerTest {
             listOf(InetSocketAddress(InetAddress.getByName("192.168.43.1"), 27380)),
             controller.endpoints.first(),
         )
+    }
+
+    @Test
+    fun aDesktopNearbyReportAfterThePhoneSleptStartsANewBurst() = runTest {
+        // Virtual time stands still while the phone sleeps; the time since boot does not.
+        var slept = 0L
+        val controller = controller(elapsedRealtime = { currentTime + slept })
+        repository.save(desktop)
+        up()
+        runCurrent()
+        // Between two steps of the burst that pairing the desktop started.
+        advanceTimeBy(12_500)
+        runCurrent()
+        val sent = sender.sent.size
+
+        controller.onDesktopNearby()
+        runCurrent()
+        assertEquals("a report within a minute of the last burst starts none", sent, sender.sent.size)
+
+        slept = 61_000
+        controller.onDesktopNearby()
+        runCurrent()
+        assertEquals(sent + 1, sender.sent.size)
+    }
+
+    @Test
+    fun stopWaitsForWorkInFlightAndNothingComesAfterIt() = runBlocking {
+        val thread = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val events = CopyOnWriteArrayList<String>()
+        val acquiring = CountDownLatch(1)
+        val acquired = CountDownLatch(1)
+        val locks = object : TimedLock, HeldLock {
+            override fun hold(millis: Long) {
+                events += "hold"
+            }
+            override fun acquire() {
+                events += "acquire"
+                acquiring.countDown()
+                // The lock takes a while, as on a busy phone.
+                acquired.await(5, TimeUnit.SECONDS)
+            }
+            override fun release() {
+                events += "release"
+            }
+        }
+        val advertiser = object : ServiceAdvertiser {
+            override val registeredName: StateFlow<String?> = MutableStateFlow(null)
+            override suspend fun register(announcement: Announcement, port: Int) {
+                events += "register"
+            }
+            override suspend fun unregister() {
+                events += "unregister"
+            }
+        }
+        val sender = object : BeaconSender {
+            override suspend fun send(networks: List<LocalNetwork>, datagram: ByteArray, unicast: List<InetSocketAddress>) {
+                events += "beacon"
+            }
+        }
+        val scope = CoroutineScope(SupervisorJob() + thread)
+        try {
+            val controller = DiscoveryController(
+                scope, repository, pairing, connections, networks, advertiser, sender, locks, locks,
+                elapsedRealtimeMillis = { System.nanoTime() / 1_000_000 },
+            )
+            controller.start()
+            repository.save(desktop)
+            pairing.state.value = PairingState.AwaitingDesktop.Sas(untilEpochMillis = Long.MAX_VALUE, attemptsLeft = 3)
+            up()
+            assertTrue(acquiring.await(5, TimeUnit.SECONDS))
+
+            val stopping = async(Dispatchers.IO) { controller.stop() }
+            delay(300)
+            assertFalse("stop() returned while the controller was still at work", stopping.isCompleted)
+            acquired.countDown()
+            withTimeout(5_000) { stopping.await() }
+            delay(300)
+
+            assertEquals("unregister", events.last())
+            assertEquals(1, events.count { it == "unregister" })
+        } finally {
+            acquired.countDown()
+            scope.cancel()
+            thread.close()
+        }
     }
 }

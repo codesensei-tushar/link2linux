@@ -7,11 +7,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Keeps the choice in the app's private preferences, on by default, and starts or stops the service with it. */
+/**
+ * Keeps the choice in the app's private preferences, on by default, and
+ * stops the service when it is turned off. Turning it on is always done in
+ * the app, which starts the service once there is something to connect.
+ */
 class PreferencesConnectionSwitch(context: Context) : ConnectionSwitch {
 
     private val app = context.applicationContext
-    private val prefs = app.getSharedPreferences("connection", Context.MODE_PRIVATE)
+    private val prefs = preferences(app)
     private val state = MutableStateFlow(prefs.getBoolean(KEY, true))
 
     override val enabled: StateFlow<Boolean> = state.asStateFlow()
@@ -19,10 +23,15 @@ class PreferencesConnectionSwitch(context: Context) : ConnectionSwitch {
     override fun setEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY, enabled).apply()
         state.value = enabled
-        if (enabled) ConnectionService.start(app) else app.stopService(Intent(app, ConnectionService::class.java))
+        if (!enabled) app.stopService(Intent(app, ConnectionService::class.java))
     }
 
-    private companion object {
-        const val KEY = "enabled"
+    companion object {
+        private const val KEY = "enabled"
+
+        private fun preferences(context: Context) = context.getSharedPreferences("connection", Context.MODE_PRIVATE)
+
+        /** The user's choice, for a component Android starts outside the dependency graph. */
+        fun isOn(context: Context): Boolean = preferences(context.applicationContext).getBoolean(KEY, true)
     }
 }

@@ -46,6 +46,16 @@ code. None of them was known to be exploited.
   and every workflow action is pinned to a fixed version. `install.sh`
   downloads over HTTPS only.
 
+### Fixed
+
+- The phone app no longer crashes when its camera can't start, or when the
+  screen that offers to notice a nearby computer goes away.
+- With "Stay connected" off, the phone no longer opens its listener or
+  restarts its connection service when a paired computer comes near, and a
+  removed computer no longer wakes the app.
+- On a fresh install, the phone runs nothing in the background until the
+  first pairing starts.
+
 ## [0.1.1] - 2026-10-26
 
 Keeps more of the phone's private content to the phone, makes the desktop app

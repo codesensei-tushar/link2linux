@@ -111,7 +111,7 @@ class TlsServer(
                 val peer = session.peerCertificates.first() as X509Certificate
                 val local = session.localCertificates.first() as X509Certificate
                 socket.soTimeout = idleTimeoutMillis
-                return TlsTransport(tls, peerKey = Spki.fingerprint(peer), localKey = Spki.fingerprint(local))
+                return TlsTransport(tls, socket, peerKey = Spki.fingerprint(peer), localKey = Spki.fingerprint(local))
             } catch (e: Exception) {
                 tls.close()
                 throw e
@@ -163,6 +163,8 @@ class TlsServer(
  */
 class TlsTransport internal constructor(
     private val socket: SSLSocket,
+    /** The accepted TCP connection [socket] runs over. */
+    private val tcp: Socket,
     /** `fp_D`: the key the desktop presented in this handshake. */
     val peerKey: KeyFingerprint,
     /** `fp_P`: the key this phone presented in this handshake. */
@@ -181,5 +183,17 @@ class TlsTransport internal constructor(
         null
     }
 
-    override fun close() = socket.close()
+    /**
+     * Closes the TCP connection, then the TLS socket. Conscrypt's own close
+     * first writes `close_notify`, and that write waits behind a write
+     * already blocked on a desktop that stopped reading, or on a full send
+     * buffer, for as long as the desktop keeps the connection up. With the
+     * TCP socket closed first, both fail at once. The desktop sees the
+     * connection drop without `close_notify`, as when the phone leaves the
+     * network.
+     */
+    override fun close() {
+        runCatching { tcp.close() }
+        runCatching { socket.close() }
+    }
 }

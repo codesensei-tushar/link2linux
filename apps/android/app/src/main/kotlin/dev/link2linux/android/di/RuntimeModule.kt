@@ -6,6 +6,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.network.features.NotificationSessionHooks
 import dev.link2linux.android.core.network.pairing.SessionHooks
 import dev.link2linux.android.feature.notifications.NotificationsRuntime
@@ -24,6 +25,6 @@ internal object RuntimeModule {
     fun sessionHooks(@ApplicationContext context: Context): SessionHooks = NotificationSessionHooks(
         engine = NotificationsRuntime.get(context).engine,
         // Status updates for a session live as long as the session; the app outlives them all.
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the notification sessions")),
     )
 }

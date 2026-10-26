@@ -11,6 +11,7 @@ import dev.link2linux.android.core.model.DeviceKind
 import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.security.SecretBox
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -62,8 +63,9 @@ class PersistentPairingStore(
         loaded()
         emitAll(content.filterNotNull().map { it.devices })
     }.retryWhen { cause, attempt ->
-        // An error that may pass leaves the file alone: read it again, a little later each time.
-        val passing = cause is IOException || cause is GeneralSecurityException
+        // Every error that gets here may pass, as the ones that cannot set the file aside instead,
+        // including the Keystore's own (ProviderException): read the file again, a little later each time.
+        val passing = cause is Exception && cause !is CancellationException
         if (passing) delay((RETRY_MILLIS shl attempt.coerceAtMost(6).toInt()).coerceAtMost(MAX_RETRY_MILLIS))
         passing
     }.distinctUntilChanged()

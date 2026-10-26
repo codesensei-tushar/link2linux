@@ -1,6 +1,7 @@
 package dev.link2linux.android.di
 
 import android.content.Context
+import android.os.SystemClock
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -10,6 +11,7 @@ import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.ListenAddresses
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.DiscoveryStatus
@@ -34,9 +36,9 @@ internal object DiscoveryModule {
     fun localNetworks(@ApplicationContext context: Context): ConnectivityLocalNetworks =
         ConnectivityLocalNetworks(context)
 
-    /** The listener takes connections only on the phone's addresses on these networks. */
+    /** The listener takes connections only over these networks, from hosts on them. */
     @Provides
-    fun listenAddresses(networks: ConnectivityLocalNetworks): ListenAddresses = ListenAddresses(networks::isLocalAddress)
+    fun listenAddresses(networks: ConnectivityLocalNetworks): ListenAddresses = ListenAddresses(networks::isLocalConnection)
 
     @Provides
     @Singleton
@@ -48,7 +50,7 @@ internal object DiscoveryModule {
         networks: ConnectivityLocalNetworks,
     ): DiscoveryController = DiscoveryController(
         // One coroutine at a time: the controller keeps plain state.
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1)),
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1) + loggingUncaught("discovery")),
         pairedDevices = pairedDevices,
         pairing = pairing,
         connections = connections,
@@ -57,6 +59,7 @@ internal object DiscoveryModule {
         sender = UdpBeaconSender(),
         wakeLock = BeaconWakeLock(context),
         multicastLock = PairingMulticastLock(context),
+        elapsedRealtimeMillis = SystemClock::elapsedRealtime,
         // Android before 14 needs a new registration whenever a network changes.
         reregisterOnNetworkChange = android.os.Build.VERSION.SDK_INT < 34,
     )

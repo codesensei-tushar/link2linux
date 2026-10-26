@@ -29,6 +29,7 @@ import dev.link2linux.protocol.v1.PairingMethod as WirePairingMethod
 import dev.link2linux.protocol.v1.Hello
 import dev.link2linux.protocol.v1.PairingOutcome
 import dev.link2linux.protocol.v1.PairingResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,9 +63,11 @@ import java.util.concurrent.ConcurrentHashMap
  * whose Hello names a pairing method pairs; any other must come from a
  * paired desktop whose record (found by key) has the same device id.
  *
- * Before any of that, a connection must arrive on one of the phone's
- * addresses on a local network ([listenAddresses]), and it must finish the
- * TLS handshake and the Hello exchange in time. Only [MAX_PRE_AUTH]
+ * Before any of that, a connection must come from a host on a local
+ * network, the phone's own or one routed to it, to the phone's address on
+ * a network it is on ([listenAddresses]), and it must finish the TLS
+ * handshake and the Hello
+ * exchange in time. Only [MAX_PRE_AUTH]
  * connections may be that far at once, [MAX_PRE_AUTH_PER_SOURCE] of them
  * from one host, and their handshakes share [HANDSHAKE_THREADS] threads of
  * their own, so hosts that open connections and stall cannot use up the
@@ -87,7 +90,7 @@ class PairingService(
     private val window = PairingWindow(now)
     private val pairedKeys = MutableStateFlow<Set<KeyFingerprint>>(emptySet())
     private val server = TlsServer(identity, PeerKeyPolicy { it in pairedKeys.value || window.acceptsKey(it) })
-    private val sessions = ConcurrentHashMap<KeyFingerprint, Live>() // by the record's current key
+    private val sessions = ConcurrentHashMap<DeviceId, Live>() // by the desktop's device id
     private val listenerLock = Mutex()
 
     // Starting a paired session and removing a pairing take turns, so a
@@ -127,18 +130,27 @@ class PairingService(
     }
 
     /**
-     * Starts listening, if it is not already. The connection service calls
-     * it while the phone has a pairing and is on a local network; starting
-     * a pairing calls it too.
+     * Starts listening, if it is not already. Only the connection service
+     * calls it, while the user's switch is on, the phone is on a local
+     * network, and a desktop is paired or a pairing is under way; starting a
+     * pairing does not, so the listener follows the switch. If it cannot
+     * listen, a pairing waiting for its desktop fails.
      */
     override suspend fun start() {
         listenerLock.withLock {
             if (listener != null) return
-            refreshKeys()
-            val socket = runInterruptible(Dispatchers.IO) { server.listen(port, bindAddress) }
-            listener = socket
-            _listeningPort.value = socket.localPort
-            scope.launch { acceptLoop(socket) }
+            try {
+                refreshKeys()
+                val socket = runInterruptible(Dispatchers.IO) { server.listen(port, bindAddress) }
+                listener = socket
+                _listeningPort.value = socket.localPort
+                scope.launch { acceptLoop(socket) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failWaiting()
+                throw e
+            }
         }
     }
 
@@ -161,12 +173,14 @@ class PairingService(
         val waiting = open()
         _state.value = waiting
         scheduleExpiry()
-        scope.launch {
-            runCatching { start() }.onFailure {
-                window.close()
-                _state.value = PairingState.Failed(PairingFailure.INTERNAL)
-            }
-        }
+    }
+
+    /** The listener could not open: a desktop the phone waits for could never connect. */
+    private fun failWaiting() {
+        if (_state.value !is PairingState.AwaitingDesktop) return
+        expiry?.cancel()
+        window.close()
+        _state.value = PairingState.Failed(PairingFailure.INTERNAL)
     }
 
     override fun confirmCode(matches: Boolean) {
@@ -197,9 +211,9 @@ class PairingService(
             devices.forget(fingerprint)
             refreshKeys()
             val keys = setOfNotNull(fingerprint, record?.nextFingerprint)
-            val ending = sessions.entries.filter { (current, live) -> current == fingerprint || live.peerKey in keys }
+            val ending = sessions.entries.filter { (id, live) -> id == record?.device?.id || live.peerKey in keys }
             ending.forEach { sessions.remove(it.key, it.value) }
-            _connected.value = sessions.keys.toSet()
+            publishConnected()
             ending.map { it.value.session }
         }
         ended.forEach { it.goodbye(GoodbyeReason.GOODBYE_REASON_UNPAIRED) }
@@ -237,12 +251,12 @@ class PairingService(
     }
 
     /**
-     * Whether [socket] may go on to the TLS handshake: it arrived on a local
-     * network, and the caps on unfinished connections leave room for it.
+     * Whether [socket] may go on to the TLS handshake: it came from a host on
+     * a local network, and the caps on unfinished connections leave room for it.
      * Returns the slot it holds until its Hello exchange is over.
      */
     private fun admit(socket: Socket): PreAuthLimits.Slot? {
-        if (!listenAddresses.isLocal(socket.localAddress)) return null
+        if (!listenAddresses.isLocal(socket.localAddress, socket.inetAddress)) return null
         return preAuth.tryAcquire(socket.inetAddress)
     }
 
@@ -254,14 +268,24 @@ class PairingService(
         try {
             transport = runInterruptible(handshakes) { server.secure(socket) }
             session = Session(transport)
-            val local = localDevice.localDevice()
-            peer = session.handshake(local.copy(features = local.features + hooks.features()).toHello())
+            peer = closingOnFailure(session) {
+                val local = localDevice.localDevice()
+                session.handshake(local.copy(features = local.features + hooks.features()).toHello())
+            }
         } finally {
             slot.release()
         }
         if (peer.kind != WireDeviceKind.DEVICE_KIND_DESKTOP) session.protocolError("Expected a desktop")
         val checked = runCatching { PeerHello.checked(peer) }.getOrElse { session.protocolError(it.message.orEmpty()) }
-        dispatch(transport, session, checked)
+        // A failure anywhere, such as the store failing, must not leave the connection open.
+        closingOnFailure(session) { dispatch(transport, session, checked) }
+    }
+
+    private suspend fun <T> closingOnFailure(session: Session, block: suspend () -> T): T = try {
+        block()
+    } catch (e: Throwable) {
+        session.close()
+        throw e
     }
 
     private suspend fun dispatch(transport: TlsTransport, session: Session, peer: Hello) {
@@ -296,17 +320,18 @@ class PairingService(
         _state.value = PairingState.Verifying(PairingMethod.QR_CODE, peer.deviceName)
         val channel = PairingChannel(session, transport, transport.peerKey, transport.localKey)
         val replaced = CompletableDeferred<PairedDevice?>()
-        try {
+        val failure = attempt(session) {
             pairing.pairWithQrCode(channel, offer.secret, approval(session, peer, transport.peerKey, replaced)) {
-                store(peer, transport, offer, replaced.await())
+                store(session, peer, transport, offer, replaced.await())
             }
-        } catch (e: PairingFailedException) {
+        }
+        if (failure != null) {
             if (pairingConnection !== session) return // cancelled or replaced by a newer attempt
             pairingConnection = null
             // A dropped connection leaves the offer open: the desktop dials again.
-            val waiting = if (e.failure == PairingFailure.CONNECTION_LOST) window.waitingState() else null
+            val waiting = if (failure == PairingFailure.CONNECTION_LOST) window.waitingState() else null
             if (waiting == null) window.close()
-            _state.value = waiting ?: PairingState.Failed(e.failure)
+            _state.value = waiting ?: PairingState.Failed(failure)
             return
         }
         runSession(transport, session)
@@ -318,17 +343,37 @@ class PairingService(
         _state.value = PairingState.Verifying(PairingMethod.SAS, peer.deviceName)
         val channel = PairingChannel(session, transport, transport.peerKey, transport.localKey)
         val replaced = CompletableDeferred<PairedDevice?>()
-        try {
+        val failure = attempt(session) {
             pairing.pairWithSas(channel, approval(session, peer, transport.peerKey, replaced), window::sasAttemptUsed) {
-                store(peer, transport, offer = null, replaced.await())
+                store(session, peer, transport, offer = null, replaced.await())
             }
-        } catch (e: PairingFailedException) {
+        }
+        if (failure != null) {
+            // The slot is free again, and the attempt counts as used or abandoned.
             if (pairingConnection !== session) return
             pairingConnection = null
-            _state.value = window.sasFailed(e.failure)
+            _state.value = window.sasFailed(failure)
             return
         }
         runSession(transport, session)
+    }
+
+    /**
+     * Runs one pairing exchange on [session]. Returns null once it paired,
+     * or why it did not, with the connection closed. Any error counts:
+     * a write that fails on a reset connection ends the attempt as lost.
+     */
+    private suspend fun attempt(session: Session, exchange: suspend () -> Unit): PairingFailure? = try {
+        exchange()
+        null
+    } catch (e: CancellationException) {
+        session.close()
+        throw e
+    } catch (e: PairingFailedException) {
+        e.failure
+    } catch (e: Exception) {
+        session.close()
+        PairingFailure.CONNECTION_LOST
     }
 
     /**
@@ -372,8 +417,23 @@ class PairingService(
         }
     }
 
-    /** Runs when the desktop's `ACCEPTED` arrived: the phone stores last. */
-    private suspend fun store(peer: Hello, transport: TlsTransport, offer: QrPairingOffer?, replaced: PairedDevice?) {
+    /**
+     * Runs when the desktop's `ACCEPTED` arrived: the phone stores last. The
+     * desktop has stored the pairing by now, so if the phone cannot, it
+     * tells the desktop to remove it again.
+     */
+    private suspend fun store(session: Session, peer: Hello, transport: TlsTransport, offer: QrPairingOffer?, replaced: PairedDevice?) {
+        try {
+            save(peer, transport, offer, replaced)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            session.goodbye(GoodbyeReason.GOODBYE_REASON_UNPAIRED, "The phone could not store the pairing")
+            throw PairingFailedException(PairingFailure.INTERNAL, "Storing the pairing failed: ${e.message}")
+        }
+    }
+
+    private suspend fun save(peer: Hello, transport: TlsTransport, offer: QrPairingOffer?, replaced: PairedDevice?) {
         val record = PairedDevice(
             device = Device(DeviceId(peer.deviceId), peer.deviceName.ifBlank { peer.deviceId }, DeviceKind.DESKTOP),
             fingerprint = transport.peerKey,
@@ -392,24 +452,33 @@ class PairingService(
         _state.value = PairingState.Paired(record)
     }
 
-    /** A connection from a paired desktop becomes its session, unless its pairing went meanwhile. */
+    /**
+     * A connection from a paired desktop becomes its session, unless its
+     * pairing went meanwhile. One session per desktop: a newer connection
+     * replaces an older one, including one with the key the desktop had
+     * before a rotation.
+     */
     private suspend fun runSession(transport: TlsTransport, session: Session) {
         session.markPaired()
         val key = transport.peerKey
         val live = Live(session, key)
         val record = trust.withLock {
             val record = devices.find(key) ?: return session.close()
-            // One session per desktop: a newer connection replaces an older one.
-            sessions.put(record.fingerprint, live)?.let { replaced(it.session) }
-            _connected.value = sessions.keys.toSet()
+            sessions.put(record.device.id, live)?.let { replaced(it.session) }
+            publishConnected()
             record
         }
         try {
             pairedSession.run(key, transport.localKey, session)
         } finally {
-            sessions.remove(record.fingerprint, live)
-            _connected.value = sessions.keys.toSet()
+            sessions.remove(record.device.id, live)
+            publishConnected()
         }
+    }
+
+    /** Each session's key is its record's current key: a session's connection makes the key it used current. */
+    private fun publishConnected() {
+        _connected.value = sessions.values.mapTo(mutableSetOf()) { it.peerKey }
     }
 
     /**
