@@ -211,7 +211,6 @@ p { margin: 0; }
 .dl-head strong { display: flex; align-items: center; gap: 8px; }
 .dl-head p, .verify p { margin-top: 2px; color: var(--muted); font-size: 0.9rem; }
 .dl-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.btn.pending { opacity: 0.6; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 0.85em; }
 .dl-item pre, .verify pre { margin: 12px 0 0; padding: 10px 12px; overflow-x: auto; border-radius: 10px; background: var(--surface-2); }
 .dl-steps { margin: 10px 0 0; padding-left: 20px; color: var(--muted); font-size: 0.9rem; }
