@@ -91,6 +91,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Wire<S> {
     }
 }
 
+impl<S> Wire<S> {
+    /// The stream underneath, for a test that runs a session on it.
+    pub fn into_inner(self) -> S {
+        self.framed.into_inner()
+    }
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> PairingChannel for Wire<S> {
     async fn send(&mut self, payload: Payload) -> Result<(), PairingError> {
         self.send_payload(payload)
@@ -314,6 +321,13 @@ impl TestPhone {
             DeviceKind::Phone,
             PairingMethod::Unspecified,
         )
+    }
+}
+
+impl PhoneConnection {
+    /// The exporter value for QR code pairing on this connection.
+    pub fn ekm_pair(&self) -> [u8; 32] {
+        self.ekm_pair
     }
 }
 

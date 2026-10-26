@@ -1,5 +1,6 @@
 //! The desktop's TLS client.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::net::SocketAddr;
@@ -15,12 +16,16 @@ use rustls::sign::{CertifiedKey, SingleCertAndKey};
 use rustls::{CertificateError, ClientConfig};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::task::JoinSet;
 use tokio::time;
 use tokio_rustls::client::TlsStream;
 
 use super::verifier::PinningVerifier;
 use super::{ALPN_PROTOCOL, Connection, Connector, DialStep, PeerPin, TransportError};
 use crate::identity::{CertificateFingerprint, Identity};
+
+/// Time between starting dials to the next candidate address.
+const DIAL_STAGGER: Duration = Duration::from_millis(250);
 
 /// How long each step of a dial may take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +90,11 @@ impl TlsDialer {
     /// Connects to `addr` and runs the TLS handshake, accepting the phone's
     /// key only if `pin` does.
     ///
+    /// The dialer trusts the caller with the address: one taken from an
+    /// mDNS record or a beacon must first pass
+    /// [`is_on_link`](crate::discovery::is_on_link); one the user typed is
+    /// dialed as given.
+    ///
     /// # Errors
     ///
     /// Fails with [`TransportError::Timeout`] when the TCP connection or the
@@ -146,6 +156,55 @@ impl TlsDialer {
         })
     }
 
+    /// Races dials to several addresses of the same phone, starting one
+    /// every 250 ms, and returns the first connection that completes TLS
+    /// with an accepted key. The other dials are cancelled.
+    ///
+    /// For QR code pairing, where every connection that completes TLS runs
+    /// the proof exchange, dial the addresses one by one instead.
+    ///
+    /// # Errors
+    ///
+    /// Fails when every dial failed, with the most telling of their errors,
+    /// or when `addrs` is empty.
+    pub async fn dial_any(
+        &self,
+        addrs: &[SocketAddr],
+        pin: &PeerPin,
+    ) -> Result<TlsConnection, TransportError> {
+        let mut queue: VecDeque<SocketAddr> = addrs.iter().copied().collect();
+        let mut attempts = JoinSet::new();
+        let mut stagger = time::interval(DIAL_STAGGER);
+        let mut error: Option<TransportError> = None;
+        loop {
+            tokio::select! {
+                _ = stagger.tick(), if !queue.is_empty() => {
+                    if let Some(addr) = queue.pop_front() {
+                        let dialer = self.clone();
+                        let pin = pin.clone();
+                        attempts.spawn(async move { dialer.dial(addr, pin).await });
+                    }
+                }
+                Some(joined) = attempts.join_next(), if !attempts.is_empty() => match joined {
+                    Ok(Ok(connection)) => return Ok(connection),
+                    Ok(Err(failure)) => error = Some(more_telling(error, failure)),
+                    Err(join_error) => {
+                        let failure = TransportError::Io(io::Error::other(join_error));
+                        error = Some(more_telling(error, failure));
+                    }
+                },
+                else => {
+                    return Err(error.unwrap_or_else(|| {
+                        TransportError::Io(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "no address to dial",
+                        ))
+                    }));
+                }
+            }
+        }
+    }
+
     fn client_config(
         &self,
         verifier: Arc<PinningVerifier>,
@@ -201,6 +260,20 @@ fn handshake_error(error: io::Error, verifier: &PinningVerifier) -> TransportErr
     match verifier.presented() {
         Some(fingerprint) if pin_refused => TransportError::Untrusted(fingerprint),
         _ => TransportError::from(error),
+    }
+}
+
+/// Keeps the error that says more about why a phone could not be reached:
+/// key and protocol problems over timeouts and socket errors.
+fn more_telling(kept: Option<TransportError>, new: TransportError) -> TransportError {
+    let weight = |error: &TransportError| match error {
+        TransportError::Io(_) => 0,
+        TransportError::Timeout(_) => 1,
+        _ => 2,
+    };
+    match kept {
+        Some(kept) if weight(&kept) >= weight(&new) => kept,
+        _ => new,
     }
 }
 

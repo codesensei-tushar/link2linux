@@ -562,3 +562,26 @@ async fn a_rotated_key_is_accepted_once_announced_and_then_replaces_the_old_one(
         "{dialed:?}"
     );
 }
+
+#[tokio::test]
+async fn racing_addresses_returns_the_first_that_completes() {
+    let desktop = Desktop::new();
+    let phone = TestPhone::bind(LOCALHOST, "phone-1").await;
+    // A port nobody listens on any more.
+    let dead = {
+        let listener = std::net::TcpListener::bind((LOCALHOST, 0)).unwrap();
+        listener.local_addr().unwrap()
+    };
+
+    let pin = PeerPin::from(phone.fingerprint());
+    let addrs = [dead, phone.addr()];
+    let (dialed, accepted) = tokio::join!(
+        desktop.dialer.dial_any(&addrs, &pin),
+        phone.accept(PhoneTls::pinned(desktop.fingerprint()))
+    );
+    assert_eq!(dialed.unwrap().peer_addr(), phone.addr());
+    assert!(accepted.is_ok());
+
+    let failed = desktop.dialer.dial_any(&[dead], &pin).await;
+    assert!(matches!(failed, Err(TransportError::Io(_))), "{failed:?}");
+}
