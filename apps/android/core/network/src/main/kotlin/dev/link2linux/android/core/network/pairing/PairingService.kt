@@ -208,7 +208,8 @@ class PairingService(
     private suspend fun handle(socket: Socket) {
         val transport = runInterruptible(Dispatchers.IO) { server.secure(socket) }
         val session = Session(transport)
-        val peer = session.handshake(localDevice.localDevice().toHello())
+        val local = localDevice.localDevice()
+        val peer = session.handshake(local.copy(features = local.features + hooks.features()).toHello())
         if (peer.kind != WireDeviceKind.DEVICE_KIND_DESKTOP || peer.deviceId.isBlank()) {
             session.protocolError("Expected a desktop with a device id")
         }

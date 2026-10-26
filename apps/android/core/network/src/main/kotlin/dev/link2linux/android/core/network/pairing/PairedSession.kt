@@ -2,6 +2,7 @@ package dev.link2linux.android.core.network.pairing
 
 import com.google.protobuf.ByteString
 import dev.link2linux.android.core.data.PairedDeviceRepository
+import dev.link2linux.android.core.model.Feature
 import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.network.Session
@@ -13,6 +14,8 @@ import dev.link2linux.protocol.v1.ErrorReply
 import dev.link2linux.protocol.v1.FeatureStatus
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.PresenceUpdate
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /**
  * Where feature modules plug into a session with a paired desktop. The
@@ -20,6 +23,9 @@ import dev.link2linux.protocol.v1.PresenceUpdate
  * `Goodbye`, the desktop's `PresenceUpdate`) and hands everything else on.
  */
 interface SessionHooks {
+
+    /** The features this build implements, listed in the phone's `Hello`. */
+    fun features(): Set<Feature> = emptySet()
 
     /** The phone's complete `FeatureStatus`, sent first in every session. */
     fun featureStatus(): FeatureStatus = FeatureStatus.getDefaultInstance()
@@ -33,8 +39,12 @@ interface SessionHooks {
      */
     suspend fun onMessage(desktop: PairedDevice, session: Session, envelope: Envelope): Boolean = false
 
-    /** The session ended, for whatever reason. */
-    fun onEnded(desktop: PairedDevice) = Unit
+    /**
+     * The session ended, for whatever reason. A newer session with the same
+     * desktop may already be running, so compare [session] with the one
+     * [onEstablished] got before releasing anything that is shared.
+     */
+    suspend fun onEnded(desktop: PairedDevice, session: Session) = Unit
 
     /** No features yet: an empty `FeatureStatus`, and every request is unsupported. */
     object None : SessionHooks
@@ -73,7 +83,7 @@ internal class PairedSession(
             }
         } finally {
             session.close()
-            hooks.onEnded(desktop)
+            withContext(NonCancellable) { hooks.onEnded(desktop, session) }
         }
     }
 

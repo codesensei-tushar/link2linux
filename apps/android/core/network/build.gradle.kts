@@ -5,6 +5,7 @@ plugins {
 
 dependencies {
     api(projects.core.data)
+    implementation(projects.core.notifications)
     api(projects.core.protocol)
     api(projects.core.security)
     implementation(libs.conscrypt.android)
