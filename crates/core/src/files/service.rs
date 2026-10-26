@@ -730,7 +730,7 @@ impl FileService {
                 TransferEvent::Changed(transfer.view())
             }
             (Pending::Offer { .. }, Err(refused))
-                if matches!(refused.code(), ErrorCode::Busy | ErrorCode::Unavailable) =>
+                if matches!(code_of(&refused), ErrorCode::Busy | ErrorCode::Unavailable) =>
             {
                 let now = Instant::now();
                 let wait = match refused.retry_after_ms {
@@ -745,7 +745,7 @@ impl FileService {
                 TransferEvent::Changed(transfer.view())
             }
             (Pending::Offer { .. }, Err(refused))
-                if refused.code() == ErrorCode::Internal
+                if code_of(&refused) == ErrorCode::Internal
                     && transfer.internal_errors < INTERNAL_RETRIES.len() =>
             {
                 let now = Instant::now();
@@ -757,7 +757,7 @@ impl FileService {
                 transfer.retry_at = Some(now + wait);
                 TransferEvent::Changed(transfer.view())
             }
-            (Pending::Offer { .. }, Err(refused)) if refused.code() == ErrorCode::Declined => {
+            (Pending::Offer { .. }, Err(refused)) if code_of(&refused) == ErrorCode::Declined => {
                 tracing::info!(transfer = %id, "the phone's user cancelled the transfer");
                 transfer.finish(TransferState::Cancelled { by_peer: true });
                 TransferEvent::Changed(transfer.view())
@@ -1068,9 +1068,18 @@ where
     }
 }
 
+/// The code of the phone's refusal. One this build does not know counts as
+/// `INTERNAL`, as `docs/protocol.md`, "Errors", says.
+fn code_of(refused: &ErrorReply) -> ErrorCode {
+    ErrorCode::try_from(refused.code)
+        .ok()
+        .filter(|code| *code != ErrorCode::Unspecified)
+        .unwrap_or(ErrorCode::Internal)
+}
+
 /// Why the phone's refusal failed a transfer.
 fn failure_of(refused: &ErrorReply) -> Failure {
-    match refused.code() {
+    match code_of(refused) {
         ErrorCode::Disabled => Failure::Disabled,
         ErrorCode::PermissionRequired => Failure::PermissionRequired,
         ErrorCode::NoSpace => Failure::NoSpace,

@@ -1537,6 +1537,26 @@ async fn only_so_many_transfers_from_the_phone_are_kept() {
     );
 }
 
+#[tokio::test]
+async fn a_refusal_this_build_does_not_know_is_tried_again() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let path = source(sources.path(), "file", b"hello");
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let id = desktop.send(vec![path]).await.unwrap();
+    let (seq, _) = read_offer(&mut phone).await;
+    let newer = ErrorReply {
+        code: 999,
+        ..ErrorReply::default()
+    };
+    phone.answer(seq, Payload::ErrorReply(newer)).await;
+    desktop.reaches(id, TransferState::Waiting).await;
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    desktop.transfers().await;
+    let (_, offer) = read_offer(&mut phone).await;
+    assert_eq!(offer.transfer_id, id.0);
+}
+
 /// A phone running the same service, on the other end of a pipe.
 async fn pair(desktop_dir: &Path, phone_dir: &Path) -> (Driven, Driven) {
     let (here, there) = duplex(64 * 1024);
