@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "link2linux-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "link2linux-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "link2linux-platform",
@@ -2259,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "link2linux-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "oo7",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "link2linux-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2286,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "link2linux-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "link2linux-core",
