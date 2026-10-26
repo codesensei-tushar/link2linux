@@ -20,6 +20,20 @@ pub enum Command {
     SetActive(bool),
     /// The user did something with a banner.
     Response(NotificationResponse),
+    /// The user dismissed a notification on the notifications page.
+    Dismiss {
+        /// The notification's key.
+        key: String,
+    },
+    /// The user ran a notification's action on the notifications page.
+    Action {
+        /// The notification's key.
+        key: String,
+        /// The action's id.
+        action_id: String,
+        /// The text of a reply.
+        reply: Option<String>,
+    },
     /// The user removed the pairing: tell the phone and leave.
     Unpair,
     /// The network changed or the user asked to reconnect: no session
@@ -137,6 +151,19 @@ async fn drive(
                             return Ending::PhoneBrokeRules;
                         }
                         Err(error) => tracing::warn!(%error, "notification response failed"),
+                    }
+                }
+                Some(Command::Dismiss { key }) => {
+                    if let Err(error) = driver.dismiss(Some(session), &key).await {
+                        tracing::warn!(%error, "could not dismiss a notification");
+                    }
+                }
+                Some(Command::Action { key, action_id, reply }) => {
+                    let sent = driver
+                        .run_action(Some(session), &key, &action_id, reply.as_deref())
+                        .await;
+                    if let Err(error) = sent {
+                        tracing::warn!(%error, "could not run a notification action");
                     }
                 }
                 Some(Command::Reconnect | Command::NetworkChanged) => {}

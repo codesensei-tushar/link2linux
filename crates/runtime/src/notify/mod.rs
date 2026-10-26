@@ -7,11 +7,12 @@
 //! behind it.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use link2linux_core::device::DeviceInfo;
-use link2linux_core::notifications::Answer;
+use link2linux_core::notifications::{Answer, Change};
 use link2linux_core::session::{Session, SessionEvent};
 use link2linux_core::transport::TlsConnection;
 use link2linux_platform::{
@@ -143,6 +144,27 @@ pub trait NotificationsDriver: Send {
 
     /// The session is over: forgets what only holds within it.
     fn session_ended(&mut self);
+
+    /// Each change to the mirrored notifications, as it is applied.
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Change>;
+
+    /// The user dismissed a notification on the notifications page. It goes
+    /// to the phone through the outbox, at once when `session` is up.
+    fn dismiss<'a>(
+        &'a mut self,
+        session: Option<&'a mut PhoneSession>,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<(), DriverError>>;
+
+    /// The user ran an action of a notification on the notifications page,
+    /// with `reply` for actions that take text.
+    fn run_action<'a>(
+        &'a mut self,
+        session: Option<&'a mut PhoneSession>,
+        key: &'a str,
+        action_id: &'a str,
+        reply: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), DriverError>>;
 }
 
 /// Makes the driver for a phone.
@@ -150,4 +172,10 @@ pub trait DriverFactory: Send + Sync {
     /// A driver for the phone `device`, which stays with it across
     /// sessions.
     fn create(&self, device: &DeviceInfo) -> Box<dyn NotificationsDriver>;
+
+    /// The file of the picture with this SHA-256 that phone `device_id`
+    /// shared, if it is on disk.
+    fn image_path(&self, _device_id: &str, _sha256: &[u8]) -> Option<PathBuf> {
+        None
+    }
 }
