@@ -34,6 +34,7 @@ internal class TransferNotifier(private val context: Context, private val engine
 
     fun start() {
         createChannels()
+        clearStale()
         scope.launch {
             engine.transfers.collect { transfers ->
                 render(transfers)
@@ -41,6 +42,18 @@ internal class TransferNotifier(private val context: Context, private val engine
                 delay(UPDATE_MILLIS)
             }
         }
+    }
+
+    /**
+     * Transfers do not outlive the process, so a progress notification an
+     * earlier run left (it was killed mid-transfer) only shows something
+     * that stopped, with a Cancel that reaches nothing. The ones that tell
+     * how a transfer ended stay.
+     */
+    private fun clearStale() {
+        runCatching { manager.activeNotifications }.getOrDefault(emptyArray())
+            .filter { it.tag == TAG && it.notification.flags and Notification.FLAG_ONGOING_EVENT != 0 }
+            .forEach { manager.cancel(TAG, it.id) }
     }
 
     private fun render(transfers: List<Transfer>) {
