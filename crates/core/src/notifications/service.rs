@@ -292,6 +292,8 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
     }
 
     /// Dismisses a notification on the phone, from the notifications page.
+    /// Only a mirrored notification the phone lets go of is asked for; the
+    /// phone would refuse anything else, so it never reaches the outbox.
     pub async fn dismiss<S>(
         &mut self,
         session: Option<&mut Session<S>>,
@@ -300,6 +302,10 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        if !self.mirror.get(key).is_some_and(|n| n.dismissible) {
+            tracing::debug!("not asking to dismiss a notification the phone keeps");
+            return Ok(());
+        }
         let request = Payload::NotificationDismissRequest(NotificationDismissRequest {
             key: key.to_owned(),
             ..NotificationDismissRequest::default()
@@ -308,7 +314,10 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
     }
 
     /// Runs one of a notification's actions on the phone, with `reply` for
-    /// actions that take text, from the notifications page.
+    /// actions that take text, from the notifications page. Only an action
+    /// the page offers is asked for: one of the notification's own, not
+    /// withheld, taking text only if it accepts a reply. A reply is cut to
+    /// the protocol's limit.
     pub async fn run_action<S>(
         &mut self,
         session: Option<&mut Session<S>>,
@@ -319,10 +328,20 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        let offered = self.mirror.get(key).is_some_and(|n| {
+            present::withheld_text(n).is_none()
+                && n.actions
+                    .iter()
+                    .any(|a| a.id == action_id && (reply.is_none() || a.accepts_reply))
+        });
+        if !offered {
+            tracing::debug!("not asking for an action the notification does not offer");
+            return Ok(());
+        }
         let request = Payload::NotificationActionRequest(NotificationActionRequest {
             key: key.to_owned(),
             action_id: action_id.to_owned(),
-            reply_text: reply.unwrap_or_default().to_owned(),
+            reply_text: present::truncate(reply.unwrap_or_default(), present::MAX_REPLY_BYTES),
             ..NotificationActionRequest::default()
         });
         self.queue(session, request).await

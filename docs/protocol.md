@@ -1275,7 +1275,7 @@ the action, in two cases that the system would otherwise not report:
   and is not in the foreground). When it may, it fires the action with the
   background-start opt-in;
 - the phone is locked and the request is a reply or may open an app,
-  unless the user turned on "Reply while this phone is locked" (off by
+  if the user turned off "Reply while this phone is locked" (on by
   default).
 
 ### Dismissing

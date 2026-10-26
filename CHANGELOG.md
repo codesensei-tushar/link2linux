@@ -8,6 +8,37 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+### Security
+
+Fixes from a security review of the pairing, connection and notification
+code. None of them was known to be exploited.
+
+- Pairing: a forged message during a reconnect can no longer make the
+  computer think the phone removed it, and the phone's real refusal is now
+  recognised. Someone answering a QR code's announcement can no longer end
+  it. Pairing by code no longer replaces a phone with the same id without
+  asking.
+- Phone: its listener closes off Wi-Fi, Ethernet and hotspot networks, and
+  connections that have not yet proven who they are have time and number
+  limits. A removed computer is cut off before it is told. One paired
+  computer can no longer lock another out with a key change.
+- Phone notifications: another app's notification icon can no longer stall
+  or crash mirroring, and a computer that stops reading no longer holds up
+  the others. One-time-code detection catches letter-only codes and sign-in
+  links. Notification keys no longer carry contact details. A new setting,
+  "Reply while this phone is locked" (on by default), lets you require an
+  unlocked phone for replies and actions from a computer.
+- Computer: what the phone sends is held to the protocol's size limits;
+  pictures must be a PNG, JPEG or WebP of a sensible size before they reach
+  any image decoder, and their files are private to you. Pop-ups go out
+  under link2linux's own name. When the app cannot tell whether the screen
+  is locked, it treats it as locked, and locking takes the text off pop-ups
+  still on screen. The phones' presence keys are kept sealed with a key
+  from your keyring, and the pairing secret stays out of debug output.
+- Releases: the Android signing key never shares a machine with the build,
+  and every workflow action is pinned to a fixed version. `install.sh`
+  downloads over HTTPS only.
+
 ## [0.1.1] - 2026-10-26
 
 Keeps more of the phone's private content to the phone, makes the desktop app

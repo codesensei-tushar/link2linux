@@ -208,6 +208,7 @@ class NotificationEngineRequestsTest {
         val replyId = actionId(h, index = 0)
         val openId = actionId(h, index = 1)
         h.env.isLocked = true
+        h.policy.actWhileLocked = false
         h.env.canStartActivitiesFromBackground = true
 
         h.act("n", replyId, reply = "on my way", idem = idempotency(10)).assertError(ErrorCode.ERROR_CODE_NOT_ALLOWED)

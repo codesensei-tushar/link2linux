@@ -19,8 +19,9 @@ use link2linux_platform::{
     NotificationResponse, NotificationSink, PlatformError,
 };
 use link2linux_protocol::v1::{
-    Ack, ImageData, ImageFormat, ImageRef, NotificationImportance, NotificationPosted,
-    NotificationRemoved, NotificationSyncBatch, PhoneNotification, SyncCursor,
+    Ack, ImageData, ImageFormat, ImageRef, NotificationAction, NotificationContent,
+    NotificationImportance, NotificationPosted, NotificationRemoved, NotificationSyncBatch,
+    PhoneNotification, SyncCursor,
 };
 use link2linux_protocol::{Envelope, Payload};
 use session_common::{
@@ -290,6 +291,58 @@ async fn the_users_dismissal_goes_to_the_phone_until_it_answers() {
             .is_none()
     );
     assert!(s.service.pending().is_empty());
+}
+
+#[tokio::test]
+async fn the_page_asks_the_phone_only_for_what_it_offers() {
+    let action = |id: &str, accepts_reply| NotificationAction {
+        id: id.into(),
+        label: id.into(),
+        accepts_reply,
+        ..NotificationAction::default()
+    };
+    let mut kept = note("kept", 1);
+    kept.dismissible = false;
+    let mut hidden = note("hidden", 1);
+    hidden.content = NotificationContent::HiddenByUser.into();
+    hidden.actions = vec![action("reply", true)];
+    let mut chat = note("chat", 1);
+    chat.actions = vec![action("reply", true), action("read", false)];
+    let mut s = synced_setup(vec![kept, hidden, chat]).await;
+
+    let session = Some(&mut s.session);
+    s.service.dismiss(session, "kept").await.unwrap();
+    s.service
+        .dismiss(Some(&mut s.session), "never-had")
+        .await
+        .unwrap();
+    for (key, action, reply) in [
+        ("chat", "nope", None),
+        ("hidden", "reply", Some("hi")),
+        ("chat", "read", Some("text for a button")),
+        ("never-had", "reply", Some("hi")),
+    ] {
+        s.service
+            .run_action(Some(&mut s.session), key, action, reply)
+            .await
+            .unwrap();
+    }
+    assert!(
+        s.service.pending().is_empty(),
+        "nothing the phone would refuse"
+    );
+
+    let long = "é".repeat(5000);
+    s.service
+        .run_action(Some(&mut s.session), "chat", "reply", Some(&long))
+        .await
+        .unwrap();
+    assert_eq!(s.service.pending().len(), 1);
+    let request: Envelope = s.phone.next().await.unwrap().unwrap();
+    let Some(Payload::NotificationActionRequest(run)) = &request.payload else {
+        panic!("expected an action request, got {request:?}");
+    };
+    assert_eq!(run.reply_text.len(), 8 * 1024, "cut to the limit");
 }
 
 #[tokio::test]
