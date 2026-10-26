@@ -8,6 +8,12 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-26
+
+Keeps more of the phone's private content to the phone, makes the desktop app
+share less with other programs on the computer, and lets the computer pair and
+connect over the phone's own hotspot.
+
 ### Added
 
 - **One-time codes stay on the phone.** Notifications that look like they hold
@@ -99,5 +105,6 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/codesensei-tushar/link2linux/releases/tag/v0.1.0
