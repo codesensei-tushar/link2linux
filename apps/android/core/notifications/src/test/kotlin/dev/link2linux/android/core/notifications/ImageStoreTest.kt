@@ -106,6 +106,72 @@ class ImageStoreTest {
     }
 
     @Test
+    fun `an image rendered while pinned images fill the soft limit is served after one render`() {
+        val waiting = mutableListOf<() -> Unit>()
+        val store = ImageStore(
+            softLimitBytes = 1000,
+            hardLimitBytes = 10_000,
+            renderer = { source, kind, done -> waiting += { done(source.render(kind)) } },
+        )
+        val shared = FakeImage(bytes(1, size = 950))
+        store.intern(shared, ImageKind.PICTURE)
+        waiting.removeAt(0)()
+        store.retain(setOf(store.intern(shared, ImageKind.PICTURE)!!.sha256))
+
+        // As the engine does: ask, and ask again each time a render finishes.
+        val icon = FakeImage(bytes(2))
+        var ref = store.intern(icon, ImageKind.LARGE_ICON)
+        var rounds = 0
+        while (ref == null && waiting.isNotEmpty() && rounds++ < 20) {
+            waiting.removeAt(0)()
+            ref = store.intern(icon, ImageKind.LARGE_ICON)
+        }
+        assertEquals(1, icon.renders)
+        assertNotNull(store.get(ref!!.sha256))
+        assertTrue(waiting.isEmpty())
+    }
+
+    @Test
+    fun `an image evicted before it was ever handed out is left out once, then rendered afresh`() {
+        val waiting = mutableListOf<() -> Unit>()
+        val store = ImageStore(
+            softLimitBytes = 150,
+            hardLimitBytes = 10_000,
+            renderer = { source, kind, done -> waiting += { done(source.render(kind)) } },
+        )
+        val a = FakeImage(bytes(1))
+        val b = FakeImage(bytes(2))
+        assertNull(store.intern(a, ImageKind.LARGE_ICON))
+        assertNull(store.intern(b, ImageKind.LARGE_ICON))
+        // Only one fits: keeping b evicts a, which nothing has pinned yet.
+        waiting.toList().forEach { it() }
+        waiting.clear()
+
+        assertNotNull(store.intern(b, ImageKind.LARGE_ICON))
+        // The mapping that follows a's render goes without it, and nothing is rendered for it now.
+        assertNull(store.intern(a, ImageKind.LARGE_ICON))
+        assertFalse(store.isPending(a, ImageKind.LARGE_ICON))
+        assertTrue(waiting.isEmpty())
+        assertEquals(1, a.renders)
+
+        // The next time a is asked for, by another notification of the same app, it is rendered again.
+        assertNull(store.intern(a, ImageKind.LARGE_ICON))
+        waiting.single()()
+        assertNotNull(store.intern(a, ImageKind.LARGE_ICON))
+        assertEquals(2, a.renders)
+    }
+
+    @Test
+    fun `an image evicted after it was handed out is rendered again when asked for`() {
+        val store = ImageStore(softLimitBytes = 150, hardLimitBytes = 10_000)
+        val a = FakeImage(bytes(1))
+        assertNotNull(store.intern(a, ImageKind.LARGE_ICON))
+        store.intern(FakeImage(bytes(2)), ImageKind.LARGE_ICON)
+        assertNotNull(store.intern(a, ImageKind.LARGE_ICON))
+        assertEquals(2, a.renders)
+    }
+
+    @Test
     fun `an image that runs out of memory or overflows the stack is no image`() {
         val store = ImageStore()
         for (error in listOf(OutOfMemoryError(), StackOverflowError())) {
