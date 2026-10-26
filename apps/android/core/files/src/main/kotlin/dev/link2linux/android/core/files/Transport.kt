@@ -1,6 +1,7 @@
 package dev.link2linux.android.core.files
 
 import com.google.protobuf.ByteString
+import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.protocol.v1.ErrorCode
 import dev.link2linux.protocol.v1.ErrorReply
 import dev.link2linux.protocol.v1.FileAccept
@@ -33,6 +34,9 @@ value class TransferId(val bytes: ByteString) {
 
 /** A paired desktop. [id] stays the same as long as the pairing does; [name] is for the user. */
 data class FilePeer(val id: String, val name: String)
+
+/** The desktop of a pairing record, named by the id it was paired with, which a key rotation keeps. */
+fun PairedDevice.toFilePeer(): FilePeer = FilePeer(device.id.value, device.name)
 
 /** A request of the files feature, either way. */
 sealed interface FileRequest {

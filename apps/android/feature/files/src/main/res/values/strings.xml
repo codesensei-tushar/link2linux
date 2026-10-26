@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The share sheet's entry for sending files. Text alone goes to the clipboard's entry instead. -->
+    <string name="files_share_label">Send to computer</string>
+
+    <string name="files_toggle_title">Send and receive files</string>
+    <string name="files_toggle_summary">Send files from this phone to the computers you paired with, and save the files they send in Downloads.</string>
+
+    <string name="files_storage_title">Storage access</string>
+    <string name="files_storage_granted">Allowed</string>
+    <string name="files_storage_missing">Not allowed yet. Files from your computer are not saved, and none are sent, until you allow it.</string>
+    <string name="files_storage_allow">Allow</string>
+    <string name="files_open_settings">Open settings</string>
+    <string name="files_storage_rationale_title">Allow storage access?</string>
+    <string name="files_storage_rationale_body">On this version of Android, link2linux needs storage access to save the files your computer sends in Downloads. It only adds the files you receive.</string>
+    <string name="files_continue">Continue</string>
+    <string name="files_not_now">Not now</string>
+
+    <string name="files_send">Send files</string>
+    <string name="files_saved_in_downloads">Files you receive are saved in Downloads. They are never opened by themselves.</string>
+    <string name="files_pair_first">Pair with a computer to send it files.</string>
+    <string name="files_recent_title">Recent transfers</string>
+    <string name="files_recent_empty">Nothing sent or received yet.</string>
+
+    <string name="files_choose_desktop">Send to which computer?</string>
+    <string name="files_desktop_connected">Connected</string>
+    <string name="files_desktop_away">Not connected. The files go once it connects, within an hour.</string>
+
+    <string name="files_cancel">Cancel</string>
+    <string name="files_open">Open</string>
+    <string name="files_remove">Remove</string>
+    <string name="files_ok">OK</string>
+    <string name="files_show_downloads">Show in Downloads</string>
+    <string name="files_no_app">No app on this phone can open this file.</string>
+
+    <string name="files_share_nothing">There is no file to send. Text goes to your computer with Copy to computer, when clipboard sharing is on.</string>
+    <string name="files_share_pair_first">Pair this phone with a computer in the link2linux app first.</string>
+    <string name="files_share_off">Files are turned off. Turn them on in the link2linux app to send files.</string>
+    <string name="files_sending_to">Sending to %1$s</string>
+    <string name="files_sending_later">The files go to %1$s once it connects</string>
+    <plurals name="files_unreadable">
+        <item quantity="one">%d file could not be read</item>
+        <item quantity="other">%d files could not be read</item>
+    </plurals>
+
+    <string name="files_name_only">%1$s</string>
+    <plurals name="files_names_more">
+        <item quantity="one">%1$s and %2$d more</item>
+        <item quantity="other">%1$s and %2$d more</item>
+    </plurals>
+    <string name="files_progress">%1$s of %2$s</string>
+
+    <string name="files_state_waiting">Waiting for %1$s</string>
+    <string name="files_state_sending">Sending to %1$s</string>
+    <string name="files_state_receiving">Receiving from %1$s</string>
+    <string name="files_state_interrupted">Paused until %1$s is back</string>
+    <string name="files_state_sent">Sent to %1$s</string>
+    <string name="files_state_received">Received from %1$s</string>
+    <string name="files_state_cancelled_by_peer">Cancelled on %1$s</string>
+    <string name="files_state_cancelled">Cancelled</string>
+    <string name="files_state_failed_sending">Could not send to %1$s</string>
+    <string name="files_state_failed_receiving">Could not receive from %1$s</string>
+
+    <string name="files_reason_peer_disabled">Files are turned off on the computer.</string>
+    <string name="files_reason_peer_permission">The computer needs a permission before it can save files.</string>
+    <string name="files_reason_peer_no_space">The computer has no room for the files.</string>
+    <string name="files_reason_peer_error">The computer could not take the files.</string>
+    <string name="files_reason_peer_invalid">The computer sent data that does not fit the transfer.</string>
+    <string name="files_reason_no_space">This phone has no room for the files.</string>
+    <string name="files_reason_unreadable">A file could not be read.</string>
+    <string name="files_reason_changed">A file changed while it was being sent.</string>
+    <string name="files_reason_damaged">A file arrived damaged and was deleted.</string>
+    <string name="files_reason_write_failed">A file could not be saved.</string>
+    <string name="files_reason_expired">The connection did not come back within an hour.</string>
+    <string name="files_reason_internal">Something went wrong on this phone.</string>
+
+    <string name="files_channel_progress">File transfers</string>
+    <string name="files_channel_progress_description">Shows files while they are sent or received.</string>
+    <string name="files_channel_done">Finished transfers</string>
+    <string name="files_channel_done_description">Tells you when files arrive, or when a transfer stops.</string>
+</resources>

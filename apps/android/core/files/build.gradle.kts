@@ -7,6 +7,7 @@ plugins {
 // session behind small interfaces. It has no Android dependency, so it is
 // covered by JVM tests; feature/files provides the Android side.
 dependencies {
+    api(projects.core.model)
     api(projects.core.protocol)
     api(libs.kotlinx.coroutines.core)
 
