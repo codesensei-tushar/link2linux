@@ -1,46 +1,56 @@
 import { Plus, RefreshCw, Smartphone, TriangleAlert } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import { Button, EmptyState, PageHeader, Spinner } from "@/components/ui";
+import { useDesktopApi } from "@/lib/api";
 
 import { DeviceList } from "./DeviceList";
 import { useDevices } from "./devices-context";
 import { pairingMeta } from "./meta";
-import { PairingSteps } from "./PairingSteps";
+import { PairingFlow } from "./PairingFlow";
+import { usePairing } from "./pairing-context";
 import "./pairing.css";
 
 export function PairingPage() {
+  const api = useDesktopApi();
   const { devices, reload } = useDevices();
-  const [pairing, setPairing] = useState(false);
+  const { state, start, error } = usePairing();
   const startButtonRef = useRef<HTMLButtonElement>(null);
-  const returnFocus = useRef(false);
+  const wasPairing = useRef(false);
+  const deviceCount = useRef(0);
 
-  // After cancelling, put focus back on the button that started pairing.
+  const step = state.status === "ready" ? state.data : null;
+  const pairing = step !== null && step.step !== "idle";
+  const count = devices.status === "ready" ? devices.data.length : 0;
+
   useEffect(() => {
-    if (!pairing && returnFocus.current) {
-      returnFocus.current = false;
-      startButtonRef.current?.focus();
-    }
+    // After a finished or cancelled attempt, put focus back on the button that started it.
+    if (wasPairing.current && !pairing) startButtonRef.current?.focus();
+    wasPairing.current = pairing;
   }, [pairing]);
 
-  // TODO(core): start a real pairing session once crates/core exposes one.
-  const startPairing = () => {
-    setPairing(true);
-  };
-  const cancelPairing = () => {
-    returnFocus.current = true;
-    setPairing(false);
-  };
+  useEffect(() => {
+    // The last phone was unpaired: its list is gone, so move to the start button.
+    if (deviceCount.current > 0 && count === 0 && !pairing) startButtonRef.current?.focus();
+    deviceCount.current = count;
+  }, [count, pairing]);
 
   const startButton = (label: string) => (
-    <Button ref={startButtonRef} variant="primary" icon={Plus} onClick={startPairing}>
+    <Button
+      ref={startButtonRef}
+      variant="primary"
+      icon={Plus}
+      onClick={() => {
+        void start("qrCode");
+      }}
+    >
       {label}
     </Button>
   );
 
   let body;
-  if (pairing) {
-    body = <PairingSteps onCancel={cancelPairing} />;
+  if (step && step.step !== "idle") {
+    body = <PairingFlow step={step} />;
   } else if (devices.status === "loading") {
     body = <Spinner label="Looking for paired phones…" />;
   } else if (devices.status === "error") {
@@ -66,19 +76,24 @@ export function PairingPage() {
       />
     );
   } else {
-    body = <DeviceList devices={devices.data} />;
+    body = <DeviceList devices={devices.data} onUnpair={(id) => api.unpairDevice(id)} />;
   }
-
-  const hasDevices = devices.status === "ready" && devices.data.length > 0;
 
   return (
     <>
       <PageHeader
         title={pairingMeta.label}
         description={pairingMeta.description}
-        actions={hasDevices && !pairing ? startButton("Pair another phone") : undefined}
+        actions={count > 0 && !pairing ? startButton("Pair another phone") : undefined}
       />
-      <div className="page-body">{body}</div>
+      <div className="page-body">
+        {error && !pairing && (
+          <p role="alert" className="page-error">
+            {error}
+          </p>
+        )}
+        {body}
+      </div>
     </>
   );
 }

@@ -16,6 +16,10 @@ function describe(devices: AsyncState<Device[]>): { tone: Tone; label: string; d
   if (connected) {
     return { tone: "success", label: "Connected", detail: connected.name };
   }
+  const reconnecting = devices.data.find((d) => d.status === "reconnecting");
+  if (reconnecting) {
+    return { tone: "warning", label: "Reconnecting…", detail: `Reaching ${reconnecting.name}` };
+  }
   const [first] = devices.data;
   if (first) {
     return { tone: "warning", label: "Not connected", detail: `${first.name} is out of reach` };

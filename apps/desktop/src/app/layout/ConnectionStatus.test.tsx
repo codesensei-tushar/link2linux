@@ -52,4 +52,26 @@ describe("ConnectionStatus", () => {
     expect(await screen.findByText("Unavailable")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("The desktop service didn't respond");
   });
+
+  it("shows a phone that is reconnecting", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue([testDevice({ name: "Pixel", status: "reconnecting" })]);
+    renderStatus(api);
+
+    expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
+    expect(screen.getByText("Reaching Pixel")).toBeInTheDocument();
+  });
+
+  it("follows device events without reloading", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue([testDevice({ name: "Pixel" })]);
+    renderStatus(api);
+    expect(await screen.findByText("Pixel is out of reach")).toBeInTheDocument();
+
+    api.emitDevices([testDevice({ name: "Pixel", status: "connected" })]);
+    expect(screen.getByRole("status")).toHaveTextContent("Connected");
+    api.emitDevices([]);
+    expect(screen.getByRole("status")).toHaveTextContent("No phone paired");
+    expect(api.listDevices).toHaveBeenCalledOnce();
+  });
 });

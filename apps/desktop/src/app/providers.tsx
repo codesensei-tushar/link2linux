@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { DevicesProvider } from "@/features/pairing/DevicesProvider";
+import { PairingProvider } from "@/features/pairing/PairingProvider";
 import { defaultApi, DesktopApiContext, type DesktopApi } from "@/lib/api";
 
 export interface AppProvidersProps {
@@ -9,11 +10,13 @@ export interface AppProvidersProps {
   children: ReactNode;
 }
 
-/** App-wide context: the backend client and the shared paired-device state. */
+/** App-wide context: the backend client and the shared paired-device and pairing state. */
 export function AppProviders({ api = defaultApi, children }: AppProvidersProps) {
   return (
     <DesktopApiContext value={api}>
-      <DevicesProvider>{children}</DevicesProvider>
+      <DevicesProvider>
+        <PairingProvider>{children}</PairingProvider>
+      </DevicesProvider>
     </DesktopApiContext>
   );
 }
