@@ -9,7 +9,7 @@ use specta::Type;
 use tauri::AppHandle;
 use tauri_specta::Event;
 
-use crate::backend::{Device, EventSink, NotificationEvent, PairingState};
+use crate::backend::{ClipboardStatus, Device, EventSink, NotificationEvent, PairingState};
 
 /// The pairing step changed.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
@@ -26,6 +26,10 @@ pub struct NotificationChanged {
     pub device_id: String,
     pub event: NotificationEvent,
 }
+
+/// The shared clipboard's state changed.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+pub struct ClipboardChanged(pub ClipboardStatus);
 
 /// Forwards backend changes to the window as Tauri events.
 pub struct TauriSink {
@@ -54,5 +58,9 @@ impl EventSink for TauriSink {
             event: event.clone(),
         }
         .emit(&self.app);
+    }
+
+    fn clipboard_changed(&self, status: &ClipboardStatus) {
+        let _ = ClipboardChanged(status.clone()).emit(&self.app);
     }
 }

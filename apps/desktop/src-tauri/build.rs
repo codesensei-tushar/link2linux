@@ -17,6 +17,8 @@ fn main() {
         "dismiss_notification",
         "run_notification_action",
         "notification_image",
+        "get_clipboard_status",
+        "send_clipboard",
         "get_settings",
         "set_settings",
     ]);

@@ -17,15 +17,19 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
 
+use crate::clipboard::Copies;
 use crate::dial::race;
+use crate::features::Features;
 use crate::link::{self, Command, Ending, LinkContext, lock};
-use crate::notify::{NotificationsDriver, PhoneSession};
+use crate::notify::PhoneSession;
 use crate::shared::Core;
 use crate::view::DeviceStatus;
 
 /// What the owner of the task can send it and wake it with.
 pub(crate) struct Inbox {
     pub commands: UnboundedReceiver<Command>,
+    /// The newest copy to push to the phone's clipboard.
+    pub copies: Copies,
     /// Discovery saw the phone.
     pub wake: Arc<Notify>,
     pub cancel: tokio_util::sync::CancellationToken,
@@ -52,8 +56,9 @@ struct Supervisor {
     core: Arc<Core>,
     id: String,
     reconnector: Reconnector,
-    driver: Box<dyn NotificationsDriver>,
+    features: Features,
     commands: UnboundedReceiver<Command>,
+    copies: Copies,
     wake: Arc<Notify>,
     cancel: CancellationToken,
     /// The phone refused this computer's key but the record stays until the
@@ -67,7 +72,7 @@ struct Supervisor {
 pub(crate) async fn supervise(
     core: Arc<Core>,
     id: String,
-    driver: Box<dyn NotificationsDriver>,
+    features: Features,
     inbox: Inbox,
     initial: Option<Established>,
 ) {
@@ -76,8 +81,9 @@ pub(crate) async fn supervise(
         core,
         id,
         reconnector: Reconnector::new(now),
-        driver,
+        features,
         commands: inbox.commands,
+        copies: inbox.copies,
         wake: inbox.wake,
         cancel: inbox.cancel,
         revoked: false,
@@ -142,8 +148,9 @@ impl Supervisor {
         };
         let ending = link::run(
             established.session,
-            &mut *self.driver,
+            &mut self.features,
             &mut self.commands,
+            &mut self.copies,
             &self.cancel,
             &context,
         )
@@ -197,15 +204,16 @@ impl Supervisor {
                     self.reconnector.user_reconnect(Instant::now());
                 }
                 Some(Command::NetworkChanged) => self.reconnector.network_changed(Instant::now()),
-                Some(Command::SetActive(_)) => {}
+                Some(Command::SetActive(_) | Command::ClipboardSharing) => {}
                 Some(Command::Dismiss { key }) => {
-                    if let Err(error) = self.driver.dismiss(None, &key).await {
+                    if let Err(error) = self.features.notifications.dismiss(None, &key).await {
                         tracing::warn!(%error, "could not queue a dismissal");
                     }
                 }
                 Some(Command::Action { key, action_id, reply }) => {
                     let queued = self
-                        .driver
+                        .features
+                        .notifications
                         .run_action(None, &key, &action_id, reply.as_deref())
                         .await;
                     if let Err(error) = queued {
@@ -213,7 +221,7 @@ impl Supervisor {
                     }
                 }
                 Some(Command::Response(response)) => {
-                    if let Err(error) = self.driver.handle_response(None, response).await {
+                    if let Err(error) = self.features.notifications.handle_response(None, response).await {
                         tracing::warn!(%error, "notification response failed");
                     }
                 }

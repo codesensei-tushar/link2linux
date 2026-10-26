@@ -2,7 +2,7 @@ import { act } from "@testing-library/react";
 import { vi, type Mock } from "vitest";
 
 import type { MirroredNotification, NotificationEvent } from "@/features/notifications/types";
-import type { AppInfo, DesktopApi, Device, PairingState } from "@/lib/api";
+import type { AppInfo, ClipboardStatus, DesktopApi, Device, PairingState } from "@/lib/api";
 
 export const testAppInfo: AppInfo = {
   name: "link2linux",
@@ -24,7 +24,19 @@ export function testDevice(overrides: Partial<Device> = {}): Device {
   };
 }
 
-type Methods = Omit<DesktopApi, "onPairingChanged" | "onDevicesChanged">;
+type Methods = Omit<DesktopApi, "onPairingChanged" | "onDevicesChanged" | "onClipboardChanged">;
+
+/** A clipboard shared automatically, with no phones and nothing sent yet. */
+export function testClipboardStatus(overrides: Partial<ClipboardStatus> = {}): ClipboardStatus {
+  return {
+    mode: "automatic",
+    phones: [],
+    activity: [],
+    problem: null,
+    held: null,
+    ...overrides,
+  };
+}
 
 export function testNotification(
   overrides: Partial<MirroredNotification> = {},
@@ -65,6 +77,10 @@ export interface FakeApi extends DesktopApi {
   dismissNotification: Mock<DesktopApi["dismissNotification"]>;
   runNotificationAction: Mock<DesktopApi["runNotificationAction"]>;
   notificationImage: Mock<DesktopApi["notificationImage"]>;
+  getClipboardStatus: Mock<DesktopApi["getClipboardStatus"]>;
+  sendClipboard: Mock<DesktopApi["sendClipboard"]>;
+  /** Pushes a clipboard status, as the backend would. */
+  emitClipboard(status: ClipboardStatus): void;
   /** Delivers an event to every active notification subscriber. */
   emitNotification: (event: NotificationEvent) => void;
   /** How many notification subscriptions are active. */
@@ -90,6 +106,7 @@ export function createFakeApi(): FakeApi {
   const pairingListeners = new Set<(state: PairingState) => void>();
   const deviceListeners = new Set<(devices: Device[]) => void>();
   const subscribers = new Set<(event: NotificationEvent) => void>();
+  const clipboardListeners = new Set<(status: ClipboardStatus) => void>();
   const ok = () => vi.fn<Methods["startPairing"]>().mockResolvedValue(undefined);
 
   return {
@@ -109,6 +126,21 @@ export function createFakeApi(): FakeApi {
       .fn<DesktopApi["runNotificationAction"]>()
       .mockResolvedValue(undefined),
     notificationImage: vi.fn<DesktopApi["notificationImage"]>().mockResolvedValue(null),
+    getClipboardStatus: vi
+      .fn<DesktopApi["getClipboardStatus"]>()
+      .mockResolvedValue(testClipboardStatus()),
+    onClipboardChanged: (listener) => {
+      clipboardListeners.add(listener);
+      return Promise.resolve(() => clipboardListeners.delete(listener));
+    },
+    sendClipboard: vi.fn<DesktopApi["sendClipboard"]>().mockResolvedValue(undefined),
+    emitClipboard: (status) => {
+      act(() => {
+        clipboardListeners.forEach((listener) => {
+          listener(status);
+        });
+      });
+    },
     emitNotification: (event) => {
       for (const subscriber of [...subscribers]) subscriber(event);
     },
@@ -121,9 +153,11 @@ export function createFakeApi(): FakeApi {
     pairWith: vi.fn<DesktopApi["pairWith"]>().mockResolvedValue(undefined),
     answerCode: vi.fn<DesktopApi["answerCode"]>().mockResolvedValue(undefined),
     cancelPairing: vi.fn<DesktopApi["cancelPairing"]>().mockResolvedValue(undefined),
-    getSettings: vi
-      .fn<DesktopApi["getSettings"]>()
-      .mockResolvedValue({ showNotificationText: false }),
+    getSettings: vi.fn<DesktopApi["getSettings"]>().mockResolvedValue({
+      showNotificationText: false,
+      shareClipboard: true,
+      sharePasswords: false,
+    }),
     setSettings: vi.fn<DesktopApi["setSettings"]>().mockResolvedValue(undefined),
     onPairingChanged: (listener) => {
       pairingListeners.add(listener);
@@ -147,6 +181,6 @@ export function createFakeApi(): FakeApi {
         });
       });
     },
-    listenerCount: () => pairingListeners.size + deviceListeners.size,
+    listenerCount: () => pairingListeners.size + deviceListeners.size + clipboardListeners.size,
   };
 }

@@ -8,6 +8,18 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+### Added
+
+- Clipboard sharing. Text you copy on the computer lands on the phone's
+  clipboard. The phone sends its clipboard when you ask: in the app, from a
+  quick settings tile or the connection notification, or with "Copy to
+  computer" in the share sheet and the text selection menu. The computer
+  follows its clipboard in the background on GNOME, KDE, wlroots desktops
+  and X11, and elsewhere shares when its window is focused or when you
+  click Send. Passwords a password manager marks as secret stay on the
+  computer unless you turn on "Share passwords". Clipboard sharing is off on
+  the phone until you turn it on.
+
 ## [0.1.2] - 2026-10-26
 
 Security fixes from a review of pairing, connections and notifications on

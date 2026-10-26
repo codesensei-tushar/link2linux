@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use link2linux_core::clipboard::{ClipboardHub, ClipboardService, ClipboardSettings};
 use link2linux_core::device::{DeviceInfo, DeviceKind, Feature};
 use link2linux_core::discovery::onlink::{LocalAddress, local_addresses};
 use link2linux_core::discovery::{DiscoveryKeys, LanConfig, PairedKey, SecretBytes};
@@ -14,8 +15,9 @@ use link2linux_core::identity::{Identity, IdentityError};
 use link2linux_core::pairing::{
     DEFAULT_BEACON_PORT, FileTrustStore, PairedDevice, PairingError, StoreKey, TrustStore,
 };
-use link2linux_core::session::SessionStart;
+use link2linux_core::session::{Availability, SessionStart};
 use link2linux_core::transport::{DialTimeouts, TlsDialer, TransportError};
+use link2linux_platform::{Clipboard, ClipboardAccess};
 use link2linux_protocol::v1::PresenceUpdate;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -23,7 +25,12 @@ use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::candidates::Evidence;
+use crate::clipboard::{
+    self, ClipboardMode, ClipboardPort, ClipboardStatus, HeldClipboard, NoClipboard, Outgoing,
+    SharedClipboard,
+};
 use crate::device::{self, Established, Inbox};
+use crate::features::Features;
 use crate::link::{Command, lock};
 use crate::notify::dto::{self, MirroredNotification, NotificationEvent};
 use crate::notify::{DriverFactory, Presenter};
@@ -45,6 +52,8 @@ pub struct RuntimeConfig {
     pub extra_locals: Vec<LocalAddress>,
     /// Dial timeouts, for tests; the protocol's when `None`.
     pub dial_timeouts: Option<DialTimeouts>,
+    /// The user's clipboard settings at the start.
+    pub clipboard: ClipboardSettings,
 }
 
 impl RuntimeConfig {
@@ -57,6 +66,7 @@ impl RuntimeConfig {
             discovery: Some(LanConfig::default()),
             extra_locals: Vec::new(),
             dial_timeouts: None,
+            clipboard: ClipboardSettings::default(),
         }
     }
 }
@@ -77,6 +87,9 @@ pub struct Shell {
     pub events: Arc<dyn EventSink>,
     /// Makes the notifications driver of each phone.
     pub drivers: Arc<dyn DriverFactory>,
+    /// The desktop clipboard. Without one, the desktop reports the
+    /// clipboard unavailable to the phones.
+    pub clipboard: Option<Arc<dyn ClipboardPort>>,
 }
 
 /// Why the runtime could not start.
@@ -140,6 +153,8 @@ pub(crate) struct Slot {
     pub status: DeviceStatus,
     pub last_connected_unix_ms: Option<i64>,
     pub commands: UnboundedSender<Command>,
+    /// The newest copy to push to the phone's clipboard.
+    pub copies: watch::Sender<Option<Outgoing>>,
     pub wake: Arc<Notify>,
     pub cancel: CancellationToken,
 }
@@ -169,6 +184,13 @@ pub(crate) struct Core {
     pub pairing: Mutex<PairingCtl>,
     /// Phones that announce pairing mode, whether or not pairing runs.
     pub pairing_phones: Mutex<crate::pairing::PhoneList>,
+    /// The desktop clipboard, if the shell has one.
+    pub clipboard: Option<SharedClipboard>,
+    pub clipboard_hub: ClipboardHub,
+    /// What the clipboard page shows. Take this lock before the store's.
+    pub clipboard_page: Mutex<clipboard::Page>,
+    /// Wakes the task that keeps the clipboard page.
+    pub clipboard_nudge: Notify,
 }
 
 impl Core {
@@ -190,7 +212,7 @@ impl Core {
             id,
             name.clone(),
             DeviceKind::Desktop,
-            [Feature::Notifications],
+            [Feature::Notifications, Feature::Clipboard],
         );
         let (keys, _) = watch::channel(DiscoveryKeys::default());
         let core = Arc::new(Self {
@@ -218,7 +240,15 @@ impl Core {
             slots: Mutex::default(),
             pairing: Mutex::new(PairingCtl::default()),
             pairing_phones: Mutex::default(),
+            clipboard: shell.clipboard.map(SharedClipboard),
+            clipboard_hub: ClipboardHub::new(config.clipboard),
+            clipboard_page: Mutex::default(),
+            clipboard_nudge: Notify::new(),
         });
+        // Following the hub before any phone's service can report.
+        let clipboard_events = core.clipboard_hub.subscribe();
+        core.handle
+            .spawn(clipboard::follow(core.clone(), clipboard_events));
         core.publish_keys();
         let records = lock(&core.store).list();
         for record in &records {
@@ -234,10 +264,13 @@ impl Core {
         locals
     }
 
-    /// The first message of a session: this desktop, and its Bluetooth LE
-    /// address if it advertises.
+    /// The first message of a session: this desktop, whether it shares
+    /// its clipboard, and its Bluetooth LE address if it advertises.
     pub fn session_start(&self) -> SessionStart {
         let mut start = SessionStart::new(self.local.clone());
+        start
+            .availability
+            .insert(Feature::Clipboard, self.clipboard_availability());
         if let Some(address) = *lock(&self.ble_address) {
             start.presence = PresenceUpdate {
                 ble_address: address.to_vec(),
@@ -251,6 +284,7 @@ impl Core {
     /// first one when a connection to it is already up.
     pub fn spawn_device(self: &Arc<Self>, record: &PairedDevice, initial: Option<Established>) {
         let (commands, receiver) = unbounded_channel();
+        let (copies, copies_receiver) = watch::channel(None);
         let wake = Arc::new(Notify::new());
         let cancel = self.cancel.child_token();
         let connected = initial.is_some();
@@ -271,6 +305,7 @@ impl Core {
                     },
                     last_connected_unix_ms: connected.then(now_unix_ms),
                     commands,
+                    copies,
                     wake: wake.clone(),
                     cancel: cancel.clone(),
                 },
@@ -282,22 +317,30 @@ impl Core {
             record.kind,
             [Feature::Notifications],
         );
-        let driver = self.drivers.create(&info);
+        let features = Features {
+            notifications: self.drivers.create(&info),
+            clipboard: ClipboardService::new(
+                record.id.clone(),
+                self.clipboard_hub.clone(),
+                self.clipboard_port(),
+            ),
+        };
         self.handle.spawn(forward_changes(
             self.clone(),
             record.id.clone(),
             board,
-            driver.subscribe(),
+            features.notifications.subscribe(),
         ));
         let inbox = Inbox {
             commands: receiver,
+            copies: copies_receiver,
             wake,
             cancel,
         };
         self.handle.spawn(device::supervise(
             self.clone(),
             record.id.clone(),
-            driver,
+            features,
             inbox,
             initial,
         ));
@@ -357,8 +400,10 @@ impl Core {
         }
         self.drivers.forget(id);
         lock(&self.evidence).forget(id);
+        lock(&self.clipboard_page).board.forget(id);
         self.publish_keys();
         self.emit_devices();
+        self.clipboard_changed();
     }
 
     /// Gives discovery the keys of the paired phones and of the QR offer
@@ -384,6 +429,77 @@ impl Core {
     /// Whether the window has focus.
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
+    }
+
+    /// The desktop clipboard each phone's service writes to.
+    pub fn clipboard_port(&self) -> SharedClipboard {
+        self.clipboard
+            .clone()
+            .unwrap_or_else(|| SharedClipboard(Arc::new(NoClipboard)))
+    }
+
+    /// What this desktop reports about its clipboard in `FeatureStatus`.
+    pub fn clipboard_availability(&self) -> Availability {
+        if self.clipboard.is_none() {
+            Availability::Unavailable
+        } else if self.clipboard_hub.settings().sharing {
+            Availability::Ready
+        } else {
+            Availability::Disabled
+        }
+    }
+
+    /// The name of paired phone `id`, or the id of one no longer paired.
+    pub fn phone_name(&self, id: &str) -> String {
+        lock(&self.store)
+            .list()
+            .into_iter()
+            .find(|record| record.id == id)
+            .map_or_else(|| id.to_owned(), |record| record.name)
+    }
+
+    /// What the clipboard page shows.
+    pub fn clipboard_status(&self) -> ClipboardStatus {
+        let page = lock(&self.clipboard_page);
+        self.clipboard_with(&page)
+    }
+
+    fn clipboard_with(&self, page: &clipboard::Page) -> ClipboardStatus {
+        let mode = match self.clipboard.as_ref().map(Clipboard::access) {
+            Some(ClipboardAccess::Background) => ClipboardMode::Automatic,
+            Some(ClipboardAccess::FocusOnly) => ClipboardMode::WhenFocused,
+            None => ClipboardMode::Unavailable,
+        };
+        let mut records = lock(&self.store).list();
+        records.sort_by_key(|record| (record.paired_at, record.id.clone()));
+        let held = self.clipboard_hub.held().map(|held| HeldClipboard {
+            phone_name: records
+                .iter()
+                .find(|record| record.id == held.device_id)
+                .map_or_else(|| held.device_id.clone(), |record| record.name.clone()),
+            device_id: held.device_id,
+            bytes: clipboard::bytes(held.clip.len()),
+            sensitive: held.clip.is_sensitive(),
+        });
+        let phones = records
+            .into_iter()
+            .map(|record| (record.id, record.name))
+            .collect();
+        page.board.snapshot(mode, phones, held)
+    }
+
+    /// Reports the clipboard page to the shell. The page's lock stays held
+    /// while the sink runs, so snapshots arrive in order.
+    pub fn emit_clipboard(&self) {
+        let page = lock(&self.clipboard_page);
+        let status = self.clipboard_with(&page);
+        self.events.clipboard_changed(&status);
+    }
+
+    /// Something the clipboard page shows changed outside the hub's
+    /// events: the page is reported again, and the pop-up checked.
+    pub fn clipboard_changed(&self) {
+        self.clipboard_nudge.notify_one();
     }
 }
 

@@ -19,6 +19,8 @@
     "allow-dismiss-notification",
     "allow-run-notification-action",
     "allow-notification-image",
+    "allow-get-clipboard-status",
+    "allow-send-clipboard",
     "allow-get-settings",
     "allow-set-settings",
     "core:event:allow-listen",

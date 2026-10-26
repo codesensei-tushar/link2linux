@@ -1,8 +1,9 @@
 import { Bell, RefreshCw, Smartphone, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 
 import { Button, Callout, EmptyState, PageHeader, Spinner } from "@/components/ui";
 import { useDevices } from "@/features/pairing/devices-context";
+import { useNow } from "@/lib/use-now";
 
 import { groupNotifications } from "./list";
 import { NotificationCard } from "./NotificationCard";
@@ -10,20 +11,6 @@ import { notificationsMeta } from "./meta";
 import type { MirroredNotification } from "./types";
 import { useNotifications } from "./use-notifications";
 import "./notifications.css";
-
-/** Re-renders every minute so relative times stay current. */
-function useNow(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setNow(Date.now());
-    }, 60_000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, []);
-  return now;
-}
 
 function NotificationList({ deviceId }: { deviceId: string }) {
   const { state, announcement, error, clearError, dismiss, runAction, reload } =

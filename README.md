@@ -54,7 +54,7 @@ your terms.
 | Pairing | Pair with a QR code, or compare a 6-digit code if you have no camera | In progress (v0.1) |
 | Notifications | Phone notifications on your desktop: reply inline, run actions, dismiss on both devices | In progress (v0.1) |
 | Messages | Reply to texts from your keyboard, straight from the notification | Planned (v0.2) |
-| Clipboard | Copy on one device, paste on the other | Planned (v0.2) |
+| Clipboard | Copy on one device, paste on the other | In progress (v0.2) |
 | Files | Send files both ways with drag and drop or the share sheet | Planned (v0.2) |
 | Photos | Send recent photos to your computer in a couple of taps | Planned (v0.2) |
 | Calls | See who's calling and talk through your computer over Bluetooth | Planned (v0.3) |

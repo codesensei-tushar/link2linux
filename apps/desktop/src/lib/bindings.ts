@@ -52,6 +52,17 @@ export const commands = {
 	 *  can put in an `<img>`, or nothing while it has not arrived.
 	 */
 	notificationImage: (deviceId: string, sha256: string) => typedError<string | null, CommandError>(__TAURI_INVOKE("notification_image", { deviceId, sha256 })),
+	/**
+	 *  The state of the shared clipboard: how this computer follows it, each
+	 *  phone's state and what went where lately, never the text. Later changes
+	 *  arrive as `ClipboardChanged` events: subscribe first, then call this.
+	 */
+	getClipboardStatus: () => __TAURI_INVOKE<ClipboardStatus>("get_clipboard_status"),
+	/**
+	 *  Sends what the clipboard holds to every phone that takes it. What came
+	 *  of it arrives as a `ClipboardChanged` event.
+	 */
+	sendClipboard: () => typedError<null, CommandError>(__TAURI_INVOKE("send_clipboard")),
 	/**  The desktop app's settings. */
 	getSettings: () => __TAURI_INVOKE<Settings>("get_settings"),
 	/**
@@ -63,6 +74,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	clipboardChanged: makeEvent<ClipboardChanged, ClipboardChanged>("clipboard-changed"),
 	devicesChanged: makeEvent<DevicesChanged, DevicesChanged>("devices-changed"),
 	notificationChanged: makeEvent<NotificationChanged, NotificationChanged>("notification-changed"),
 	pairingChanged: makeEvent<PairingChanged, PairingChanged>("pairing-changed"),
@@ -81,6 +93,109 @@ export type AppInfo = {
 	os: string,
 	/**  CPU architecture, e.g. "x86_64". */
 	arch: string,
+};
+
+/**  Text that went to or came from a phone. */
+export type ClipboardActivity = {
+	deviceId: string,
+	phoneName: string,
+	direction: ClipboardDirection,
+	/**  The text's length in bytes. */
+	bytes: number,
+	/**  A password manager marked it as secret. */
+	sensitive: boolean,
+	/**  When it happened (Unix time, milliseconds). */
+	atUnixMs: number,
+};
+
+/**  The shared clipboard's state changed. */
+export type ClipboardChanged = ClipboardStatus;
+
+/**  Which way text went. */
+export type ClipboardDirection = 
+/**  From this desktop to the phone. */
+"sent" | 
+/**  From the phone to this desktop. */
+"received";
+
+/**  How this desktop follows its clipboard. */
+export type ClipboardMode = 
+/**
+ *  Each copy is shared as it happens, and text from the phones goes on
+ *  the clipboard as it arrives.
+ */
+"automatic" | 
+/**
+ *  The desktop session lets the app use the clipboard only while its
+ *  window has focus: the clipboard is shared when the window gains
+ *  focus or the user clicks Send, and text from the phones waits until
+ *  the window gains focus.
+ */
+"whenFocused" | 
+/**  The app cannot reach the clipboard. */
+"unavailable";
+
+/**  A paired phone and whether it takes the clipboard now. */
+export type ClipboardPhone = {
+	deviceId: string,
+	name: string,
+	state: ClipboardPhoneState,
+};
+
+/**  Whether a phone takes the clipboard now. */
+export type ClipboardPhoneState = "ready" | 
+/**  The user has clipboard sharing off on the phone. */
+"turnedOff" | 
+/**  The phone shares a clipboard, but cannot right now. */
+"unavailable" | 
+/**  The phone's app is too old to share a clipboard. */
+"unsupported" | "disconnected";
+
+/**  Something the user may want to know about. */
+export type ClipboardProblem = {
+	kind: ClipboardProblemKind,
+	/**  The phone it concerns, if it concerns one. */
+	deviceId: string | null,
+	phoneName: string | null,
+	/**  The text's length, for `tooLarge`. */
+	bytes: number | null,
+	/**  When it happened (Unix time, milliseconds). */
+	atUnixMs: number,
+};
+
+/**  What went wrong. */
+export type ClipboardProblemKind = 
+/**  The copied text is longer than 256 KiB, so it was not shared. */
+"tooLarge" | 
+/**
+ *  A password manager marked the copy as secret, and "Share passwords"
+ *  is off.
+ */
+"passwordNotShared" | 
+/**  The user asked to send the clipboard, but it holds no text. */
+"noText" | 
+/**  The user asked to send the clipboard while sharing is off. */
+"sharingOff" | 
+/**  The user asked to send the clipboard, but no phone takes it now. */
+"noPhone" | 
+/**  The phone has clipboard sharing turned off. */
+"turnedOffOnPhone" | 
+/**  The phone could not set its clipboard. */
+"phoneUnavailable" | 
+/**  The phone did not take the text. */
+"failed";
+
+/**  The state of the shared clipboard, as a snapshot. */
+export type ClipboardStatus = {
+	mode: ClipboardMode,
+	/**  Every paired phone, in pairing order. */
+	phones: ClipboardPhone[],
+	/**  What went where lately, newest first. */
+	activity: ClipboardActivity[],
+	/**  The latest problem, until a later transfer it concerns works. */
+	problem: ClipboardProblem | null,
+	/**  Text from a phone that waits for the window to gain focus. */
+	held: HeldClipboard | null,
 };
 
 /**  Why a command was refused. */
@@ -130,6 +245,14 @@ export type DiscoveredPhone = {
 	id: string,
 	name: string,
 	address: string,
+};
+
+/**  Text from a phone that waits for the window to gain focus. */
+export type HeldClipboard = {
+	deviceId: string,
+	phoneName: string,
+	bytes: number,
+	sensitive: boolean,
 };
 
 /**
@@ -326,6 +449,16 @@ export type Settings = {
 	 *  service, where other programs can read them.
 	 */
 	showNotificationText?: boolean,
+	/**
+	 *  The clipboard is shared with the phones. On by default: each phone
+	 *  has its own switch, off until its user turns it on.
+	 */
+	shareClipboard?: boolean,
+	/**
+	 *  Text that a password manager marked as secret is shared too. Off by
+	 *  default.
+	 */
+	sharePasswords?: boolean,
 };
 
 /**  Why the app could not start, for the page shown instead of the app. */

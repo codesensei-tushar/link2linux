@@ -5,6 +5,7 @@
 //! belong in the workspace crates, not here.
 
 pub mod backend;
+mod clipboard;
 mod commands;
 mod events;
 mod state;
@@ -37,6 +38,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::notifications::dismiss_notification,
             commands::notifications::run_notification_action,
             commands::notifications::notification_image,
+            commands::clipboard::get_clipboard_status,
+            commands::clipboard::send_clipboard,
             commands::settings::get_settings,
             commands::settings::set_settings,
         ])
@@ -44,6 +47,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             events::PairingChanged,
             events::DevicesChanged,
             events::NotificationChanged,
+            events::ClipboardChanged,
         ])
         // IPC types only travel from Rust to the UI for now, so one TypeScript
         // type per Rust type is enough (no separate input/output variants).
@@ -70,17 +74,21 @@ pub fn run() {
                 Arc::new(backend::fake::FakeBackend::from_env(sink))
             } else {
                 let handle = app.handle().clone();
+                let window_clipboard = clipboard::WindowClipboard::new(handle.clone());
                 // A failed start keeps the window up to say why, rather than
                 // quitting without a word.
-                backend::failed::or_failed(backend::live::LiveBackend::start(sink, move || {
-                    show_window(&handle);
-                }))
+                backend::failed::or_failed(backend::live::LiveBackend::start(
+                    sink,
+                    move || show_window(&handle),
+                    window_clipboard,
+                ))
             };
             app.manage(AppState::new(backend));
             Ok(())
         })
         .on_window_event(|window, event| {
-            // The window's focus sets how often sessions ping.
+            // The window's focus sets how often sessions ping, and when a
+            // clipboard that works only then is used.
             if let tauri::WindowEvent::Focused(focused) = event
                 && let Some(state) = window.app_handle().try_state::<AppState>()
             {
