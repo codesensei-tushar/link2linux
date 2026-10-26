@@ -26,6 +26,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -54,11 +55,23 @@ class SessionTest {
         override fun close() = socket.close()
     }
 
-    /** Returns the phone end and the desktop end of a connected pair. */
-    private fun connectedPair(): Pair<Transport, Transport> {
-        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
-            val client = Socket(InetAddress.getLoopbackAddress(), server.localPort)
+    /**
+     * Returns the phone end and the desktop end of a connected pair. With
+     * [bufferBytes], both ends' socket buffers are about that small, so one
+     * large frame fills them while the other end does not read.
+     */
+    private fun connectedPair(bufferBytes: Int? = null): Pair<Transport, Transport> {
+        ServerSocket().use { server ->
+            bufferBytes?.let { server.receiveBufferSize = it }
+            server.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 1)
+            val client = Socket()
+            bufferBytes?.let {
+                client.sendBufferSize = it
+                client.receiveBufferSize = it
+            }
+            client.connect(server.localSocketAddress)
             val accepted = server.accept()
+            bufferBytes?.let { accepted.sendBufferSize = it }
             sockets += client
             sockets += accepted
             return SocketTransport(client) to SocketTransport(accepted)
@@ -413,6 +426,91 @@ class SessionTest {
         // Each status replaces the last.
         assertEquals(mapOf("files" to FeatureAvailability.FEATURE_AVAILABILITY_DISABLED), phone.peerFeatures.value)
         assertFalse(phone.isReadyOnPeer("clipboard"))
+    }
+
+    @Test
+    fun theReaderKeepsReadingWhileAWriteWaitsForThePeer() = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair(bufferBytes = 16 * 1024)
+        // Ends a run that hangs, as it would if the reader waited for the write below.
+        closeLater(desktopEnd, 20_000)
+        val phone = Session(phoneEnd)
+        val desktop = Session(desktopEnd)
+        withTimeout(5_000) {
+            val desktopSaw = async { desktop.handshake(desktopHello) }
+            phone.handshake(phoneHello)
+            desktopSaw.await()
+        }
+        phone.markPaired()
+        desktop.markPaired()
+        // 256 KiB, far more than the socket buffers hold.
+        val large = clipboardPush { text = "x".repeat(256 * 1024) }
+
+        // The phone writes a large frame the desktop does not read yet.
+        val phoneWrite = async(Dispatchers.IO) { phone.send { clipboardPush = large } }
+        delay(300)
+        assertFalse("the buffers took the whole frame", phoneWrite.isCompleted)
+
+        // The desktop asks for a Pong, then writes a large frame of its own,
+        // and reads only once the phone has read that. The phone's reader must
+        // answer the Ping without waiting for its writer, and read on.
+        val phoneRead = async(Dispatchers.IO) { phone.next() }
+        withTimeout(10_000) {
+            desktop.send { ping = ping { nonce = 7 } }
+            desktop.send { clipboardPush = large }
+        }
+        assertEquals(large, withTimeout(10_000) { phoneRead.await() }!!.clipboardPush)
+
+        // The desktop reads now: the phone's large frame, then the Pong queued behind it.
+        withTimeout(10_000) {
+            assertEquals(large, desktop.next()!!.clipboardPush)
+            assertEquals(7L, desktop.next()!!.pong.nonce)
+            assertEquals(2L, phoneWrite.await())
+        }
+    }
+
+    @Test
+    fun aPostedFrameGoesOutInOrderWithoutWaiting() = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        FrameCodec().write(envelope { seq = 1; hello = desktopHello }, desktopEnd.output)
+        desktopEnd.output.flush()
+        val phone = Session(phoneEnd)
+        withTimeout(5_000) { phone.handshake(phoneHello) }
+
+        val first = phone.send { ping = ping { nonce = 1 } }
+        phone.post { ping = ping { nonce = 2 } }
+        val third = phone.send { ping = ping { nonce = 3 } }
+
+        // After the phone's Hello: the three in the order they were queued.
+        val desktop = FrameCodec()
+        val frames = List(4) { desktop.read(desktopEnd.input)!! }.drop(1)
+        assertEquals(listOf(1L, 2L, 3L), frames.map { it.ping.nonce })
+        assertEquals(listOf(2L, 3L, 4L), frames.map { it.seq })
+        assertEquals(listOf(2L, 4L), listOf(first, third))
+    }
+
+    @Test
+    fun aFrameRefusedForItsSizeIsNotSentAndTheNextOneTakesItsSeq() = runBlocking {
+        val (phone, desktop) = establishedPair()
+        phone.markPaired()
+        desktop.markPaired()
+        val reader = async(Dispatchers.IO) { phone.next() }
+
+        // Over the 512 KiB limit for a frame without an image.
+        val tooLarge = clipboardPush { text = "x".repeat(600 * 1024) }
+        val error = runCatching { phone.sendRequest { clipboardPush = tooLarge } }.exceptionOrNull()
+        assertTrue("got $error", error is FrameTooLargeException)
+
+        val pending = phone.sendRequest { clipboardPush = push }
+        val request = withTimeout(5_000) { desktop.next()!! }
+        assertEquals("the phone's Hello was seq 1", 2L, request.seq)
+        assertEquals(pending.seq, request.seq)
+        desktop.send {
+            replyTo = request.seq
+            ack = Ack.getDefaultInstance()
+        }
+        assertEquals(request.seq, withTimeout(5_000) { pending.await() }.replyTo)
+        desktop.close()
+        assertNull(withTimeout(5_000) { reader.await() })
     }
 
     private fun assertHandshakeFails(vararg fromDesktop: Envelope) = runBlocking {
