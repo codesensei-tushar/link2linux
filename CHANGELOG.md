@@ -8,6 +8,8 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-26
+
 The first release: an Android phone and a Linux desktop pair once, then find
 each other on the local network by themselves, and the phone's notifications
 appear on the desktop.
@@ -55,4 +57,5 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/commits/main
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/codesensei-tushar/link2linux/releases/tag/v0.1.0
