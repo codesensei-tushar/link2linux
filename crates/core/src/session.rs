@@ -26,10 +26,12 @@
 //! protocol error.
 //!
 //! After that, [`Session::next_event`] drives the session. It answers the
-//! peer's `Ping`s, sends a `Ping` of its own every
-//! [`SessionConfig::ping_interval`], and fails with
-//! [`SessionError::IdleTimeout`] when nothing arrives from the peer for
-//! [`SessionConfig::idle_timeout`]. One-way messages come out as
+//! peer's `Ping`s and, on the desktop, sends its own on the
+//! [`PingSchedule`]: often while [`Session::set_active`] says the user can
+//! see the session's activity, rarely otherwise. It fails with
+//! [`SessionError::PeerSilent`] when nothing arrives from the peer for a few
+//! ping intervals, or on the phone, which never pings, for
+//! [`SessionConfig::silence_timeout`]. One-way messages come out as
 //! [`SessionEvent::Message`] and go in through [`Session::send`].
 //!
 //! This side's requests go out through [`Session::send_request`], which
@@ -66,38 +68,43 @@ use link2linux_protocol::{
     DEFAULT_MAX_FRAME_LEN, Envelope, EnvelopeCodec, FrameError, Hello, Payload, Ping, Pong,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::time::{self, Instant, Interval, MissedTickBehavior};
+use tokio::time::{self, Instant};
 use tokio_util::codec::{Encoder, Framed};
 use tracing::debug;
 
 use crate::device::{DeviceInfo, Feature};
 
 mod goodbye;
+mod liveness;
 mod request;
 mod rules;
 mod status;
 mod version;
 
 pub use goodbye::{PeerGoodbye, ReconnectPolicy};
+pub use liveness::PingSchedule;
 pub use request::{Reply, RequestError};
 pub use status::{Availability, FeatureStates};
 pub use version::VersionRange;
 
 use request::Pending;
 
+use liveness::Liveness;
 use rules::{Kind, Rules};
 
-/// Tunables for a [`Session`].
+/// Tunables for a [`Session`]. The default suits the desktop;
+/// [`SessionConfig::phone`] suits a stand-in for the phone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
     /// How long to wait for the peer's `Hello`.
     pub handshake_timeout: Duration,
-    /// How often to ping the peer. Must not be zero.
-    pub ping_interval: Duration,
-    /// How long the peer may stay silent before the session is considered
-    /// dead. Keep it a few times [`ping_interval`](Self::ping_interval), so
-    /// one late `Pong` does not end the session.
-    pub idle_timeout: Duration,
+    /// When this side pings the peer, and how many silent intervals end the
+    /// session. `None` on a side that only answers pings, as the phone
+    /// does. Its intervals must not be zero.
+    pub ping: Option<PingSchedule>,
+    /// On a side that does not ping: how long the peer may stay silent
+    /// before the session counts as lost.
+    pub silence_timeout: Duration,
     /// How long a request waits for an answer, and for each further answer
     /// of a request answered by several messages.
     pub request_timeout: Duration,
@@ -109,10 +116,23 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             handshake_timeout: Duration::from_secs(10),
-            ping_interval: Duration::from_secs(15),
-            idle_timeout: Duration::from_secs(45),
+            ping: Some(PingSchedule::default()),
+            silence_timeout: Duration::from_secs(240),
             request_timeout: Duration::from_secs(30),
             max_frame_len: DEFAULT_MAX_FRAME_LEN,
+        }
+    }
+}
+
+impl SessionConfig {
+    /// The phone's settings: it never pings, and counts the session as lost
+    /// after 240 seconds without a frame, 4 times the longest interval the
+    /// desktop may ping at.
+    #[must_use]
+    pub fn phone() -> Self {
+        Self {
+            ping: None,
+            ..Self::default()
         }
     }
 }
@@ -277,9 +297,10 @@ pub enum SessionError {
     /// as an answer that does not fit its request.
     #[error("protocol error by the peer: {0}")]
     Protocol(String),
-    /// Nothing arrived from the peer for this long.
+    /// Nothing arrived from the peer for this long, so the connection
+    /// counts as lost.
     #[error("no message from the peer for {0:?}")]
-    IdleTimeout(Duration),
+    PeerSilent(Duration),
     /// This side tried to send a message the session sends by itself or
     /// through a dedicated method, such as a `Goodbye` through
     /// [`Session::send`] instead of [`Session::goodbye`].
@@ -352,7 +373,7 @@ pub struct Session<S> {
     pairing: bool,
     /// The protocol major version both sides use.
     version: u32,
-    idle_timeout: Duration,
+    liveness: Liveness,
     request_timeout: Duration,
     /// This side's requests that wait for an answer, by sequence number.
     pending: BTreeMap<u64, Pending>,
@@ -360,9 +381,6 @@ pub struct Session<S> {
     next_seq: u64,
     /// Highest sequence number received from the peer.
     last_peer_seq: u64,
-    /// When the last frame from the peer arrived.
-    last_received: Instant,
-    ping_timer: Interval,
     next_nonce: u64,
     /// Nonce and send time of the `Ping` awaiting its `Pong`.
     pending_ping: Option<(u64, Instant)>,
@@ -405,7 +423,7 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if [`SessionConfig::ping_interval`] is zero.
+    /// Panics if an interval of [`SessionConfig::ping`] is zero.
     pub async fn handshake(
         io: S,
         start: impl Into<SessionStart>,
@@ -474,9 +492,7 @@ where
         let pairing_method = pairing.or(peer_pairing);
         debug!(peer.id, peer.name, ?peer.kind, version, ?pairing_method, "session established");
 
-        let now = Instant::now();
-        let mut ping_timer = time::interval_at(now + config.ping_interval, config.ping_interval);
-        ping_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let liveness = Liveness::new(config.ping, config.silence_timeout, Instant::now());
         let availability = local
             .features
             .iter()
@@ -496,13 +512,11 @@ where
             pairing_method,
             pairing: pairing_method.is_some(),
             version,
-            idle_timeout: config.idle_timeout,
+            liveness,
             request_timeout: config.request_timeout,
             pending: BTreeMap::new(),
             next_seq: 2,
             last_peer_seq,
-            last_received: now,
-            ping_timer,
             next_nonce: 1,
             pending_ping: None,
             rtt: None,
@@ -609,7 +623,7 @@ where
     pub fn is_ready(&self, feature: Feature) -> bool {
         let ready =
             |states: &FeatureStates| states.get(&feature).is_some_and(Availability::is_ready);
-        self.is_active(feature)
+        self.is_feature_active(feature)
             && ready(&self.availability)
             && self.peer_availability.as_ref().is_some_and(ready)
     }
@@ -886,11 +900,39 @@ where
             return Err(SessionError::NotAllowed(rules.name));
         }
         match rules.feature {
-            Some(feature) if !self.is_active(feature) => {
+            Some(feature) if !self.is_feature_active(feature) => {
                 Err(SessionError::FeatureNotActive(feature))
             }
             _ => Ok(()),
         }
+    }
+
+    /// Says whether the session carries activity the user can see, such
+    /// as a focused window or a running transfer or call. A pinging side
+    /// then pings on the active interval of its [`PingSchedule`], starting
+    /// with a `Ping` right away, and otherwise on the idle one. Sessions
+    /// start idle.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SessionError::Ended`] once the session is over, and on
+    /// framing or I/O errors.
+    pub async fn set_active(&mut self, active: bool) -> Result<(), SessionError> {
+        if self.ended {
+            return Err(SessionError::Ended);
+        }
+        if self.liveness.set_active(active, Instant::now()) {
+            self.queue_ping()?;
+            self.flush().await?;
+        }
+        Ok(())
+    }
+
+    /// Whether the session carries activity the user can see, as last set
+    /// with [`Session::set_active`].
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.liveness.is_active()
     }
 
     /// Sends a `Ping` now. Its `Pong` comes out of [`Session::next_event`]
@@ -922,7 +964,7 @@ where
     ///
     /// # Errors
     ///
-    /// Fails with [`SessionError::IdleTimeout`] when the peer goes silent,
+    /// Fails with [`SessionError::PeerSilent`] when the peer goes silent,
     /// on protocol violations ([`SessionError::OutOfOrder`],
     /// [`SessionError::UnexpectedHello`], undecodable frames), and on I/O
     /// errors. On a protocol violation the session first queues a `Goodbye`
@@ -981,12 +1023,12 @@ where
     ///
     /// Cancel safe: everything after an `await` point is synchronous.
     async fn step(&mut self) -> Result<(), SessionError> {
-        let idle_deadline = self.last_received + self.idle_timeout;
+        let silence_deadline = self.liveness.deadline();
         let request_deadline = self.pending.values().map(|pending| pending.deadline).min();
         tokio::select! {
             io = poll_fn(|cx| poll_io(&mut self.framed, &mut self.unflushed, cx)) => match io {
                 Io::Frame(envelope) => {
-                    self.last_received = Instant::now();
+                    self.liveness.received(Instant::now());
                     match self.handle(envelope) {
                         Ok(()) => Ok(()),
                         Err(err) => Err(self.fail(err)),
@@ -999,9 +1041,9 @@ where
                 }
                 Io::ReadFailed(err) | Io::WriteFailed(err) => Err(self.fail(err.into())),
             },
-            _ = self.ping_timer.tick() => self.queue_ping(),
-            () = time::sleep_until(idle_deadline) => {
-                Err(self.fail(SessionError::IdleTimeout(self.idle_timeout)))
+            () = self.liveness.next_ping() => self.queue_ping(),
+            () = time::sleep_until(silence_deadline) => {
+                Err(self.fail(SessionError::PeerSilent(self.liveness.limit())))
             }
             () = sleep_until(request_deadline) => {
                 self.expire_requests();
@@ -1127,7 +1169,7 @@ where
     /// Handles a request from the peer.
     fn on_request(&mut self, seq: u64, payload: Payload, rules: Rules) -> Result<(), SessionError> {
         if let Some(feature) = rules.feature
-            && !self.is_active(feature)
+            && !self.is_feature_active(feature)
         {
             let detail = format!("{feature} is not active in this session");
             return self.queue_error_reply(seq, ErrorCode::Unsupported, &detail);
@@ -1207,7 +1249,7 @@ where
             }
             _ if rules
                 .feature
-                .is_some_and(|feature| !self.is_active(feature)) =>
+                .is_some_and(|feature| !self.is_feature_active(feature)) =>
             {
                 debug!(seq, rules.name, "ignoring a message of an inactive feature");
             }
@@ -1220,7 +1262,7 @@ where
     }
 
     /// Whether `feature` is active: both devices listed it in their Hello.
-    fn is_active(&self, feature: Feature) -> bool {
+    fn is_feature_active(&self, feature: Feature) -> bool {
         self.local.features.contains(&feature) && self.peer.features.contains(&feature)
     }
 

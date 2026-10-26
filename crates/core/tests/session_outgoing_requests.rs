@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use link2linux_core::session::{Reply, RequestError};
+use link2linux_core::session::{PingSchedule, Reply, RequestError};
 use link2linux_core::{Feature, Session, SessionConfig, SessionError, SessionEvent};
 use link2linux_protocol::v1::{
     Ack, ErrorCode, ErrorReply, Goodbye, GoodbyeReason, ImageData, ImageRequest,
@@ -42,9 +42,13 @@ fn batch(more: bool) -> Payload {
 /// that stay out of the way of the request timeout. The phone's
 /// `FeatureStatus` has seq 2, so its next frame has seq 3.
 async fn notifying() -> (Session<DuplexStream>, RawPeer) {
+    let rare = Duration::from_secs(600);
     let config = SessionConfig {
-        ping_interval: Duration::from_secs(600),
-        idle_timeout: Duration::from_secs(1800),
+        ping: Some(PingSchedule {
+            active: rare,
+            idle: rare,
+            missed: 3,
+        }),
         ..SessionConfig::default()
     };
     let (mut session, mut peer) = connected_to(notifying_phone_hello(), config).await;
