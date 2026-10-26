@@ -45,6 +45,20 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "rpm", "appimage"],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/firewalld/services/link2linux.xml": "../packaging/linux/firewalld/link2linux.xml",
+          "/etc/ufw/applications.d/link2linux": "../packaging/linux/ufw/link2linux"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/lib/firewalld/services/link2linux.xml": "../packaging/linux/firewalld/link2linux.xml",
+          "/etc/ufw/applications.d/link2linux": "../packaging/linux/ufw/link2linux"
+        }
+      }
+    },
     "category": "Utility",
     "shortDescription": "Connect your Android phone to your Linux desktop",
     "longDescription": "See your phone's notifications, messages and calls, browse photos, share files and the clipboard, and view the phone's screen from your desktop, over your local network.",
