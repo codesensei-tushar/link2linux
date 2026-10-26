@@ -72,4 +72,10 @@ class InMemoryPairedDeviceRepository @Inject constructor() : PairedDeviceReposit
     override suspend fun forget(fingerprint: KeyFingerprint) = devices.update { current ->
         current.filterNot { it.fingerprint == fingerprint }
     }
+
+    // In one step, as on disk: read then save could bring back a record forgotten in between.
+    override suspend fun update(fingerprint: KeyFingerprint, change: (PairedDevice) -> PairedDevice) = devices.update { current ->
+        val old = current.firstOrNull { it.fingerprint == fingerprint } ?: return@update current
+        current.filter { it !== old }.saving(change(old))
+    }
 }
