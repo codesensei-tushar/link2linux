@@ -489,6 +489,21 @@ async fn the_phone_refuses_a_desktop_it_did_not_pin() {
 }
 
 #[tokio::test]
+async fn an_alert_during_the_handshake_is_no_refusal() {
+    let desktop = Desktop::new();
+    let paired = Identity::generate().unwrap().fingerprint();
+    // Whoever holds the phone's old address answers in plaintext.
+    let phone = TestPhone::bind(LOCALHOST, "phone-1").await;
+
+    let (dialed, forged) = tokio::join!(
+        desktop.dialer.dial(phone.addr(), PeerPin::from(paired)),
+        phone.forge_refusal()
+    );
+    forged.unwrap();
+    assert!(matches!(dialed, Err(TransportError::Tls(_))), "{dialed:?}");
+}
+
+#[tokio::test]
 async fn the_desktop_requires_the_alpn_protocol() {
     let desktop = Desktop::new();
     let phone = TestPhone::bind(LOCALHOST, "phone-1").await;

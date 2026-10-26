@@ -1,7 +1,8 @@
 //! The runtime against a stand-in phone over real TLS on the loopback
 //! interface: pairing by QR code, reconnecting as a paired phone,
-//! mirroring a notification to the desktop and dismissing it again, and
-//! unpairing.
+//! mirroring a notification to the desktop and dismissing it again,
+//! unpairing, and telling the phone's refusal of this desktop's key from a
+//! forged one.
 
 #[path = "../../core/tests/support/mod.rs"]
 mod support;
@@ -282,6 +283,29 @@ async fn phone_session(
         .unwrap()
 }
 
+/// Pairs the stand-in phone and runs one session, in which the desktop
+/// confirms the record. The phone then ends it as a restarting phone does.
+async fn pair_and_confirm(rig: &Rig, phone: &Arc<TestPhone>) -> CertificateFingerprint {
+    let (desktop, _) = pair(rig, phone).await;
+    let mut session = phone_session(phone, desktop).await;
+    // The desktop asks for the notifications once the phone's
+    // FeatureStatus is in, and confirms the record right after.
+    loop {
+        if let SessionEvent::Request {
+            payload: Payload::NotificationSyncRequest(_),
+            ..
+        } = next_event(&mut session).await
+        {
+            break;
+        }
+    }
+    session
+        .goodbye(GoodbyeReason::Shutdown, "restarting")
+        .await
+        .unwrap();
+    desktop
+}
+
 async fn next_event(session: &mut Session<TlsStream<TcpStream>>) -> SessionEvent {
     tokio::time::timeout(WAIT, session.next_event())
         .await
@@ -526,6 +550,61 @@ async fn a_phone_pairs_by_comparing_codes_and_a_wrong_answer_costs_an_attempt() 
         shown,
         "both screens show one code"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_alert_from_whoever_holds_the_address_keeps_the_pairing() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "phone-3").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+
+    // The next dials reach a host that answers with a plaintext alert. Each
+    // is an ordinary failed attempt, after which the desktop dials again.
+    for _ in 0..2 {
+        tokio::time::timeout(WAIT, phone.forge_refusal())
+            .await
+            .expect("the desktop dials again")
+            .unwrap();
+    }
+    let listed = rig.runtime.devices();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].status, DeviceStatus::Reconnecting);
+
+    // The phone itself still gets a session.
+    rig.runtime.reconnect("phone-3");
+    phone_session(&phone, desktop).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_that_refuses_the_key_after_the_handshake_removed_the_pairing() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "phone-4").await);
+    pair_and_confirm(&rig, &phone).await;
+
+    // The phone forgot this desktop: its TLS stack refuses the key once the
+    // handshake has checked the phone's.
+    let stranger = Identity::generate().unwrap().fingerprint();
+    assert!(phone.accept(PhoneTls::pinned(stranger)).await.is_err());
+    let devices = rig
+        .events
+        .devices_where(|devices| devices.iter().any(|d| d.status == DeviceStatus::Revoked))
+        .await;
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].id, "phone-4");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unfinished_pairing_the_phone_refuses_is_deleted() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "phone-5").await);
+    // The phone ended the pairing connection before storing the pairing,
+    // so the record stays unconfirmed.
+    pair(&rig, &phone).await;
+
+    let stranger = Identity::generate().unwrap().fingerprint();
+    assert!(phone.accept(PhoneTls::pinned(stranger)).await.is_err());
+    rig.events.devices_where(<[Device]>::is_empty).await;
+    assert!(rig.runtime.devices().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

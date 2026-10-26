@@ -673,7 +673,11 @@ phone's first `FeatureStatus` arrives, which the phone sends only after
 storing the pairing. When the phone rejects the desktop's certificate on a
 later dial, the desktop deletes an unconfirmed record and asks the user to
 pair again; for a confirmed record, it tells the user that the phone
-removed the pairing.
+removed the pairing. In TLS 1.3 that refusal arrives after the handshake,
+as an alert on the first read, encrypted with keys of a handshake that
+checked the phone's key. An alert during the handshake is unauthenticated,
+since anyone who answers at the address can send it, so the desktop treats
+it as an ordinary failed dial.
 
 ### The phone's TLS stack
 

@@ -247,6 +247,11 @@ impl Connector for TlsDialer {
 
 /// Maps a failed handshake to an error, naming the key when the pin
 /// refused it.
+///
+/// A certificate alert here is never [`TransportError::RejectedByPeer`]:
+/// nothing the handshake received so far is authenticated, so anyone who
+/// answers at the address can send one, in plaintext. The phone's real
+/// refusal arrives after the handshake.
 fn handshake_error(error: io::Error, verifier: &PinningVerifier) -> TransportError {
     let pin_refused = error
         .get_ref()
@@ -259,7 +264,12 @@ fn handshake_error(error: io::Error, verifier: &PinningVerifier) -> TransportErr
         });
     match verifier.presented() {
         Some(fingerprint) if pin_refused => TransportError::Untrusted(fingerprint),
-        _ => TransportError::from(error),
+        _ => match TransportError::from(error) {
+            TransportError::RejectedByPeer(alert) => {
+                TransportError::Tls(format!("received a {alert} alert during the handshake"))
+            }
+            other => other,
+        },
     }
 }
 

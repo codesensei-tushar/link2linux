@@ -261,9 +261,6 @@ impl Supervisor {
         let now = Instant::now();
         let (connection, address) = match dialed {
             Ok(winner) => winner,
-            Err(error) if error.is_rejected_by_peer() => {
-                return self.rejected(&record.fingerprint);
-            }
             Err(error) => {
                 tracing::debug!(%error, phone = %record.name, "dial attempt failed");
                 self.reconnector.attempt_failed(now);
@@ -290,6 +287,9 @@ impl Supervisor {
                     .session_ended(now, SessionEnd::VersionMismatch);
                 Attempt::Failed
             }
+            // Only a refusal after a handshake that checked the phone's key
+            // counts: one during the dial is unauthenticated.
+            Err(error) if error.is_rejected_by_peer() => self.rejected(&record.fingerprint),
             Err(error) => {
                 tracing::debug!(%error, phone = %record.name, "handshake failed");
                 self.reconnector.attempt_failed(now);
@@ -298,7 +298,8 @@ impl Supervisor {
         }
     }
 
-    /// The phone refused this computer's certificate.
+    /// The phone refused this computer's certificate on the first read of
+    /// a connection to its pinned key.
     fn rejected(&mut self, fingerprint: &CertificateFingerprint) -> Attempt {
         let outcome = records::certificate_rejected(&mut *lock(&self.core.store), fingerprint);
         match outcome {

@@ -202,10 +202,12 @@ pub enum Rejection {
     RemovedByPhone(PairedDevice),
 }
 
-/// Handles a dial to a paired phone that refused this desktop's
-/// certificate ([`TransportError::RejectedByPeer`]).
+/// Handles a connection to a paired phone that refused this desktop's
+/// certificate after the handshake checked the phone's key
+/// ([`SessionError::is_rejected_by_peer`]). Never call it for an alert
+/// during the handshake, which anyone can send.
 ///
-/// [`TransportError::RejectedByPeer`]: crate::transport::TransportError::RejectedByPeer
+/// [`SessionError::is_rejected_by_peer`]: crate::session::SessionError::is_rejected_by_peer
 ///
 /// # Errors
 ///

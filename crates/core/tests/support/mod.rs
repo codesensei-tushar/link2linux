@@ -314,6 +314,22 @@ impl TestPhone {
         })
     }
 
+    /// Accepts one connection and answers its ClientHello with a plaintext
+    /// fatal `bad_certificate` alert. Anyone who holds the phone's address
+    /// can send that: it needs no key.
+    pub async fn forge_refusal(&self) -> io::Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut tcp, _) = self.listener.accept().await?;
+        let mut buffer = [0; 1024];
+        let _ = tcp.read(&mut buffer).await?;
+        tcp.write_all(&[0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x2a])
+            .await?;
+        // Until the desktop hangs up, so the alert is not lost to a reset.
+        while tcp.read(&mut buffer).await.is_ok_and(|read| read > 0) {}
+        Ok(())
+    }
+
     pub fn hello(&self) -> Hello {
         hello(
             &self.id,
