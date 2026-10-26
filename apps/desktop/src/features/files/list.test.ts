@@ -72,6 +72,10 @@ describe("wording", () => {
     expect(
       statusText(testTransfer({ status: { kind: "failed", reason: "damaged" } }), "Pixel"),
     ).toBe("A file arrived damaged, so it was deleted");
+    const failed = (reason: "disabledHere" | "tooManyUnfinished") =>
+      statusText(testTransfer({ status: { kind: "failed", reason } }), "Pixel");
+    expect(failed("disabledHere")).toBe("Files are turned off on this computer");
+    expect(failed("tooManyUnfinished")).toContain("Too many unfinished transfers from Pixel");
   });
 });
 
@@ -84,6 +88,12 @@ describe("nextRate", () => {
     expect(second.perSecond).toBe(1_000_000);
     expect(nextRate(second, 1_500_000, 3_000).perSecond).toBe(750_000);
     expect(nextRate(second, 10, 3_000).perSecond).toBeNull();
+  });
+
+  it("starts over when the samples are far apart", () => {
+    const before = { at: 1_000, done: 1_000, perSecond: 2_000 };
+    expect(nextRate(before, 3_000, 3_000).perSecond).toBe(1_500);
+    expect(nextRate(before, 2_000, 21_000)).toEqual({ at: 21_000, done: 2_000, perSecond: null });
   });
 });
 

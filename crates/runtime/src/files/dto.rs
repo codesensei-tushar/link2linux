@@ -26,6 +26,8 @@ pub enum TransferDirection {
 pub enum TransferFailure {
     /// Files are turned off on the phone.
     Disabled,
+    /// Files are turned off on this computer.
+    DisabledHere,
     /// The phone needs a permission before it can save files.
     PermissionRequired,
     /// The receiving device has no room for the files.
@@ -44,6 +46,8 @@ pub enum TransferFailure {
     WriteFailed,
     /// The phone stayed away for more than an hour.
     Expired,
+    /// An unfinished transfer was ended to make room for newer ones.
+    TooManyUnfinished,
 }
 
 /// Where a transfer stands.
@@ -189,6 +193,7 @@ fn failure(failure: Failure) -> TransferFailure {
     use TransferFailure as F;
     match failure {
         Failure::Disabled => F::Disabled,
+        Failure::DisabledHere => F::DisabledHere,
         Failure::PermissionRequired => F::PermissionRequired,
         Failure::NoSpace => F::NoSpace,
         Failure::Unreadable => F::Unreadable,
@@ -197,6 +202,7 @@ fn failure(failure: Failure) -> TransferFailure {
         Failure::Invalid => F::Invalid,
         Failure::WriteFailed => F::WriteFailed,
         Failure::Expired => F::Expired,
+        Failure::TooManyUnfinished => F::TooManyUnfinished,
         // A reason added later reads as a refusal until it has its own.
         _ => F::Refused,
     }

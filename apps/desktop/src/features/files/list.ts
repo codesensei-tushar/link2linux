@@ -62,6 +62,8 @@ export function failureText(
   switch (reason) {
     case "disabled":
       return `Files are turned off on ${phoneName}`;
+    case "disabledHere":
+      return "Files are turned off on this computer";
     case "permissionRequired":
       return `${phoneName} needs permission to save files`;
     case "noSpace":
@@ -82,6 +84,8 @@ export function failureText(
       return "A file couldn't be saved";
     case "expired":
       return `${phoneName} didn't reconnect within an hour`;
+    case "tooManyUnfinished":
+      return `Too many unfinished transfers from ${phoneName}, so this one was dropped`;
   }
 }
 
@@ -129,6 +133,8 @@ const MIN_SPAN_MS = 500;
 export function nextRate(previous: Rate | undefined, done: number, now: number): Rate {
   if (!previous || done < previous.done) return { at: now, done, perSecond: null };
   const span = now - previous.at;
+  // After a stall the bytes of the gap are not a speed: measure afresh.
+  if (span > STALE_MS) return { at: now, done, perSecond: null };
   if (span < MIN_SPAN_MS) return previous;
   const measured = ((done - previous.done) / span) * 1000;
   const perSecond =

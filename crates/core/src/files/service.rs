@@ -144,6 +144,9 @@ pub struct FileService {
     /// waited because the phone had files turned off, not because it was
     /// away.
     in_session: bool,
+    /// Why the feature was last not ready in a session: which side was not,
+    /// as the reason a send that expired while waiting gets.
+    not_ready: Failure,
     /// The requests of chunks of this session that got no answer in time.
     /// The phone may still hold them unanswered, and a late answer never
     /// reaches this service, so they count against the window until the
@@ -177,6 +180,7 @@ impl FileService {
             cancels: Vec::new(),
             ready: false,
             in_session: false,
+            not_ready: Failure::Expired,
             lost_chunks: Vec::new(),
             declined: HashMap::new(),
             completed: HashMap::new(),
@@ -355,10 +359,12 @@ impl FileService {
         self.set_ready(session.is_ready(Feature::Files), now);
         self.expire(now).await;
         if !self.ready {
+            self.not_ready = not_ready_reason(session);
             if refusal(session).is_some() {
                 self.end_running_incoming(now).await;
             }
             self.pause_all(TransferState::Waiting, now);
+            self.share_remaining();
             return Ok(());
         }
         // Each cancel stays until it is on its way.
@@ -372,6 +378,7 @@ impl FileService {
         }
         self.offer_waiting(session, now)?;
         self.pump(session).await?;
+        self.share_remaining();
         Ok(())
     }
 
@@ -397,6 +404,7 @@ impl FileService {
         self.pending.clear();
         self.lost_chunks.clear();
         self.pause_all(TransferState::Interrupted, Instant::now());
+        self.share_remaining();
         // A new session gets a new chance, and a busy phone may be asked
         // at once.
         for transfer in &mut self.outgoing {
@@ -446,12 +454,13 @@ impl FileService {
             .iter()
             .map(|t| self.kept(t) && now >= t.since + KEEP_UNFINISHED)
             .collect();
-        let in_session = self.in_session;
+        let (in_session, not_ready) = (self.in_session, self.not_ready);
         for (transfer, expired) in self.outgoing.iter_mut().zip(expired) {
             if expired {
-                // The phone is here but has files off, or it was away.
+                // With a session up, files were off on one side or the
+                // phone needed a permission; otherwise the phone was away.
                 let failure = if in_session && transfer.state == TransferState::Waiting {
-                    Failure::Disabled
+                    not_ready
                 } else {
                     Failure::Expired
                 };
@@ -513,9 +522,13 @@ impl FileService {
     /// [`FileService::run`] does, so a `FeatureStatus` that makes the
     /// feature ready starts the waiting transfers; it is returned too.
     ///
-    /// Dropped partway, it loses no file: the phone's chunk then gets no
-    /// answer and comes again, and a received file whose running hash went
-    /// with the dropped call gets it back from its bytes on disk.
+    /// Dropping it partway is safe except while a received file's last
+    /// chunk is being published (its final check and rename into the
+    /// directory): then the file may be in place while its transfer still
+    /// expects the chunk, and the transfer fails when the phone offers it
+    /// again. Before that, the phone's chunk gets no answer and comes again,
+    /// and a received file whose running hash went with the dropped call
+    /// gets it back from its bytes on disk.
     ///
     /// # Errors
     ///
@@ -666,14 +679,20 @@ impl FileService {
         // The bytes still to come of every transfer accepted before, also of
         // those kept for the phone to resume and of the other phones'
         // transfers into the same directory, count too.
-        let accepted = self
-            .remaining_bytes()
-            .saturating_add(self.shared.others(&self.mine));
-        let needed = offer
+        let offered = offer
             .files
             .iter()
             .map(|file| file.size)
-            .chain([accepted])
+            .fold(0, u64::saturating_add);
+        let before = self.remaining_bytes();
+        // Reserve the offer's bytes for the other services to see before
+        // looking at theirs and awaiting the free space: two offers at the
+        // same moment then each see the other, and cannot both fill the
+        // disk. A refusal takes the reservation back.
+        self.mine
+            .store(before.saturating_add(offered), Ordering::Relaxed);
+        let needed = [offered, before, self.shared.others(&self.mine)]
+            .into_iter()
             .fold(SPARE_SPACE, u64::saturating_add);
         let (dir, free_space) = (self.dir.clone(), self.free_space.clone());
         let free = blocking(move || {
@@ -684,10 +703,12 @@ impl FileService {
         match free {
             Err(e) => {
                 tracing::warn!(error = %e, "cannot make the directory for received files");
+                self.share_remaining();
                 return error(ErrorCode::Internal, "cannot save files");
             }
             Ok(Ok(free)) if free < needed => {
                 tracing::info!(free, needed, "no room for the files the phone offers");
+                self.share_remaining();
                 return error(ErrorCode::NoSpace, "the files do not fit");
             }
             Ok(Ok(_)) => {}
@@ -1066,7 +1087,7 @@ impl FileService {
                 return;
             };
             transfer.discard().await;
-            transfer.state = TransferState::Failed(Failure::Expired);
+            transfer.state = TransferState::Failed(Failure::TooManyUnfinished);
             let view = transfer.view();
             tracing::info!(transfer = %view.id, "too many transfers kept: ended the oldest");
             self.publish(TransferEvent::Changed(view));
@@ -1175,6 +1196,29 @@ where
             }))
         }
         _ => Some(error(ErrorCode::Disabled, "files are turned off")),
+    }
+}
+
+/// Why the feature is not ready in `session`, as a failure for a send that
+/// waits: files are off on this computer, or the phone has them off or
+/// needs a permission. Anything else counts as the phone being away.
+fn not_ready_reason<S>(session: &Session<S>) -> Failure
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if !matches!(
+        session.availability().get(&Feature::Files),
+        Some(Availability::Ready)
+    ) {
+        return Failure::DisabledHere;
+    }
+    match session
+        .peer_availability()
+        .and_then(|states| states.get(&Feature::Files))
+    {
+        Some(Availability::Disabled) => Failure::Disabled,
+        Some(Availability::PermissionRequired(_)) => Failure::PermissionRequired,
+        _ => Failure::Expired,
     }
 }
 

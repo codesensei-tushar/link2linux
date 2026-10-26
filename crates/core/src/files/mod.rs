@@ -168,6 +168,8 @@ impl TransferState {
 pub enum Failure {
     /// The phone has the feature turned off.
     Disabled,
+    /// The feature is turned off on this computer.
+    DisabledHere,
     /// The phone needs a permission before it can save files.
     PermissionRequired,
     /// The receiving device has no room for the files.
@@ -186,6 +188,9 @@ pub enum Failure {
     WriteFailed,
     /// The phone stayed away for longer than [`KEEP_UNFINISHED`].
     Expired,
+    /// An unfinished transfer from the phone was ended to make room for a
+    /// new one: there are too many.
+    TooManyUnfinished,
 }
 
 /// One file of a transfer.
