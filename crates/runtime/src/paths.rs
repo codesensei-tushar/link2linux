@@ -81,6 +81,12 @@ impl DataDir {
         self.root.join("device-id")
     }
 
+    /// The pictures phones shared with notifications, one folder per phone.
+    #[must_use]
+    pub fn images(&self) -> PathBuf {
+        self.root.join("images")
+    }
+
     /// Creates the directory, readable only by the user.
     ///
     /// # Errors
