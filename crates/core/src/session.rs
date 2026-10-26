@@ -245,6 +245,9 @@ pub enum SessionEvent {
     /// The peer ended the session with a `Goodbye`. It is the last event:
     /// [`Session::next_event`] returns `Ok(None)` from then on.
     Goodbye(PeerGoodbye),
+    /// The frames waiting to be written fell to the length given to
+    /// [`Session::wake_when_drained`].
+    Drained,
 }
 
 impl SessionEvent {
@@ -263,6 +266,7 @@ impl SessionEvent {
             Self::Presence(_) => "PresenceUpdate",
             Self::Pong { .. } => "Pong",
             Self::Goodbye(_) => "Goodbye",
+            Self::Drained => "Drained",
         }
     }
 }
@@ -430,6 +434,8 @@ pub struct Session<S> {
     peer_error: Option<ErrorReply>,
     /// Whether frames were queued since the last completed flush.
     unflushed: bool,
+    /// The queued length at which to report [`SessionEvent::Drained`].
+    drain_mark: Option<usize>,
     /// Whether the session is over: a `Goodbye` went either way, the peer
     /// closed the stream, or the session failed.
     ended: bool,
@@ -565,6 +571,7 @@ where
             events: VecDeque::new(),
             peer_error: None,
             unflushed: false,
+            drain_mark: None,
             ended: false,
         };
         if !session.pairing {
@@ -728,6 +735,20 @@ where
         self.ended
     }
 
+    /// How many bytes of frames wait to be written to the peer.
+    #[must_use]
+    pub fn queued_len(&self) -> usize {
+        self.framed.write_buffer().len()
+    }
+
+    /// Asks for one [`SessionEvent::Drained`] once at most `len` bytes of
+    /// frames wait to be written, so that a side that stopped queueing
+    /// bulk data at some [`Session::queued_len`] knows when to go on. A
+    /// later call replaces the mark.
+    pub fn wake_when_drained(&mut self, len: usize) {
+        self.drain_mark = Some(len);
+    }
+
     /// Sends a one-way message and returns its sequence number.
     ///
     /// The message is numbered and queued before the first `await`, so if
@@ -803,6 +824,26 @@ where
     /// for one that is not ready on both devices, with [`SessionError::Ended`] once the
     /// session is over, and on framing or I/O errors.
     pub async fn start_request(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        let seq = self.queue_request(payload)?;
+        self.flush().await?;
+        Ok(seq)
+    }
+
+    /// Like [`Session::start_request`], but without waiting for the request
+    /// to be written: it goes out while [`Session::next_event`] waits for
+    /// frames, as answers do.
+    ///
+    /// This is for bulk data, such as file chunks. Writing a large frame can
+    /// wait for the peer to read, and a peer that writes bulk data too may
+    /// only read once this side reads; so a side that waited for its own
+    /// writes before reading again could wait forever. Keep
+    /// [`Session::queued_len`] low: the session stops reading while more
+    /// than 1 MiB waits to be written.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Session::start_request`], except that writing happens later.
+    pub fn queue_request(&mut self, payload: Payload) -> Result<u64, SessionError> {
         let rules = rules::of(&payload);
         let Kind::Request(expects) = rules.kind else {
             return Err(SessionError::NotAllowed(rules.name));
@@ -820,7 +861,6 @@ where
         })?;
         let deadline = Instant::now() + self.request_timeout;
         self.pending.insert(seq, Pending { expects, deadline });
-        self.flush().await?;
         Ok(seq)
     }
 
@@ -885,7 +925,20 @@ where
     /// answer, with [`SessionError::NoSuchRequest`] when the peer has not
     /// sent `request` yet, with [`SessionError::Ended`] once the session is
     /// over, and on framing or I/O errors.
-    pub async fn reply(&mut self, request: u64, mut payload: Payload) -> Result<u64, SessionError> {
+    pub async fn reply(&mut self, request: u64, payload: Payload) -> Result<u64, SessionError> {
+        let seq = self.queue_reply(request, payload)?;
+        self.flush().await?;
+        Ok(seq)
+    }
+
+    /// Like [`Session::reply`], but without waiting for the answer to be
+    /// written: it goes out while [`Session::next_event`] waits for frames.
+    /// See [`Session::queue_request`] for why.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Session::reply`], except that writing happens later.
+    pub fn queue_reply(&mut self, request: u64, mut payload: Payload) -> Result<u64, SessionError> {
         let rules = rules::of(&payload);
         if rules.kind != Kind::Reply {
             return Err(SessionError::NotAllowed(rules.name));
@@ -899,13 +952,11 @@ where
         if let Payload::ErrorReply(error) = &mut payload {
             truncate_detail(&mut error.detail);
         }
-        let seq = self.enqueue_envelope(Envelope {
+        self.enqueue_envelope(Envelope {
             reply_to: request,
             payload: Some(payload),
             ..Envelope::default()
-        })?;
-        self.flush().await?;
-        Ok(seq)
+        })
     }
 
     /// Answers the peer's request `request` with `Ack`. See
@@ -1073,8 +1124,14 @@ where
     async fn step(&mut self) -> Result<(), SessionError> {
         let silence_deadline = self.liveness.deadline();
         let request_deadline = self.pending.values().map(|pending| pending.deadline).min();
+        let drain_mark = self.drain_mark;
         tokio::select! {
-            io = poll_fn(|cx| poll_io(&mut self.framed, &mut self.unflushed, cx)) => match io {
+            io = poll_fn(|cx| poll_io(&mut self.framed, &mut self.unflushed, drain_mark, cx)) => match io {
+                Io::Drained => {
+                    self.drain_mark = None;
+                    self.events.push_back(SessionEvent::Drained);
+                    Ok(())
+                }
                 Io::Frame(envelope) => {
                     self.liveness.received(Instant::now());
                     match self.handle(envelope) {
@@ -1432,14 +1489,18 @@ enum Io {
     ReadFailed(FrameError),
     /// Writing queued frames failed.
     WriteFailed(FrameError),
+    /// At most the drain mark's bytes wait to be written.
+    Drained,
 }
 
 /// Writes queued frames while waiting for the next incoming one, so a slow
 /// write never stops the session from reading, unless more than
-/// [`MAX_QUEUED_LEN`] bytes wait to be written.
+/// [`MAX_QUEUED_LEN`] bytes wait to be written. Reports when at most
+/// `drain_mark` bytes wait.
 fn poll_io<S>(
     framed: &mut Framed<S, EnvelopeCodec>,
     unflushed: &mut bool,
+    drain_mark: Option<usize>,
     cx: &mut Context<'_>,
 ) -> Poll<Io>
 where
@@ -1447,6 +1508,9 @@ where
 {
     if let Poll::Ready(Err(err)) = poll_flush(framed, unflushed, cx) {
         return Poll::Ready(Io::WriteFailed(err));
+    }
+    if drain_mark.is_some_and(|mark| framed.write_buffer().len() <= mark) {
+        return Poll::Ready(Io::Drained);
     }
     // The flush is pending, so it wakes this task once the peer reads.
     if framed.write_buffer().len() > MAX_QUEUED_LEN {
