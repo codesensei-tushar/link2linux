@@ -90,6 +90,11 @@ impl TlsDialer {
     /// Connects to `addr` and runs the TLS handshake, accepting the phone's
     /// key only if `pin` does.
     ///
+    /// The dialer trusts the caller with the address: one taken from an
+    /// mDNS record or a beacon must first pass
+    /// [`is_on_link`](crate::discovery::is_on_link); one the user typed is
+    /// dialed as given.
+    ///
     /// # Errors
     ///
     /// Fails with [`TransportError::Timeout`] when the TCP connection or the
