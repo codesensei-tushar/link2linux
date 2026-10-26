@@ -25,6 +25,7 @@ const FEATURE_STATUS: u32 = 14;
 const IMAGE_DATA: u32 = 18;
 const NOTIFICATION_SYNC_BATCH: u32 = 101;
 const NOTIFICATION_POSTED: u32 = 102;
+const FILE_OFFER: u32 = 300;
 
 /// A repeated field and the most entries a frame may hold.
 #[derive(Debug, Clone, Copy)]
@@ -80,6 +81,11 @@ const REPLY_CHOICES: Limit = Limit {
     max: 16,
 };
 
+const FILES: Limit = Limit {
+    field: "FileOffer.files",
+    max: 500,
+};
+
 /// Entries counted over a whole frame.
 #[derive(Debug, Default)]
 struct Totals {
@@ -87,6 +93,7 @@ struct Totals {
     feature_states: usize,
     notifications: usize,
     removed_keys: usize,
+    files: usize,
 }
 
 /// Checks the frame body `body` (one serialized `Envelope`) before it is
@@ -111,6 +118,7 @@ pub(crate) fn check(body: &[u8], max_message_len: usize) -> Result<(), FrameErro
             1 => notification(value, &mut totals.notifications),
             _ => Ok(()),
         }),
+        FILE_OFFER => count(contents, 3, FILES, &mut totals.files),
         _ => Ok(()),
     })?;
     let len = body.len() - image_len;
@@ -198,8 +206,8 @@ mod tests {
 
     use super::*;
     use crate::v1::{
-        FeatureState, FeatureStatus, ImageData, NotificationAction, NotificationPosted,
-        NotificationSyncBatch, PhoneNotification,
+        FeatureState, FeatureStatus, FileInfo, FileOffer, ImageData, NotificationAction,
+        NotificationPosted, NotificationSyncBatch, PhoneNotification,
     };
     use crate::{Envelope, Hello, Payload};
 
@@ -224,6 +232,13 @@ mod tests {
         Payload::NotificationPosted(NotificationPosted {
             notification: Some(notification),
             alert: true,
+        })
+    }
+
+    fn offer(files: usize) -> Payload {
+        Payload::FileOffer(FileOffer {
+            files: vec![FileInfo::default(); files],
+            ..FileOffer::default()
         })
     }
 
@@ -267,6 +282,7 @@ mod tests {
             batch.notifications = vec![full; 100];
         }
         checked(&frame(batch)).unwrap();
+        checked(&frame(offer(500))).unwrap();
     }
 
     #[test]
@@ -290,6 +306,7 @@ mod tests {
             too_many(checked(&frame(batch(101, 0)))),
             "PhoneNotification"
         );
+        assert_eq!(too_many(checked(&frame(offer(501)))), "FileOffer.files");
         assert_eq!(
             too_many(checked(&frame(batch(0, 1001)))),
             "NotificationSyncBatch.removed_keys"

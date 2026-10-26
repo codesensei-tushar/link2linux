@@ -4,6 +4,7 @@ package link2linux.v1;
 
 import "link2linux/v1/clipboard.proto";
 import "link2linux/v1/common.proto";
+import "link2linux/v1/files.proto";
 import "link2linux/v1/notifications.proto";
 import "link2linux/v1/pairing.proto";
 
@@ -57,6 +58,11 @@ message Envelope {
     NotificationRemoved notification_removed = 103;
     NotificationDismissRequest notification_dismiss_request = 104;
     NotificationActionRequest notification_action_request = 105;
+
+    FileOffer file_offer = 300;
+    FileAccept file_accept = 301;
+    FileChunk file_chunk = 302;
+    FileCancel file_cancel = 303;
 
     ClipboardPush clipboard_push = 350;
   }

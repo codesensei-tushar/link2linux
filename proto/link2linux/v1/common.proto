@@ -58,6 +58,10 @@ enum ErrorCode {
   // would open an app on the phone from the background. The user can do it
   // on the device itself. Retrying cannot help.
   ERROR_CODE_NOT_ALLOWED = 11;
+  // The receiving device does not have room for what the request would
+  // store there, such as the files of a transfer. Retrying cannot help until
+  // the user frees space.
+  ERROR_CODE_NO_SPACE = 12;
 }
 
 // A position in a collection's change log, kept by the device that follows

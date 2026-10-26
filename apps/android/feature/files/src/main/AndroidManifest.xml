@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Android 8 and 9 only: save received files in the public Download directory. Later
+         versions add them through MediaStore, which needs no permission. Asked for only when
+         the user turns files on. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <application>
+        <!-- "Send to computer" in the share sheet: shares that carry files, of any type.
+             Exported because the share sheet starts it; it reads only content: URIs of other
+             apps, with the grant that comes with the share. Off until the user turns files on
+             (FilesRuntime enables it). -->
+        <activity
+            android:name=".SendFilesActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/files_share_label"
+            android:theme="@style/Theme.L2l.ShareTarget">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Cancel on a transfer's notification; reached only through the app's PendingIntents. -->
+        <receiver
+            android:name=".TransferActionReceiver"
+            android:exported="false" />
+
+        <!-- Holds the read grants of shared files while their transfer may need them. -->
+        <service
+            android:name=".GrantHolderJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+    </application>
+</manifest>

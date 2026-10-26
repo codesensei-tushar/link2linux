@@ -23,6 +23,7 @@ no relay: the two devices talk to each other directly or not at all.
 - [Message patterns](#message-patterns)
 - [Errors](#errors)
 - [Notifications](#notifications)
+- [Files](#files)
 - [Clipboard](#clipboard)
 - [Security considerations](#security-considerations)
 - [Versioning](#versioning)
@@ -822,9 +823,9 @@ because the stream is out of sync.
 
 Senders SHOULD keep frames below 256 KiB, splitting large answers into
 batches, so that a `Ping` never waits long behind a bulk frame. Each side
-MUST keep reading frames while it writes: when both send bulk data, two
-sides that stop reading while they write block each other once the TCP
-buffers fill.
+MUST keep reading frames while it writes: when both send bulk data, such as
+files in both directions, two sides that stop reading while they write
+block each other once the TCP buffers fill.
 
 ### Connecting and reconnecting
 
@@ -981,9 +982,9 @@ after Hello and a new complete one whenever a state changes:
 | `UNAVAILABLE` | The device cannot offer it, e.g. a phone without telephony | Nothing, or "Not available" |
 
 A side only sends a feature's requests while the feature is active and
-`READY` on both sides. Version 1 defines one permission token,
-`notification-access` (the phone's notification listener access). Each
-feature section defines its own.
+`READY` on both sides. Version 1 defines two permission tokens,
+`notification-access` (the phone's notification listener access) and
+`storage` (see [Files](#files)). Each feature section defines its own.
 
 ### Sequence numbers
 
@@ -1112,7 +1113,7 @@ as dismissing a notification or sending a reply, go through a durable
    reconnect, with the same key, until an answer arrives.
 3. `Ack`, and errors that retrying cannot fix (`NOT_FOUND`,
    `UNSUPPORTED`, `INVALID_ARGUMENT`, `DECLINED`, `EXPIRED`,
-   `NOT_ALLOWED`), end the entry, and the user sees the outcome. `BUSY`, `UNAVAILABLE` and
+   `NOT_ALLOWED`, `NO_SPACE`), end the entry, and the user sees the outcome. `BUSY`, `UNAVAILABLE` and
    `INTERNAL` keep it for a retry with backoff; `DISABLED` and
    `PERMISSION_REQUIRED` keep it until the feature is `READY` again.
 4. Entries expire 1 hour after creation unless a feature says otherwise.
@@ -1158,6 +1159,7 @@ the receiver does not know counts as `INTERNAL`.
 | `DECLINED` | The user declined on the receiving device | No |
 | `INTERNAL` | Unexpected failure | With backoff, a few times |
 | `NOT_ALLOWED` | The receiving device's OS does not allow it from another device right now, for example an action that needs the phone unlocked; the user can do it on the device itself | No |
+| `NO_SPACE` | The receiving device has no room for what the request would store | No, not until the user frees space |
 
 `ErrorReply.detail` is English text for logs, at most 1 KiB. User-facing
 text comes from the code, never from `detail`.
@@ -1386,6 +1388,124 @@ messages, actions and reply choices, and actions whose `id` is over 256
 bytes, and treats a longer `key` or `group` as a protocol error. It also
 keeps at most 1000 notifications per phone, and ignores new ones past
 that.
+
+## Files
+
+Capability token `files`. The user sends files from one device to the
+other, in either direction. A **transfer** is the files the user sent
+together.
+
+The phone keeps the feature off until the user turns it on. On Android 8
+and 9 it also needs storage access to save what it receives, permission
+token `storage`, and reports `PERMISSION_REQUIRED` until the user grants
+it. Later Android versions need no permission.
+
+### Sending
+
+1. The sender names the transfer with 16 random bytes, `transfer_id`, and
+   sends `FileOffer` with its files. The receiver answers `FileAccept`,
+   which says where the bytes start: file 0, offset 0 for a new transfer.
+2. The sender sends the files' bytes in order, as `FileChunk` requests of
+   256 KiB, except for the last chunk of each file, each answered by `Ack`
+   once the receiver has written it. A receiver accepts any chunk of 1 byte
+   to 256 KiB that continues where it stands. A chunk starts where the previous chunk of the same file ended, and
+   each file starts after the previous one is complete. The sender may send
+   chunks before the earlier ones are answered, but at most 8 chunks are
+   unanswered per session, across all transfers, so the session's other
+   messages are never held up for long.
+3. The last chunk of each file carries the SHA-256 of the whole file. An
+   empty file is sent as one empty chunk with its hash.
+4. The transfer is complete when the last chunk of the last file has its
+   `Ack`.
+
+Another app on the phone can start the phone's share target directly, not
+only through the share sheet, so the phone asks the user to confirm which
+files go to which desktop before it offers them.
+
+The sender sends only while the feature is `READY` on both sides. When the
+peer's status leaves `READY`, it pauses its transfers and offers them again
+once the peer is `READY`, within the hour it keeps them. It SHOULD run at
+most 4 transfers to one peer at once and queue the rest.
+
+If a file cannot be read, or its size changes while it is being sent, the
+sender cancels the transfer and tells the user. An offer or chunk without
+an answer in time interrupts the transfer: the sender offers it again with
+the same `transfer_id` in the same session, and `FileAccept` says where to
+go on. After 3 unanswered requests in a row it stops sending in that
+session and resumes in the next one.
+
+Answers to an offer: after `BUSY` or `UNAVAILABLE` the sender tries again
+after `retry_after_ms`, or 5 seconds without one; after `INTERNAL` it tries
+again a few times with backoff. Any other error fails the transfer. Any
+error to a chunk ends the transfer. The sender sends no `FileCancel` for a
+transfer the receiver refused or ended this way.
+
+### Receiving
+
+- The receiver accepts every offer while the feature is `READY` on its
+  side; it does not ask the user first. It answers `DISABLED` while the
+  feature is off, `PERMISSION_REQUIRED` while it lacks `storage`,
+  `NO_SPACE` when the files do not fit with room to spare,
+  `INVALID_ARGUMENT` to an offer that breaks the limits, and `BUSY` while 4
+  transfers from the same peer are running.
+- Room to spare: the offer's bytes still to come, plus those of the
+  transfers it already accepted, must leave at least 64 MiB free.
+- `BUSY` counts the transfers running in a session with that peer. A
+  transfer kept only for resuming does not count, and an offer that resumes
+  a transfer the receiver knows is never answered `BUSY`.
+- It answers a chunk with `NOT_FOUND` when it does not know the transfer,
+  when the transfer is complete or cancelled, or when it was not offered
+  in the current session (after a reconnect the sender offers it again
+  before sending chunks); and with `INVALID_ARGUMENT` when the chunk does not continue where the
+  receiver stands or runs past the file's size. When a file's hash does not
+  match, it deletes the file and answers `INVALID_ARGUMENT`. Each of these
+  ends the transfer on the sender's side.
+- File names come from the other device and MUST NOT be used as paths. The
+  receiver keeps only the name, replaces characters its system cannot store
+  or display safely, and never overwrites a file: it picks a free name, such
+  as `photo (1).jpg`. It writes each file under a temporary name and gives
+  it its own name only once the hash matches. It never makes a received
+  file executable and never opens one by itself. `mime_type` is only a
+  hint: the receiver types a saved file by its name.
+- A receiver whose user turns the feature off ends its running transfers:
+  it answers `DISABLED` to their later chunks, and MAY send `FileCancel`.
+- The desktop saves files in the user's Downloads directory. The phone
+  saves them in its shared Downloads, through MediaStore on Android 10 and
+  later.
+- When a transfer ends, the receiver tells the user, with a way to open the
+  files or show them in their folder.
+
+### Resuming and cancelling
+
+- When the connection drops in the middle of a transfer, the sender keeps
+  the transfer for 1 hour and, once a session is up again, offers it with
+  the same `transfer_id` and the same files. The receiver keeps its partial
+  files for as long and answers `FileAccept` with the first byte it does not
+  have. When it already has every file, `file_index` equals the number of
+  files and the transfer is complete.
+- A repeated offer that does not match the receiver's record of the
+  transfer (other files, sizes or order) gets `INVALID_ARGUMENT`.
+- Either side can end a transfer with `FileCancel`. The receiver deletes the
+  files it has not finished and keeps the finished ones. Chunks the sender
+  had already sent get `NOT_FOUND`, which it ignores once it cancelled.
+- A receiver remembers the transfers its user cancelled for 1 hour, and
+  answers an offer that repeats one with `DECLINED`. When the user cancelled
+  while the sender was not connected, the receiver MAY send `FileCancel`
+  once a session with the sender is up again.
+- A receiver deletes the partial files of a transfer that was cancelled or
+  that it no longer keeps. It does not keep transfers across a restart of
+  its app, and removes leftover partial files when it starts.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| Files per offer | 1 to 500 |
+| `name` | 1 to 255 bytes |
+| `data` per chunk | 256 KiB |
+| Unanswered chunks | 8 per session |
+| Running transfers from one peer | 4 |
+| Unfinished transfers kept | 1 hour |
 
 ## Clipboard
 
@@ -1632,6 +1752,8 @@ The rules that matter most for security, gathered in one place:
    whose tag was accepted before.
 9. Check the hash of every received image before using it.
 10. Keep private keys and presence keys out of logs and backups.
+11. Never use a received file name as a path, and never let a received
+    file overwrite another file.
 
 ## Versioning
 
@@ -1678,4 +1800,8 @@ The rules that matter most for security, gathered in one place:
 | 103 | `NotificationRemoved` | phone to desktop | event |
 | 104 | `NotificationDismissRequest` | desktop to phone | outbox request: `Ack` |
 | 105 | `NotificationActionRequest` | desktop to phone | outbox request: `Ack` |
+| 300 | `FileOffer` | both | request: `FileAccept` |
+| 301 | `FileAccept` | both | reply |
+| 302 | `FileChunk` | both | request: `Ack` |
+| 303 | `FileCancel` | both | request: `Ack` |
 | 350 | `ClipboardPush` | both | request: `Ack` |
