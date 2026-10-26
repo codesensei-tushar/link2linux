@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use link2linux_core::clipboard::ClipboardSettings;
 use link2linux_core::files::TransferId;
@@ -332,6 +333,10 @@ impl Runtime {
             };
             if let Err(error) = done {
                 tracing::warn!(%error, "could not open a received file");
+                // The file stays reachable: offer its folder instead.
+                if !show && let Err(error) = opener.show_in_folder(&path).await {
+                    tracing::warn!(%error, "could not show a received file");
+                }
             }
         });
         Ok(())
@@ -395,6 +400,17 @@ impl Runtime {
     /// Ends every session with a `Goodbye` and stops all tasks.
     pub fn shutdown(&self) {
         self.core.cancel.cancel();
+    }
+
+    /// As [`Runtime::shutdown`], then blocks the calling thread, which must
+    /// not be one of the runtime's workers, until every phone's task has
+    /// finished (unfinished downloads deleted) or `limit` has passed.
+    pub fn shutdown_and_wait(&self, limit: Duration) {
+        self.shutdown();
+        let end = std::time::Instant::now() + limit;
+        while self.core.supervisors.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 

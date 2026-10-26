@@ -2,6 +2,7 @@
 //! reconnect policy says so, runs the session, and reports the state.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use link2linux_core::discovery::reconnect::{
@@ -90,6 +91,10 @@ pub(crate) async fn supervise(
         down_since: now,
     };
     supervisor.run(initial).await;
+    // The phone is unpaired or replaced, or the app is closing: its
+    // unfinished files go, as they would at the next start.
+    supervisor.features.files.discard_all().await;
+    supervisor.core.supervisors.fetch_sub(1, Ordering::SeqCst);
 }
 
 impl Supervisor {

@@ -2,14 +2,16 @@
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use link2linux_core::discovery::reconnect::SessionEnd;
 use link2linux_core::files::TransferId;
 use link2linux_core::identity::CertificateFingerprint;
 use link2linux_core::pairing::{FileTrustStore, records};
-use link2linux_core::session::SessionEvent;
+use link2linux_core::session::{Session, SessionEvent};
 use link2linux_platform::NotificationResponse;
 use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -125,30 +127,46 @@ pub async fn run(
     features.session_started(&mut session).await;
     let ending = drive(&mut session, features, commands, copies, cancel, context).await;
     features.session_ended();
-    match &ending {
-        Ending::Shutdown => {
-            let _ = session
-                .goodbye(GoodbyeReason::Shutdown, "the desktop is closing")
-                .await;
-        }
-        Ending::Removed => {
-            let _ = session
-                .goodbye(GoodbyeReason::Unpaired, "the user removed the pairing")
-                .await;
-        }
-        Ending::PhoneBrokeRules => {
-            let _ = session
-                .goodbye(
-                    GoodbyeReason::ProtocolError,
-                    "a feature's rules were broken",
-                )
-                .await;
-        }
-        Ending::Peer(_) => {
-            let _ = session.close().await;
-        }
-    }
+    finish(session, &ending).await;
     ending
+}
+
+/// How long the end of a session may take. A phone that reads gets the
+/// `Goodbye` and what was still queued, such as file chunks, well within
+/// it; one that vanished is not waited for.
+const FINISH_WITHIN: Duration = Duration::from_secs(2);
+
+/// Ends `session` as `ending` says, within [`FINISH_WITHIN`].
+async fn finish<S>(session: Session<S>, ending: &Ending)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let ended = async move {
+        match ending {
+            Ending::Shutdown => {
+                session
+                    .goodbye(GoodbyeReason::Shutdown, "the desktop is closing")
+                    .await
+            }
+            Ending::Removed => {
+                session
+                    .goodbye(GoodbyeReason::Unpaired, "the user removed the pairing")
+                    .await
+            }
+            Ending::PhoneBrokeRules => {
+                session
+                    .goodbye(
+                        GoodbyeReason::ProtocolError,
+                        "a feature's rules were broken",
+                    )
+                    .await
+            }
+            Ending::Peer(_) => session.close().await,
+        }
+    };
+    if tokio::time::timeout(FINISH_WITHIN, ended).await.is_err() {
+        tracing::debug!("the phone did not take the end of the session in time");
+    }
 }
 
 async fn drive(
@@ -303,5 +321,54 @@ fn handle(event: &SessionEvent, context: &LinkContext<'_>) -> Option<SessionEnd>
             tracing::trace!(event = other.name(), "an event nobody handles yet");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use link2linux_core::device::{DeviceInfo, DeviceKind, Feature};
+    use link2linux_core::session::SessionConfig;
+    use link2linux_protocol::Payload;
+    use link2linux_protocol::v1::FileChunk;
+
+    use super::*;
+
+    fn device(id: &str, kind: DeviceKind) -> DeviceInfo {
+        DeviceInfo::new(id, id, kind, [Feature::Files])
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_phone_that_stopped_reading_is_not_waited_for_at_the_end() {
+        let (here, there) = tokio::io::duplex(64 * 1024);
+        let (desktop, phone) = tokio::join!(
+            Session::handshake(
+                here,
+                device("desk", DeviceKind::Desktop),
+                SessionConfig::default()
+            ),
+            Session::handshake(
+                there,
+                device("phone", DeviceKind::Phone),
+                SessionConfig::phone()
+            ),
+        );
+        let (mut desktop, _phone) = (desktop.unwrap(), phone.unwrap());
+        while !desktop.is_ready(Feature::Files) {
+            desktop.next_event().await.unwrap();
+        }
+        // A megabyte of chunks the phone never reads.
+        for n in 0..4_u64 {
+            let chunk = FileChunk {
+                transfer_id: vec![1; 16],
+                offset: n * 256 * 1024,
+                data: vec![0; 256 * 1024],
+                ..FileChunk::default()
+            };
+            desktop.queue_request(Payload::FileChunk(chunk)).unwrap();
+        }
+
+        let started = tokio::time::Instant::now();
+        finish(desktop, &Ending::Shutdown).await;
+        assert_eq!(started.elapsed(), FINISH_WITHIN);
     }
 }

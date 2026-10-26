@@ -39,6 +39,10 @@ export function useTransfers(deviceId: string) {
   const [error, setError] = useState<string | null>(null);
   const [choosing, setChoosing] = useState(false);
   const transfers = useRef<FileTransfer[]>([]);
+  // Transfers removed from the list, which a late change must not bring
+  // back.
+  const removed = useRef(new Set<string>());
+  const announced = useRef(0);
 
   useEffect(() => {
     let current = true;
@@ -47,13 +51,29 @@ export function useTransfers(deviceId: string) {
     const pending: FileTransferEvent[] = [];
 
     const apply = (event: FileTransferEvent) => {
+      if (event.type === "removed") {
+        removed.current.add(event.id);
+      } else if (event.type === "changed" && removed.current.has(event.transfer.id)) {
+        // Only a transfer that starts again under its id comes back.
+        if (isFinished(event.transfer)) return;
+        removed.current.delete(event.transfer.id);
+      } else if (event.type === "progress" && removed.current.has(event.id)) {
+        return;
+      }
       if (event.type === "changed") {
         const before = transfers.current.find((t) => t.id === event.transfer.id);
         if (isFinished(event.transfer) && !(before && isFinished(before))) {
-          setLive(announcement(event.transfer));
+          // A text that changes, so the same words are read out again.
+          announced.current += 1;
+          const repeat = announced.current % 2 === 0 ? "\u200b" : "";
+          setLive(announcement(event.transfer) + repeat);
         }
       }
-      if (event.type === "progress" || event.type === "changed") {
+      if (event.type === "changed" && event.transfer.status.kind !== "running") {
+        // Measured again from the next bytes, not across the pause.
+        const { id } = event.transfer;
+        setRates((r) => Object.fromEntries(Object.entries(r).filter(([key]) => key !== id)));
+      } else if (event.type === "progress" || event.type === "changed") {
         const id = event.type === "progress" ? event.id : event.transfer.id;
         const done = event.type === "progress" ? event.done : event.transfer.done;
         setRates((r) => ({ ...r, [id]: nextRate(r[id], done, Date.now()) }));

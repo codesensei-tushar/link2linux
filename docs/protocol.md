@@ -1460,6 +1460,8 @@ transfer the receiver refused or ended this way.
   receiver stands or runs past the file's size. When a file's hash does not
   match, it deletes the file and answers `INVALID_ARGUMENT`. Each of these
   ends the transfer on the sender's side.
+- A receiver answers a session's file requests (offers, chunks and cancels)
+  in the order they arrived.
 - File names come from the other device and MUST NOT be used as paths. The
   receiver keeps only the name, replaces characters its system cannot store
   or display safely, and never overwrites a file: it picks a free name, such

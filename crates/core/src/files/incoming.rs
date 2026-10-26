@@ -144,7 +144,13 @@ impl Incoming {
         self.started_unix_ms
     }
 
-    fn size(&self) -> u64 {
+    /// How many files the transfer has.
+    pub(super) fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Bytes of all its files.
+    pub(super) fn size(&self) -> u64 {
         self.files
             .iter()
             .fold(0, |total, target| total.saturating_add(target.size))
@@ -187,13 +193,21 @@ impl Incoming {
         let writer = match &self.writer {
             Some(writer) => writer.clone(),
             None => {
-                let temp = self.files[index].temp.clone();
-                let writer = Arc::new(blocking(move || disk::create_temp(&temp)).await?);
+                let (temp, written) = (self.files[index].temp.clone(), self.written);
+                let writer = Arc::new(blocking(move || disk::open_temp(&temp, written)).await?);
                 self.writer = Some(writer.clone());
                 writer
             }
         };
-        let mut hash = self.hash.take().unwrap_or_else(new_hash);
+        let mut hash = match self.hash.take() {
+            Some(hash) => hash,
+            // A write that was cancelled took it: the bytes on disk give it
+            // back, rather than a hash of nothing that could never match.
+            None => {
+                let (file, written) = (writer.clone(), self.written);
+                blocking(move || disk::hash_written(&file, written)).await?
+            }
+        };
         let (offset, len, data) = (chunk.offset, chunk.data.len() as u64, chunk.data);
         let file = writer.clone();
         let hash =
@@ -225,6 +239,12 @@ impl Incoming {
         } else {
             Written::File
         })
+    }
+
+    /// Closes the file being written while the transfer is kept: it is
+    /// opened again when the transfer goes on.
+    pub(super) fn close(&mut self) {
+        self.writer = None;
     }
 
     /// Deletes what the transfer has not finished; the finished files stay.
@@ -271,4 +291,51 @@ impl Incoming {
 
 fn new_hash() -> digest::Context {
     digest::Context::new(&digest::SHA256)
+}
+
+#[cfg(test)]
+mod tests {
+    use link2linux_protocol::v1::FileInfo;
+
+    use super::*;
+
+    fn chunk(offset: u64, data: &[u8], sha256: Vec<u8>) -> FileChunk {
+        FileChunk {
+            transfer_id: vec![1; 16],
+            file_index: 0,
+            offset,
+            data: data.to_vec(),
+            sha256,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lost_hash_comes_back_from_the_bytes_on_disk_and_a_kept_file_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let offer = FileOffer {
+            transfer_id: vec![1; 16],
+            files: vec![FileInfo {
+                name: "notes.txt".into(),
+                size: 6,
+                ..FileInfo::default()
+            }],
+            ..FileOffer::default()
+        };
+        let mut transfer = Incoming::new(TransferId([1; 16]), &offer, dir.path().into(), 0);
+        assert_eq!(
+            transfer.write(chunk(0, b"abc", Vec::new())).await.unwrap(),
+            Written::Part
+        );
+        // Kept while the phone is away, and a write cancelled meanwhile.
+        transfer.close();
+        transfer.hash = None;
+
+        let whole = digest::digest(&digest::SHA256, b"abcdef").as_ref().to_vec();
+        let last = transfer.write(chunk(3, b"def", whole)).await.unwrap();
+        assert_eq!(last, Written::All);
+        assert_eq!(
+            std::fs::read(dir.path().join("notes.txt")).unwrap(),
+            b"abcdef"
+        );
+    }
 }

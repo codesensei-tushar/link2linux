@@ -7,15 +7,15 @@ mod session_common;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use aws_lc_rs::digest;
 use futures_util::{SinkExt, StreamExt};
 use link2linux_core::files::{
-    CHUNK_LEN, Direction, Failure, FileService, KEEP_UNFINISHED, SendError, Transfer,
-    TransferEvent, TransferId, TransferState,
+    CHUNK_LEN, Direction, Failure, FileService, IncomingBytes, KEEP_UNFINISHED, SendError,
+    Transfer, TransferEvent, TransferId, TransferState,
 };
-use link2linux_core::session::{Availability, SessionStart};
+use link2linux_core::session::{Availability, SessionEvent, SessionStart};
 use link2linux_core::{Feature, Session, SessionConfig};
 use link2linux_protocol::v1::{
     Ack, ErrorCode, ErrorReply, FileAccept, FileCancel, FileChunk, FileInfo, FileOffer, Pong,
@@ -194,6 +194,12 @@ enum Command {
     Transfers(oneshot::Sender<Vec<Transfer>>),
     /// The user turned files on or off here.
     Switch(Availability),
+    /// Expires what is kept, as if this much later.
+    ExpireIn(Duration),
+    /// When the service has something to do by itself.
+    Deadline(oneshot::Sender<Option<Instant>>),
+    /// The user removed a finished transfer from the list.
+    Forget(TransferId),
 }
 
 /// A service on its session, driven the way the runtime drives it.
@@ -222,6 +228,15 @@ impl Driven {
                             }
                             Some(Command::Transfers(reply)) => {
                                 let _ = reply.send(service.transfers());
+                            }
+                            Some(Command::ExpireIn(later)) => {
+                                service.expire(Instant::now() + later).await;
+                            }
+                            Some(Command::Deadline(reply)) => {
+                                let _ = reply.send(service.next_deadline());
+                            }
+                            Some(Command::Forget(id)) => {
+                                service.forget(id);
                             }
                             Some(Command::Switch(availability)) => {
                                 if session.set_availability(Feature::Files, availability).await.is_err() {
@@ -267,6 +282,20 @@ impl Driven {
         self.commands.send(Command::Switch(availability)).unwrap();
     }
 
+    fn forget(&self, id: TransferId) {
+        self.commands.send(Command::Forget(id)).unwrap();
+    }
+
+    fn expire_in(&self, later: Duration) {
+        self.commands.send(Command::ExpireIn(later)).unwrap();
+    }
+
+    async fn deadline(&self) -> Option<Instant> {
+        let (reply, answer) = oneshot::channel();
+        self.commands.send(Command::Deadline(reply)).unwrap();
+        answer.await.unwrap()
+    }
+
     async fn transfers(&self) -> Vec<Transfer> {
         let (reply, answer) = oneshot::channel();
         self.commands.send(Command::Transfers(reply)).unwrap();
@@ -299,6 +328,21 @@ impl Driven {
         })
         .await
         .unwrap_or_else(|_| panic!("transfer {id} never became {state:?}"))
+    }
+
+    /// Waits for the event that removes transfer `id` from the list.
+    async fn reaches_removal(&mut self, id: TransferId) {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                match self.events.recv().await {
+                    Ok(TransferEvent::Removed(removed)) if removed == id => return,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("the service stopped"),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("transfer {id} never left the list"));
     }
 
     /// Waits until transfer `id` is in `state`, whatever the events said
@@ -716,6 +760,67 @@ async fn kept_transfers_count_against_the_room_and_a_resume_is_never_busy() {
 }
 
 #[tokio::test]
+async fn requests_sent_back_to_back_are_answered_in_the_order_they_came() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (_desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let small = data(1000, 7);
+    let other = data(1000, 8);
+    let mut sent = Vec::new();
+    sent.push(phone.request(offer([1; 16], &[("a", &small)])).await);
+    sent.push(
+        phone
+            .request(chunk([1; 16], 0, 0, &small, sha256(&small)))
+            .await,
+    );
+    sent.push(phone.request(offer([2; 16], &[("b", &other)])).await);
+    sent.push(
+        phone
+            .request(Payload::FileCancel(FileCancel {
+                transfer_id: vec![2; 16],
+            }))
+            .await,
+    );
+    let mut answered = Vec::new();
+    for _ in 0..sent.len() {
+        answered.push(phone.next().await.reply_to);
+    }
+    assert_eq!(answered, sent);
+}
+
+#[tokio::test]
+async fn room_to_spare_counts_what_other_phones_have_yet_to_write() {
+    let downloads = tempfile::tempdir().unwrap();
+    let free = 100 * 1024 * 1024;
+    let shared = IncomingBytes::new();
+    let on = |downloads: &Path| {
+        service(downloads)
+            .with_free_space(move |_| Ok(free))
+            .with_shared_incoming(&shared)
+    };
+    let (_one, mut first) = desktop_with(on(downloads.path())).await;
+    let (_two, mut second) = desktop_with(on(downloads.path())).await;
+    let size = |id: u8, size: u64| {
+        Payload::FileOffer(FileOffer {
+            transfer_id: vec![id; 16],
+            files: vec![FileInfo {
+                name: "big".into(),
+                size,
+                ..FileInfo::default()
+            }],
+            ..FileOffer::default()
+        })
+    };
+    // 30 MiB from the first phone leave 6 MiB over after the 64 MiB, so the
+    // second phone's 10 MiB do not fit, though its own service holds nothing.
+    assert_eq!(first.ask(size(1, 30 << 20)).await, accept(0, 0));
+    assert_eq!(
+        code_of(&second.ask(size(2, 10 << 20)).await),
+        ErrorCode::NoSpace
+    );
+    assert_eq!(second.ask(size(3, 5 << 20)).await, accept(0, 0));
+}
+
+#[tokio::test]
 async fn turning_files_off_ends_what_the_phone_sends() {
     let downloads = tempfile::tempdir().unwrap();
     let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
@@ -813,11 +918,22 @@ async fn unfinished_transfers_from_the_phone_expire_after_an_hour() {
 fn leftovers_of_an_earlier_run_are_removed() {
     let downloads = tempfile::tempdir().unwrap();
     let leftover = format!(".link2linux-{}-0.part", "ab".repeat(16));
-    fs::write(downloads.path().join(&leftover), b"partial").unwrap();
+    let long_ago = SystemTime::now() - Duration::from_secs(3 * 60 * 60);
+    let path = downloads.path().join(&leftover);
+    fs::write(&path, b"partial").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(long_ago)
+        .unwrap();
     fs::write(downloads.path().join("mine.txt"), b"mine").unwrap();
+    // Another instance may be writing this one just now.
+    let busy = format!(".link2linux-{}-0.part", "cd".repeat(16));
+    fs::write(downloads.path().join(&busy), b"partial").unwrap();
     let removed = link2linux_core::files::remove_leftovers(downloads.path()).unwrap();
     assert_eq!(removed, 1);
-    assert_eq!(names_in(downloads.path()), ["mine.txt"]);
+    assert_eq!(names_in(downloads.path()), [busy.as_str(), "mine.txt"]);
 }
 
 /// Reads the desktop's offer and checks it names `id`, when given.
@@ -1258,6 +1374,370 @@ async fn unanswered_requests_offer_the_transfer_again_then_wait_for_the_next_ses
     assert_eq!(offer.transfer_id, id.0);
     phone.answer(seq, accept(1, 0)).await;
     desktop.settles(id, TransferState::Completed).await;
+}
+
+#[tokio::test]
+async fn chunks_that_got_no_answer_keep_their_place_in_the_window() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let config = SessionConfig {
+        request_timeout: Duration::from_millis(200),
+        ..SessionConfig::default()
+    };
+    let (session, mut phone) = connect(Availability::Ready, config).await;
+    let desktop = Driven::start(session, service(downloads.path()));
+    let one = desktop
+        .send(vec![source(
+            sources.path(),
+            "one",
+            &data(12 * CHUNK_LEN, 20),
+        )])
+        .await
+        .unwrap();
+    let two = desktop
+        .send(vec![source(
+            sources.path(),
+            "two",
+            &data(12 * CHUNK_LEN, 21),
+        )])
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let (seq, _) = read_offer(&mut phone).await;
+        phone.answer(seq, accept(0, 0)).await;
+    }
+    let mut stalled = Vec::new();
+    for _ in 0..8 {
+        let (seq, chunk) = read_chunk(&mut phone).await;
+        stalled.push((seq, chunk.transfer_id));
+    }
+
+    // The phone stalls past the timeout. Each transfer whose chunk missed
+    // its answer is offered again, but the phone may still hold all eight
+    // chunks: no ninth comes.
+    let mut stalled_transfers: Vec<&Vec<u8>> = stalled.iter().map(|(_, id)| id).collect();
+    stalled_transfers.dedup();
+    stalled_transfers.sort();
+    stalled_transfers.dedup();
+    let mut offers = Vec::new();
+    while offers.len() < stalled_transfers.len() {
+        let frame = phone.next().await;
+        match frame.payload {
+            Some(Payload::FileOffer(offer)) => offers.push((frame.seq, offer.transfer_id)),
+            other => panic!("expected only offers, got {other:?}"),
+        }
+    }
+
+    // It answers in order: the stalled chunks, too late for the desktop,
+    // then the offers. Only then the window opens again, up to eight.
+    for (seq, _) in &stalled {
+        phone.ack(*seq).await;
+    }
+    for (seq, id) in &offers {
+        let written = stalled.iter().filter(|(_, of)| of == id).count();
+        phone
+            .answer(*seq, accept(0, (written * CHUNK_LEN) as u64))
+            .await;
+    }
+    let mut sent = Vec::new();
+    for _ in 0..8 {
+        sent.push(read_chunk(&mut phone).await.1.transfer_id);
+    }
+    // Unanswered again, they bring offers, never a ninth chunk.
+    let next = phone.next().await;
+    assert!(
+        matches!(next.payload, Some(Payload::FileOffer(_))),
+        "{next:?}"
+    );
+    assert!(sent.contains(&two.0.to_vec()), "both transfers go on");
+    assert!(sent.contains(&one.0.to_vec()), "both transfers go on");
+}
+
+#[tokio::test]
+async fn a_passed_retry_never_makes_a_deadline_that_has_passed() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let path = source(sources.path(), "file", b"hello");
+    let (desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let id = desktop.send(vec![path]).await.unwrap();
+    let (seq, _) = read_offer(&mut phone).await;
+    let busy = ErrorReply {
+        code: ErrorCode::Busy.into(),
+        retry_after_ms: 50,
+        ..ErrorReply::default()
+    };
+    phone.answer(seq, Payload::ErrorReply(busy)).await;
+    desktop.settles(id, TransferState::Waiting).await;
+
+    // The phone turns files off before the retry: nothing can be offered,
+    // and the time to ask again, once passed, is no deadline.
+    let off = Payload::FeatureStatus(link2linux_protocol::v1::FeatureStatus {
+        features: vec![link2linux_protocol::v1::FeatureState {
+            feature: "files".into(),
+            availability: link2linux_protocol::v1::FeatureAvailability::Disabled.into(),
+            ..Default::default()
+        }],
+    });
+    phone.send(off, false, 0).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let deadline = desktop.deadline().await;
+    assert!(
+        deadline.is_some_and(|at| at > Instant::now() + Duration::from_secs(60)),
+        "{deadline:?}"
+    );
+
+    // Between sessions too, a tick leaves only the hour it is kept.
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    service.expire(Instant::now()).await;
+    let deadline = service.next_deadline();
+    assert!(
+        deadline.is_some_and(|at| at > Instant::now() + Duration::from_secs(60)),
+        "{deadline:?}"
+    );
+}
+
+#[tokio::test]
+async fn transfers_waiting_their_turn_keep_while_the_phone_is_there() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let (desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let mut ids = Vec::new();
+    for n in 0..5 {
+        let path = source(sources.path(), &format!("f{n}"), b"x");
+        ids.push(desktop.send(vec![path]).await.unwrap());
+    }
+    // Four run, their chunks unanswered; the fifth waits its turn.
+    for _ in 0..4 {
+        let (seq, _) = read_offer(&mut phone).await;
+        phone.answer(seq, accept(0, 0)).await;
+    }
+    let fifth = ids[4];
+    desktop.settles(fifth, TransferState::Waiting).await;
+    desktop.expire_in(2 * KEEP_UNFINISHED);
+    assert_eq!(desktop.transfer(fifth).await.state, TransferState::Waiting);
+
+    // Once the phone is gone, its hour runs.
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    service
+        .expire(Instant::now() + KEEP_UNFINISHED - Duration::from_secs(60))
+        .await;
+    let state = |service: &FileService| {
+        service
+            .transfers()
+            .into_iter()
+            .find(|t| t.id == fifth)
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(&service), TransferState::Waiting);
+    service.expire(Instant::now() + KEEP_UNFINISHED).await;
+    assert_eq!(state(&service), TransferState::Failed(Failure::Expired));
+}
+
+#[tokio::test]
+async fn a_send_that_expires_says_whether_the_phone_had_files_off_or_was_away() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let off = Payload::FeatureStatus(link2linux_protocol::v1::FeatureStatus {
+        features: vec![link2linux_protocol::v1::FeatureState {
+            feature: "files".into(),
+            availability: link2linux_protocol::v1::FeatureAvailability::Disabled.into(),
+            ..Default::default()
+        }],
+    });
+    phone.send(off, false, 0).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let id = desktop
+        .send(vec![source(sources.path(), "a", b"x")])
+        .await
+        .unwrap();
+    desktop.settles(id, TransferState::Waiting).await;
+    desktop.expire_in(KEEP_UNFINISHED);
+    desktop
+        .reaches(id, TransferState::Failed(Failure::Disabled))
+        .await;
+
+    // A transfer that waited while the phone was away expired for that.
+    let (desktop, phone) = desktop_with(service(downloads.path())).await;
+    let id = desktop
+        .send(vec![source(sources.path(), "b", b"x")])
+        .await
+        .unwrap();
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    service.expire(Instant::now() + KEEP_UNFINISHED).await;
+    let state = service
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .unwrap()
+        .state;
+    assert_eq!(state, TransferState::Failed(Failure::Expired));
+}
+
+#[tokio::test]
+async fn a_transfer_that_arrived_is_complete_when_offered_again_after_leaving_the_list() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let id = [3; 16];
+    let files: [(&str, &[u8]); 2] = [("a", b"one"), ("b", b"two")];
+    assert_eq!(phone.offer(id, &files).await, accept(0, 0));
+    for (index, (_, data)) in files.iter().enumerate() {
+        assert!(
+            phone
+                .send_file(id, index as u32, data, 0)
+                .await
+                .iter()
+                .all(is_ack)
+        );
+    }
+    desktop
+        .reaches(TransferId(id), TransferState::Completed)
+        .await;
+    desktop.forget(TransferId(id));
+    desktop.reaches_removal(TransferId(id)).await;
+
+    // The phone missed the last answer and offers it again: nothing is
+    // received twice.
+    assert_eq!(phone.offer(id, &files).await, accept(2, 0));
+    let other: [(&str, &[u8]); 1] = [("a", b"one")];
+    assert_eq!(
+        code_of(&phone.offer(id, &other).await),
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(names_in(downloads.path()), ["a", "b"]);
+}
+
+#[tokio::test]
+async fn only_so_many_transfers_from_the_phone_are_kept() {
+    let downloads = tempfile::tempdir().unwrap();
+    let big = data(300 * KIB, 22);
+    let mut service = service(downloads.path());
+    // Each session starts 4 transfers and drops them half done.
+    for session in 0..5_u8 {
+        let (desktop, mut phone) = desktop_with(service).await;
+        for n in 0..4_u8 {
+            let id = [session * 4 + n + 1; 16];
+            assert_eq!(phone.offer(id, &[("big", &big)]).await, accept(0, 0));
+            let first = chunk(id, 0, 0, &big[..CHUNK_LEN], Vec::new());
+            assert!(is_ack(&phone.ask(first).await));
+        }
+        drop(phone);
+        service = desktop.stopped().await;
+    }
+
+    let partials = names_in(downloads.path())
+        .iter()
+        .filter(|name| name.starts_with(".link2linux-"))
+        .count();
+    assert_eq!(partials, 16);
+    let states: Vec<TransferState> = service.transfers().into_iter().map(|t| t.state).collect();
+    assert_eq!(
+        states
+            .iter()
+            .filter(|s| **s == TransferState::Failed(Failure::Expired))
+            .count(),
+        4
+    );
+    assert_eq!(
+        states
+            .iter()
+            .filter(|s| **s == TransferState::Interrupted)
+            .count(),
+        16
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_this_build_does_not_know_is_tried_again() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let path = source(sources.path(), "file", b"hello");
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let id = desktop.send(vec![path]).await.unwrap();
+    let (seq, _) = read_offer(&mut phone).await;
+    let newer = ErrorReply {
+        code: 999,
+        ..ErrorReply::default()
+    };
+    phone.answer(seq, Payload::ErrorReply(newer)).await;
+    desktop.reaches(id, TransferState::Waiting).await;
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    desktop.transfers().await;
+    let (_, offer) = read_offer(&mut phone).await;
+    assert_eq!(offer.transfer_id, id.0);
+}
+
+#[tokio::test]
+async fn a_phone_that_goes_for_good_leaves_no_partial_file() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let big = data(300 * KIB, 23);
+    let small = data(10, 24);
+    let files: [(&str, &[u8]); 2] = [("small", &small), ("big", &big)];
+    assert_eq!(phone.offer([1; 16], &files).await, accept(0, 0));
+    assert!(
+        phone
+            .send_file([1; 16], 0, &small, 0)
+            .await
+            .iter()
+            .all(is_ack)
+    );
+    let part = chunk([1; 16], 1, 0, &big[..CHUNK_LEN], Vec::new());
+    assert!(is_ack(&phone.ask(part).await));
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    assert_eq!(names_in(downloads.path()).len(), 2);
+
+    service.discard_all().await;
+    assert_eq!(names_in(downloads.path()), ["small"]);
+}
+
+/// Writes what the desktop queued while nothing comes from the phone; any
+/// event that turns up meanwhile is dropped.
+async fn write_out(session: &mut Session<DuplexStream>) {
+    while timeout(Duration::from_millis(50), session.next_event())
+        .await
+        .is_ok()
+    {}
+}
+
+#[tokio::test]
+async fn the_phones_goodbye_during_a_send_reaches_the_session_loop() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let path = source(sources.path(), "big", &data(20 * CHUNK_LEN, 25));
+    let (mut session, mut phone) = connect(Availability::Ready, SessionConfig::default()).await;
+    let mut service = service(downloads.path());
+    service.send(vec![path]).await.unwrap();
+    service.session_started(&mut session).await.unwrap();
+    let status = session.next_event().await.unwrap().unwrap();
+    service.handle_event(&mut session, status).await.unwrap();
+    let (_, (seq, _)) = tokio::join!(write_out(&mut session), read_offer(&mut phone));
+    phone.answer(seq, accept(0, 0)).await;
+    let accepted = session.next_event().await.unwrap().unwrap();
+    service.handle_event(&mut session, accepted).await.unwrap();
+    // Two chunks go out; the window has room and more is to send.
+    let two = async {
+        read_chunk(&mut phone).await;
+        read_chunk(&mut phone).await;
+    };
+    tokio::join!(write_out(&mut session), two);
+
+    let goodbye = Payload::Goodbye(link2linux_protocol::v1::Goodbye {
+        reason: link2linux_protocol::v1::GoodbyeReason::UserDisconnect.into(),
+        detail: "the user disconnected".into(),
+    });
+    phone.send(goodbye, false, 0).await;
+    let event = session.next_event().await.unwrap().unwrap();
+    let rest = service.handle_event(&mut session, event).await.unwrap();
+    assert!(
+        matches!(rest, Some(SessionEvent::Goodbye(ref goodbye)) if goodbye.reason == link2linux_protocol::v1::GoodbyeReason::UserDisconnect),
+        "{rest:?}"
+    );
 }
 
 /// A phone running the same service, on the other end of a pipe.

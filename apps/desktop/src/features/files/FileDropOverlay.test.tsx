@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, it } from "vitest";
@@ -14,8 +14,9 @@ function FilesRoute() {
   return <p>Files page for {(location.state as { deviceId: string }).deviceId}</p>;
 }
 
-async function renderOverlay(devices: Device[], api: FakeApi = createFakeApi()) {
-  api.listDevices.mockResolvedValue(devices);
+/** Renders the overlay; `devices` null leaves the device list as `api` answers it. */
+async function renderOverlay(devices: Device[] | null, api: FakeApi = createFakeApi()) {
+  if (devices) api.listDevices.mockResolvedValue(devices);
   render(
     <DesktopApiContext value={api}>
       <DevicesProvider>
@@ -107,5 +108,80 @@ describe("FileDropOverlay", () => {
     await screen.findByText("Somewhere else");
     api.emitFilesDropped({ dropId: 8, names: ["a.txt"] });
     expect(await screen.findByRole("alert")).toHaveTextContent("Pair a phone to send files to it.");
+  });
+
+  it("says the phones are still being looked for", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockReturnValue(new Promise(() => undefined));
+    await renderOverlay(null, api);
+    api.emitFilesDropped({ dropId: 9, names: ["a.txt"] });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Still looking for your phones. Drop the files again in a moment.",
+    );
+    expect(api.sendDroppedFiles).not.toHaveBeenCalled();
+  });
+
+  it("says when the phones could not be listed", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockRejectedValue(new Error("no runtime"));
+    await renderOverlay(null, api);
+    api.emitFilesDropped({ dropId: 9, names: ["a.txt"] });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your phones couldn't be listed, so the files weren't sent.",
+    );
+  });
+
+  it("closes the question when the phones go away, and still closes by keyboard", async () => {
+    const pixel = testDevice({ id: "a", name: "Pixel", status: "disconnected" });
+    const galaxy = testDevice({ id: "b", name: "Galaxy", status: "disconnected" });
+    const api = await renderOverlay([pixel, galaxy]);
+    await screen.findByText("Somewhere else");
+    api.emitFilesDropped({ dropId: 10, names: ["a.txt"] });
+    await screen.findByRole("dialog");
+    expect(screen.getByRole("button", { name: "Pixel, sends when it connects" })).toHaveFocus();
+
+    // The focused phone goes, and focus with it: Escape still closes.
+    api.emitDevices([galaxy]);
+    expect(screen.queryByRole("button", { name: /Pixel/ })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // Every phone goes while the question is open.
+    api.emitDevices([pixel, galaxy]);
+    api.emitFilesDropped({ dropId: 11, names: ["a.txt"] });
+    await screen.findByRole("dialog");
+    api.emitDevices([]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Your phones are gone, so the files weren't sent.",
+    );
+    expect(api.sendDroppedFiles).not.toHaveBeenCalled();
+  });
+
+  it("says a newer drop replaced the one waiting for a phone", async () => {
+    const api = await renderOverlay([
+      testDevice({ id: "a", name: "Pixel", status: "connected" }),
+      testDevice({ id: "b", name: "Galaxy", status: "connected" }),
+    ]);
+    await screen.findByText("Somewhere else");
+    api.emitFilesDropped({ dropId: 12, names: ["first.txt"] });
+    await screen.findByRole("dialog", { name: "Send first.txt to which phone?" });
+    api.emitFilesDropped({ dropId: 13, names: ["second.txt"] });
+    await screen.findByRole("dialog", { name: "Send second.txt to which phone?" });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Only the newest files you dropped are kept.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Galaxy" }));
+    expect(api.sendDroppedFiles).toHaveBeenCalledWith(13, "b");
+  });
+
+  it("takes the overlay down when the window hears from the user, and asks to pair first", async () => {
+    const api = await renderOverlay([]);
+    await screen.findByText("Somewhere else");
+    api.emitFileDrag(true);
+    expect(await screen.findByText("Pair a phone to send files")).toBeInTheDocument();
+    // The drag ended without the desktop saying so.
+    fireEvent.pointerMove(window);
+    expect(screen.queryByText("Pair a phone to send files")).toBeNull();
   });
 });

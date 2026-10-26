@@ -27,8 +27,6 @@ use crate::view::EventSink;
 /// them, with the local paths the page never sees.
 pub type Board = Arc<Mutex<Vec<Transfer>>>;
 
-/// The key of a banner's "Open" button.
-const OPEN_FILE_KEY: &str = "files-open";
 /// The key of a banner's "Show in folder" button.
 const SHOW_FILE_KEY: &str = "files-show";
 
@@ -193,14 +191,20 @@ impl FilesDriver {
         self.after_command(session).await;
     }
 
+    /// The phone is unpaired, or the app is closing: deletes what arrived
+    /// of the transfers from it that are not finished.
+    pub async fn discard_all(&mut self) {
+        self.service.discard_all().await;
+    }
+
     /// Removes finished transfer `id` from the list.
     pub fn forget(&mut self, id: TransferId) {
         self.service.forget(id);
         self.drain();
     }
 
-    /// Acts on a click on one of this driver's banners: "Open" and "Show
-    /// in folder". Returns whether the response was for one of them.
+    /// Acts on a click on one of this driver's banners: "Show in
+    /// folder". Returns whether the response was for one of them.
     pub fn handle_response(&mut self, response: &NotificationResponse) -> bool {
         match response {
             NotificationResponse::Action { id, key } => {
@@ -213,16 +217,10 @@ impl FilesDriver {
                     .and_then(|t| t.files.iter().find_map(|file| file.path.clone()));
                 if let Some(path) = path {
                     let opener = self.opener.clone();
-                    let show = key == SHOW_FILE_KEY;
-                    if show || key == OPEN_FILE_KEY {
+                    if key == SHOW_FILE_KEY {
                         tokio::spawn(async move {
-                            let done = if show {
-                                opener.show_in_folder(&path).await
-                            } else {
-                                opener.open(&path).await
-                            };
-                            if let Err(error) = done {
-                                tracing::warn!(%error, "could not open a received file");
+                            if let Err(error) = opener.show_in_folder(&path).await {
+                                tracing::warn!(%error, "could not show a received file");
                             }
                         });
                     }
@@ -340,11 +338,10 @@ fn banner(transfer: &Transfer, phone: &str) -> Option<(DesktopNotification, Desk
     };
     let (summary, locked, body, actions, category) = match &transfer.state {
         TransferState::Completed if incoming => {
-            let mut actions = Vec::new();
-            if count == 1 {
-                actions.push(action(OPEN_FILE_KEY, "Open"));
-            }
-            actions.push(action(SHOW_FILE_KEY, "Show in folder"));
+            // Only "Show in folder": the banner names no file, so a click
+            // must never start one. Open is on the files page, where the
+            // name is visible.
+            let actions = vec![action(SHOW_FILE_KEY, "Show in folder")];
             (
                 format!("Received {files} from {phone}"),
                 format!("Received {files}"),
@@ -407,6 +404,8 @@ fn action(key: &str, label: &str) -> DesktopAction {
 /// Why a transfer failed, in plain words, as the files page says it.
 fn failure_text(failure: Failure, incoming: bool, phone: &str) -> String {
     match failure {
+        // Also what a send gets that waited an hour for a phone with files
+        // off.
         Failure::Disabled => format!("Files are turned off on {phone}."),
         Failure::PermissionRequired => format!("{phone} needs permission to save files."),
         Failure::NoSpace if incoming => "There isn't enough space on this computer.".to_owned(),
@@ -453,11 +452,11 @@ mod tests {
     }
 
     #[test]
-    fn received_files_get_a_banner_with_open_and_show_but_no_names() {
+    fn received_files_get_a_banner_with_show_only_and_no_names() {
         let received = transfer(Direction::Incoming, TransferState::Completed, 1);
         let (one, locked) = banner(&received, "Pixel").unwrap();
         assert_eq!(one.summary, "Received a file from Pixel");
-        assert_eq!(keys(&one), [OPEN_FILE_KEY, SHOW_FILE_KEY]);
+        assert_eq!(keys(&one), [SHOW_FILE_KEY]);
         assert_eq!(one.category.as_deref(), Some("transfer.complete"));
         assert_eq!(locked.summary, "Received a file");
         assert_eq!(keys(&locked), keys(&one));

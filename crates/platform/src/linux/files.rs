@@ -3,12 +3,14 @@
 //!
 //! [`XdgFileStore`] opens a file through the desktop portal
 //! (`org.freedesktop.portal.OpenURI`), which starts the user's default
-//! application. The portal gets the open file rather than its name, and
-//! applies the desktop's own rules, such as asking first before it opens a
-//! file that could run as a program. Showing a file in its folder asks the
-//! file manager to select it (`org.freedesktop.FileManager1`, which the
-//! common file managers implement). Without either service, `xdg-open`
-//! opens the file, or the folder.
+//! application. The portal gets the open file rather than its name. It does
+//! not ask before opening by itself, so for a file that could run as a
+//! program (see [`can_run_code`]) the call sets `ask`, which makes the
+//! desktop show its application chooser, and no other route opens such a
+//! file: if the portal fails, the open fails. Showing a file in its folder
+//! asks the file manager to select it (`org.freedesktop.FileManager1`,
+//! which the common file managers implement). For other files, and without
+//! either service, `xdg-open` opens the file, or the folder.
 
 use std::collections::HashMap;
 use std::env;
@@ -118,11 +120,16 @@ impl FileStore for XdgFileStore {
 
     async fn open(&self, path: &Path) -> Result<(), PlatformError> {
         let path = absolute(path)?;
+        let ask = can_run_code(path);
         if let Some(bus) = self.bus().await {
-            match open_with_portal(bus, path).await {
+            match open_with_portal(bus, path, ask).await {
                 Ok(()) => return Ok(()),
                 Err(error) => tracing::debug!(%error, "the desktop portal did not open a file"),
             }
+        }
+        if ask {
+            // `xdg-open` would start the default handler without asking.
+            return Err(unavailable("a file that could run needs the portal to ask"));
         }
         run(&self.opener, path)
     }
@@ -153,13 +160,86 @@ fn absolute(path: &Path) -> Result<&Path, PlatformError> {
     }
 }
 
-async fn open_with_portal(bus: &Connection, path: &Path) -> Result<(), PlatformError> {
+/// File name extensions of files that can run code when opened, in lower
+/// case: programs, libraries, scripts, launchers and Windows executables.
+const RUNNABLE_EXTENSIONS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "csh",
+    "ksh",
+    "py",
+    "pyw",
+    "pl",
+    "pm",
+    "rb",
+    "php",
+    "lua",
+    "tcl",
+    "js",
+    "mjs",
+    "jar",
+    "so",
+    "desktop",
+    "appimage",
+    "run",
+    "bin",
+    "elf",
+    "exe",
+    "dll",
+    "msi",
+    "bat",
+    "cmd",
+    "com",
+    "scr",
+    "ps1",
+    "vbs",
+    "vbe",
+    "wsf",
+    "lnk",
+    "reg",
+    "cpl",
+    "pif",
+    "hta",
+    "jse",
+    "wsh",
+    "msp",
+    "apk",
+    "deb",
+    "rpm",
+    "flatpakref",
+    "flatpakrepo",
+];
+
+/// Whether opening the file at `path` could run code: its extension is on
+/// [`RUNNABLE_EXTENSIONS`] (also as a trailing `.so.1`-style version), or it
+/// has an execute bit set.
+fn can_run_code(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0) {
+        return true;
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name.split('.')
+        .skip(1)
+        .any(|part| RUNNABLE_EXTENSIONS.contains(&part))
+}
+
+async fn open_with_portal(bus: &Connection, path: &Path, ask: bool) -> Result<(), PlatformError> {
     let path = path.to_owned();
     let file = tokio::task::spawn_blocking(move || File::open(path))
         .await
         .map_err(std::io::Error::other)??;
     let portal = OpenUriProxy::new(bus).await.map_err(unavailable)?;
-    let call = portal.open_file("", Fd::from(&file), HashMap::new());
+    let mut options = HashMap::new();
+    if ask {
+        options.insert("ask", Value::from(true));
+    }
+    let call = portal.open_file("", Fd::from(&file), options);
     tokio::time::timeout(CALL_TIMEOUT, call)
         .await
         .map_err(|_| unavailable("no answer in time"))?
@@ -285,6 +365,7 @@ mod tests {
     struct Seen {
         shown: Vec<Vec<String>>,
         opened: Vec<Vec<u8>>,
+        asked: Vec<bool>,
     }
 
     struct FakeFileManager(Arc<Mutex<Seen>>);
@@ -304,13 +385,15 @@ mod tests {
             &self,
             _parent_window: &str,
             fd: zbus::zvariant::OwnedFd,
-            _options: HashMap<String, zbus::zvariant::OwnedValue>,
+            options: HashMap<String, zbus::zvariant::OwnedValue>,
         ) -> OwnedObjectPath {
             let mut contents = Vec::new();
             File::from(OwnedFd::from(fd))
                 .read_to_end(&mut contents)
                 .unwrap();
-            self.0.lock().unwrap().opened.push(contents);
+            let mut seen = self.0.lock().unwrap();
+            seen.opened.push(contents);
+            seen.asked.push(options.contains_key("ask"));
             OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/request/1").unwrap()
         }
     }
@@ -369,6 +452,7 @@ mod tests {
         store.show_in_folder(&path).await.unwrap();
         let seen = seen.lock().unwrap();
         assert_eq!(seen.opened, [b"hello".to_vec()]);
+        assert_eq!(seen.asked, [false]);
         assert_eq!(seen.shown, [vec![file_uri(&path)]]);
     }
 
@@ -396,5 +480,53 @@ mod tests {
             store.open(Path::new("relative.txt")).await,
             Err(PlatformError::Io(_))
         ));
+    }
+
+    #[test]
+    fn files_that_could_run_are_told_by_name_and_mode() {
+        let dir = TempDir::new("runnable");
+        for name in [
+            "setup.EXE",
+            "run.sh",
+            "tool.py",
+            "a.desktop",
+            "libx.so.1",
+            "app.AppImage",
+            "x.jar",
+            "invoice.pdf.exe",
+        ] {
+            assert!(can_run_code(&dir.0.join(name)), "{name}");
+        }
+        for name in ["photo.jpg", "notes.txt", "report.pdf", "archive.zip", "exe"] {
+            assert!(!can_run_code(&dir.0.join(name)), "{name}");
+        }
+        let plain = dir.0.join("data.bin2");
+        fs::write(&plain, b"x").unwrap();
+        assert!(!can_run_code(&plain));
+        let mut mode = fs::metadata(&plain).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+        fs::set_permissions(&plain, mode).unwrap();
+        assert!(can_run_code(&plain));
+    }
+
+    #[tokio::test]
+    async fn a_file_that_could_run_is_opened_only_through_the_portal_and_asks() {
+        let dir = TempDir::new("asks");
+        let path = dir.0.join("setup.exe");
+        fs::write(&path, b"MZ").unwrap();
+        let (store, _server, seen) = store("/nonexistent/opener").await;
+        store.open(&path).await.unwrap();
+        assert_eq!(seen.lock().unwrap().asked, [true]);
+
+        // Without the portal the opener must not be used, even a working one.
+        let no_bus = XdgFileStore {
+            bus: OnceCell::new_with(Some(None)),
+            opener: PathBuf::from("true"),
+        };
+        assert!(matches!(
+            no_bus.open(&path).await,
+            Err(PlatformError::Unavailable { .. })
+        ));
+        no_bus.show_in_folder(&path).await.unwrap();
     }
 }

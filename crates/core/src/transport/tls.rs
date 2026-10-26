@@ -27,6 +27,19 @@ use crate::identity::{CertificateFingerprint, Identity};
 /// Time between starting dials to the next candidate address.
 const DIAL_STAGGER: Duration = Duration::from_millis(250);
 
+/// How long bytes written to the phone may stay unacknowledged before the
+/// connection counts as gone. Without it, a write to a phone that left the
+/// network, such as file chunks or the last `Goodbye`, waits for the
+/// kernel's retransmissions, about 15 minutes.
+const USER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Sets up the socket of a connection to the phone: frames go out at once,
+/// and writes fail after [`USER_TIMEOUT`].
+fn tune(tcp: &TcpStream) -> io::Result<()> {
+    tcp.set_nodelay(true)?;
+    socket2::SockRef::from(tcp).set_tcp_user_timeout(Some(USER_TIMEOUT))
+}
+
 /// How long each step of a dial may take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DialTimeouts {
@@ -123,7 +136,7 @@ impl TlsDialer {
         tcp: TcpStream,
         pin: PeerPin,
     ) -> Result<TlsConnection, TransportError> {
-        tcp.set_nodelay(true)?;
+        tune(&tcp)?;
         let peer_addr = tcp.peer_addr()?;
         let verifier = Arc::new(PinningVerifier::new(
             pin,
@@ -368,5 +381,24 @@ impl AsyncWrite for TlsConnection {
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connections_to_the_phone_give_up_on_unacknowledged_writes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tcp = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        tune(&tcp).unwrap();
+        assert!(tcp.nodelay().unwrap());
+        assert_eq!(
+            socket2::SockRef::from(&tcp).tcp_user_timeout().unwrap(),
+            Some(USER_TIMEOUT)
+        );
     }
 }

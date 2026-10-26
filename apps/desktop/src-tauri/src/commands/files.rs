@@ -68,7 +68,19 @@ pub async fn send_dropped_files(
     device_id: String,
 ) -> Result<(), CommandError> {
     let paths = state.take_drop(drop_id).ok_or(BackendError::NotFound)?;
+    require_absolute(&paths)?;
     send(&state, device_id, paths).await
+}
+
+/// Refuses dropped paths that are not absolute: the window reports a
+/// dragged link or an odd URI as a relative path, which would be read from
+/// this process's directory.
+fn require_absolute(paths: &[PathBuf]) -> Result<(), BackendError> {
+    if paths.iter().all(|path| path.is_absolute()) {
+        Ok(())
+    } else {
+        Err(BackendError::FileUnreadable)
+    }
 }
 
 /// Checks and sends the files away from the async threads: looking at
@@ -142,4 +154,24 @@ pub fn show_received_file(
         .backend()
         .show_received_file(&device_id, &transfer_id, file_index as usize)
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropped_paths_must_all_be_absolute() {
+        assert_eq!(
+            require_absolute(&["/home/ana/a.txt".into(), "/tmp/b".into()]),
+            Ok(())
+        );
+        for relative in ["https://host/x", "a.txt", "../secret", "-rf"] {
+            assert_eq!(
+                require_absolute(&["/home/ana/a.txt".into(), relative.into()]),
+                Err(BackendError::FileUnreadable),
+                "{relative}"
+            );
+        }
+    }
 }

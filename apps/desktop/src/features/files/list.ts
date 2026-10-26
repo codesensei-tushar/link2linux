@@ -105,6 +105,15 @@ export function statusText(transfer: FileTransfer, phoneName: string): string {
   }
 }
 
+/** How long a rate stays on screen without new bytes. */
+const STALE_MS = 3_000;
+
+/** The rate to show at `now`, or null when none was measured or bytes stopped coming. */
+export function shownRate(rate: Rate | undefined, now: number): number | null {
+  if (rate?.perSecond == null || now - rate.at > STALE_MS) return null;
+  return rate.perSecond;
+}
+
 /** A transfer rate measured over at least `MIN_SPAN_MS`, smoothed. */
 export interface Rate {
   /** When `done` was seen, in milliseconds. */

@@ -270,6 +270,7 @@ impl Outgoing {
     pub(super) async fn next_chunk(&mut self) -> Result<(FileChunk, Mark), SourceError> {
         let index = self.file;
         let (size, offset) = (self.files[index].size, self.sent);
+        let stamp = (size, self.files[index].modified);
         let reader = match &self.reader {
             Some(reader) => reader.clone(),
             None => {
@@ -290,7 +291,7 @@ impl Outgoing {
         };
         let len = usize::try_from(size - offset).map_or(CHUNK_LEN, |left| left.min(CHUNK_LEN));
         let (data, hash) = blocking(move || {
-            disk::read_chunk(&reader, offset, len, size, &mut hash).map(|data| (data, hash))
+            disk::read_chunk(&reader, offset, len, stamp, &mut hash).map(|data| (data, hash))
         })
         .await?;
         let end = offset + len as u64;

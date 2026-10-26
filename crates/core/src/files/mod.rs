@@ -43,7 +43,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use outgoing::{SendError, check_sendable};
-pub use service::{FileService, ServiceError};
+
+/// `name` as it can be shown, such as a local file's name: control
+/// characters and the marks that reorder text become `_`.
+#[must_use]
+pub fn shown_name(name: &str) -> String {
+    names::shown(name)
+}
+pub use service::{FileService, IncomingBytes, ServiceError};
 
 /// The most bytes of a file one chunk carries.
 pub const CHUNK_LEN: usize = 256 * 1024;
