@@ -1,12 +1,19 @@
 package dev.link2linux.android.core.notifications
 
+import com.google.protobuf.ByteString
+import dev.link2linux.protocol.v1.NotificationActionRequest
+import dev.link2linux.protocol.v1.NotificationDismissRequest
 import dev.link2linux.protocol.v1.SyncCursor
+import dev.link2linux.protocol.v1.imageRequest
+import dev.link2linux.protocol.v1.notificationActionRequest
+import dev.link2linux.protocol.v1.notificationDismissRequest
 import dev.link2linux.protocol.v1.notificationSyncRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 
 /** An engine wired to fakes. Its consumer runs eagerly on the test scheduler (background scopes do not run under advanceUntilIdle). */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -30,14 +37,30 @@ class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.a
         ownPackage = ownPackage,
         clock = { now },
         newEpoch = { ++epochs },
-        onError = { errors += it; it.printStackTrace() },
+        onError = { errors += it },
     )
 
-    fun connect(vararg active: NotificationSnapshot) = engine.onListenerConnected(active.toList())
+    suspend fun idle() = scope.advanceUntilIdle()
 
-    fun post(s: NotificationSnapshot) = engine.onPosted(s)
+    suspend fun connect(vararg active: NotificationSnapshot) {
+        engine.onListenerConnected(active.toList())
+        idle()
+    }
 
-    fun remove(key: String, cause: RemovalCause = RemovalCause.USER_DISMISSED) = engine.onRemoved(key, cause)
+    suspend fun post(s: NotificationSnapshot) {
+        engine.onPosted(s)
+        idle()
+    }
+
+    suspend fun remove(key: String, cause: RemovalCause = RemovalCause.USER_DISMISSED) {
+        engine.onRemoved(key, cause)
+        idle()
+    }
+
+    suspend fun changePolicy() {
+        engine.onPolicyChanged()
+        idle()
+    }
 
     suspend fun attach() {
         engine.attach(transport)
@@ -52,13 +75,55 @@ class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.a
         return sink
     }
 
-    /** Keys of all the notifications in the answer batches. */
+    /** Sync keys of all the notifications in the answer batches. */
     fun RecordingSink.keys() = replies.filterIsInstance<NotificationReply.Batch>()
         .flatMap { it.message.notificationsList }.map { it.key }
 
     fun RecordingSink.cursor(): SyncCursor = replies.filterIsInstance<NotificationReply.Batch>().last().message.cursor
 
+    suspend fun dismiss(
+        key: String,
+        idem: ByteString = idempotency(1),
+        build: NotificationDismissRequest.Builder.() -> Unit = {},
+    ): RecordingSink {
+        val sink = RecordingSink()
+        val req = notificationDismissRequest {
+            idempotencyKey = idem
+            createdUnixMs = now
+            this.key = key
+        }.toBuilder().apply(build).build()
+        engine.handle(NotificationRequest.Dismiss(req), sink)
+        return sink
+    }
+
+    suspend fun act(
+        key: String,
+        actionId: String,
+        reply: String = "",
+        idem: ByteString = idempotency(2),
+        build: NotificationActionRequest.Builder.() -> Unit = {},
+    ): RecordingSink {
+        val sink = RecordingSink()
+        val req = notificationActionRequest {
+            idempotencyKey = idem
+            createdUnixMs = now
+            this.key = key
+            this.actionId = actionId
+            replyText = reply
+        }.toBuilder().apply(build).build()
+        engine.handle(NotificationRequest.Action(req), sink)
+        return sink
+    }
+
+    suspend fun image(hash: ByteString): RecordingSink {
+        val sink = RecordingSink()
+        engine.handle(NotificationRequest.Image(imageRequest { sha256 = hash }), sink)
+        return sink
+    }
+
     companion object {
+        fun idempotency(n: Int): ByteString = ByteString.copyFrom(ByteArray(16) { n.toByte() })
+
         fun snap(
             key: String,
             pkg: String = "org.chat",
