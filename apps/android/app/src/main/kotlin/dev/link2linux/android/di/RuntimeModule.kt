@@ -7,8 +7,11 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.link2linux.android.core.data.loggingUncaught
+import dev.link2linux.android.core.network.features.ClipboardSessionHooks
+import dev.link2linux.android.core.network.features.CompositeSessionHooks
 import dev.link2linux.android.core.network.features.NotificationSessionHooks
 import dev.link2linux.android.core.network.pairing.SessionHooks
+import dev.link2linux.android.feature.clipboard.ClipboardRuntime
 import dev.link2linux.android.feature.notifications.NotificationsRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,9 +25,12 @@ internal object RuntimeModule {
 
     @Provides
     @Singleton
-    fun sessionHooks(@ApplicationContext context: Context): SessionHooks = NotificationSessionHooks(
-        engine = NotificationsRuntime.get(context).engine,
-        // Status updates for a session live as long as the session; the app outlives them all.
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the notification sessions")),
+    fun sessionHooks(@ApplicationContext context: Context): SessionHooks = CompositeSessionHooks(
+        NotificationSessionHooks(
+            engine = NotificationsRuntime.get(context).engine,
+            // Closes the sessions the engine gives up on; the app outlives them all.
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the notification sessions")),
+        ),
+        ClipboardSessionHooks(ClipboardRuntime.get(context).engine),
     )
 }

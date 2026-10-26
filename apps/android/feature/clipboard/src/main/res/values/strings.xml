@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="clipboard_toggle_title">Share the clipboard with your computer</string>
+    <string name="clipboard_toggle_summary">Text you copy on your computer can be pasted on this phone, and you can send text from this phone to your computer.</string>
+
+    <string name="clipboard_send_title">Send clipboard</string>
+    <string name="clipboard_send_to">To %1$s</string>
+    <string name="clipboard_send_none">No computer connected</string>
+    <string name="clipboard_send_action">Send clipboard</string>
+
+    <string name="clipboard_how_title">Sending from this phone</string>
+    <string name="clipboard_how_body">Android lets an app read the clipboard only while it is open, so this phone sends text only when you ask: tap Send clipboard here, in the quick settings tile or in the link2linux notification, or share or select text and choose Copy to computer.</string>
+    <string name="clipboard_add_tile_title">Add the quick settings tile</string>
+    <string name="clipboard_add_tile_summary">Send what you copied with one tap from anywhere.</string>
+    <string name="clipboard_add_tile_action">Add</string>
+
+    <!-- The share sheet and the text selection menu show this for text. -->
+    <string name="clipboard_copy_to_computer">Copy to computer</string>
+
+    <string name="clipboard_tile_label">Send clipboard</string>
+    <string name="clipboard_tile_off">Off</string>
+    <string name="clipboard_tile_not_connected">Not connected</string>
+
+    <!-- The label of text put on the clipboard; some keyboards show it in their clipboard history. -->
+    <string name="clipboard_clip_label">Copied on your computer</string>
+
+    <string name="clipboard_result_sent">Sent to %1$s</string>
+    <string name="clipboard_result_sent_partly">Sent to %1$s, not to %2$s</string>
+    <string name="clipboard_result_off_there">Clipboard is off on %1$s</string>
+    <string name="clipboard_result_failed">Couldn\'t send to %1$s</string>
+    <string name="clipboard_result_no_computer">No computer connected</string>
+    <string name="clipboard_result_too_long">Too long to share</string>
+    <string name="clipboard_result_empty">Clipboard is empty</string>
+    <string name="clipboard_result_nothing">Nothing to share</string>
+    <string name="clipboard_result_text_only">Only text can be copied to your computer</string>
+    <string name="clipboard_result_off_here">Turn on clipboard sharing in link2linux first</string>
+</resources>

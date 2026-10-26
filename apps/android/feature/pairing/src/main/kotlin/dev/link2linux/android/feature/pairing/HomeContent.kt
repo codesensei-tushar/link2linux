@@ -44,6 +44,7 @@ internal fun HomeContent(
     features: List<Feature>,
     onOpenFeature: (Feature) -> Unit,
     actions: PairingActions,
+    connectedActions: @Composable () -> Unit,
     modifier: Modifier,
     padding: PaddingValues,
 ) {
@@ -76,6 +77,7 @@ internal fun HomeContent(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     )
                 }
+                item { connectedActions() }
             }
             items(devices, key = { it.fingerprint.toHex() }) { paired ->
                 ListItem(

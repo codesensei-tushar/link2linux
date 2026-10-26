@@ -19,6 +19,7 @@ fun PairingScreen(
     features: List<Feature>,
     onOpenFeature: (Feature) -> Unit,
     modifier: Modifier = Modifier,
+    connectedActions: @Composable () -> Unit = {},
     viewModel: PairingViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -39,6 +40,7 @@ fun PairingScreen(
             onUnpair = { viewModel.unpair(it.fingerprint) },
         ),
         modifier = modifier,
+        connectedActions = connectedActions,
     )
 }
 
@@ -49,6 +51,7 @@ internal fun PairingScreen(
     onOpenFeature: (Feature) -> Unit,
     actions: PairingActions,
     modifier: Modifier = Modifier,
+    connectedActions: @Composable () -> Unit = {},
 ) {
     val screen = uiState.screen
     // Back leaves scanning or stops waiting; on the home screen it closes the app as usual.
@@ -68,7 +71,8 @@ internal fun PairingScreen(
         },
     ) { padding ->
         when (screen) {
-            PairingScreenState.Home -> HomeContent(uiState, features, onOpenFeature, actions, Modifier.fillMaxSize(), padding)
+            PairingScreenState.Home ->
+                HomeContent(uiState, features, onOpenFeature, actions, connectedActions, Modifier.fillMaxSize(), padding)
             PairingScreenState.Scanning -> ScanContent(uiState.scanError, actions, Modifier.fillMaxSize(), padding)
             else -> AttemptContent(screen, actions, Modifier.fillMaxSize(), padding)
         }
