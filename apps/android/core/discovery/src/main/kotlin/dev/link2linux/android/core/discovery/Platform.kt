@@ -1,5 +1,6 @@
 package dev.link2linux.android.core.discovery
 
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import java.net.InetSocketAddress
 
@@ -17,6 +18,20 @@ interface ServiceAdvertiser {
     suspend fun register(announcement: Announcement, port: Int)
 
     suspend fun unregister()
+}
+
+/** What the pairing screens show about how the phone can be found. */
+interface DiscoveryStatus {
+
+    /** The mDNS instance name Android registered, which "pair without camera" shows next to the code. */
+    val registeredName: StateFlow<String?>
+
+    /**
+     * Where a desktop can dial the phone right now: its addresses on Wi-Fi and
+     * Ethernet with the listening port. Never link-local or loopback addresses.
+     * Empty while the phone does not listen or is on no such network.
+     */
+    val endpoints: Flow<List<InetSocketAddress>>
 }
 
 /** Sends a beacon on the phone's networks. */

@@ -9,12 +9,14 @@ import dev.link2linux.android.core.model.PairingState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import java.net.Inet6Address
 import java.net.InetSocketAddress
 
 /**
@@ -44,7 +46,7 @@ class DiscoveryController(
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
     /** Before Android 14 the system's mDNS daemon needs a new registration whenever a network changes. */
     private val reregisterOnNetworkChange: Boolean = false,
-) {
+) : DiscoveryStatus {
     private val engine = BeaconEngine(
         scope = scope,
         transport = object : BeaconTransport {
@@ -67,8 +69,18 @@ class DiscoveryController(
     /** What the phone currently announces, or null while it announces nothing. */
     val announced: StateFlow<Announcement?> = _announced.asStateFlow()
 
-    /** The instance name Android registered, for the "pair without camera" screen. */
-    val registeredName: StateFlow<String?> get() = advertiser.registeredName
+    override val registeredName: StateFlow<String?> get() = advertiser.registeredName
+
+    override val endpoints: Flow<List<InetSocketAddress>> =
+        combine(connections.listeningPort, localNetworks.networks) { port, networks ->
+            if (port == null) return@combine emptyList()
+            networks.flatMap { it.addresses }
+                .map { it.address }
+                .filter { !it.isLinkLocalAddress && !it.isLoopbackAddress && !it.isAnyLocalAddress }
+                .sortedBy { it is Inet6Address } // IPv4 first: it is what people type
+                .map { InetSocketAddress(it, port) }
+                .distinct()
+        }
 
     /** The facts that decide what is announced. */
     private data class Facts(
