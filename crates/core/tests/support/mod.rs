@@ -1,19 +1,23 @@
 //! A stand-in phone for loopback tests: a rustls TLS server with the
-//! phone's certificate rules, and the envelope stream on top of it.
+//! phone's certificate rules, the envelope stream on top of it, and the
+//! phone's side of QR code pairing.
 
 #![allow(dead_code, reason = "each test file uses part of the support code")]
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
 use link2linux_core::device::{DeviceInfo, DeviceKind};
 use link2linux_core::identity::{CertificateFingerprint, Identity};
-use link2linux_core::pairing::crypto;
-use link2linux_core::pairing::{PairingChannel, PairingError};
+use link2linux_core::pairing::crypto::{self, Role};
+use link2linux_core::pairing::{
+    PairedDevice, PairingChannel, PairingCode, PairingError, PairingPrompt, PairingSecret,
+    SasDecision,
+};
 use link2linux_core::transport::{ALPN_PROTOCOL, PeerPin, TransportError};
-use link2linux_protocol::v1::PairingMethod;
+use link2linux_protocol::v1::{PairingMethod, PairingOutcome, PairingProof, PairingResult};
 use link2linux_protocol::{Envelope, EnvelopeCodec, FrameError, Hello, PROTOCOL_VERSION, Payload};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, UnixTime};
@@ -308,5 +312,135 @@ impl TestPhone {
             DeviceKind::Phone,
             PairingMethod::Unspecified,
         )
+    }
+}
+
+/// What the test phone saw of a pairing.
+#[derive(Debug)]
+pub struct PhoneReport {
+    /// The desktop's `Hello`.
+    pub desktop_hello: Hello,
+    /// The desktop's verdict, if one arrived.
+    pub desktop_outcome: Option<PairingOutcome>,
+    /// The exporter value the phone derived.
+    pub ekm: [u8; 32],
+    /// The SAS code the phone showed.
+    pub code: Option<PairingCode>,
+}
+
+impl PhoneConnection {
+    /// The phone's side of QR pairing, with the secret it scanned.
+    pub async fn pair_by_qr(&mut self, phone: &TestPhone, secret: &PairingSecret) -> PhoneReport {
+        let desktop_hello = self.wire.hello(phone.hello()).await.unwrap();
+        assert_eq!(desktop_hello.pairing_method(), PairingMethod::QrCode);
+        let ekm = self.ekm_pair;
+
+        // The phone's proof goes out right after Hello.
+        let mac = crypto::pairing_proof(secret, Role::Phone, &ekm);
+        self.wire
+            .send_payload(Payload::PairingProof(PairingProof { mac: mac.to_vec() }))
+            .await
+            .unwrap();
+
+        let mut desktop_outcome = None;
+        match self.wire.recv_payload().await.unwrap() {
+            Some(Payload::PairingProof(proof)) => {
+                let outcome =
+                    if crypto::verify_pairing_proof(secret, Role::Desktop, &ekm, &proof.mac) {
+                        PairingOutcome::Accepted
+                    } else {
+                        PairingOutcome::VerificationFailed
+                    };
+                self.send_result(outcome).await;
+                if outcome == PairingOutcome::Accepted {
+                    desktop_outcome = self.read_result().await;
+                }
+            }
+            Some(Payload::PairingResult(result)) => desktop_outcome = Some(result.outcome()),
+            other => panic!("unexpected {other:?}"),
+        }
+        PhoneReport {
+            desktop_hello,
+            desktop_outcome,
+            ekm,
+            code: None,
+        }
+    }
+
+    async fn send_result(&mut self, outcome: PairingOutcome) {
+        let result = PairingResult {
+            outcome: outcome.into(),
+        };
+        self.wire
+            .send_payload(Payload::PairingResult(result))
+            .await
+            .unwrap();
+    }
+
+    /// The desktop's next `PairingResult`, skipping its proof; `None` if
+    /// the connection ends first.
+    async fn read_result(&mut self) -> Option<PairingOutcome> {
+        loop {
+            match self.wire.recv_payload().await {
+                Ok(Some(Payload::PairingResult(result))) => return Some(result.outcome()),
+                Ok(Some(Payload::PairingProof(_))) => {}
+                Ok(Some(other)) => panic!("unexpected {other:?}"),
+                Ok(None) | Err(_) => return None,
+            }
+        }
+    }
+}
+
+/// What a [`ScriptedPrompt`] was shown: each code (empty when it was asked
+/// about replacing records) with the records the pairing would replace.
+pub type Shown = Arc<Mutex<Vec<(PairingCode, Vec<PairedDevice>)>>>;
+
+/// A [`PairingPrompt`] with fixed answers that records what it was shown.
+#[derive(Debug, Clone)]
+pub struct ScriptedPrompt {
+    pub decision: SasDecision,
+    pub replace: bool,
+    pub shown: Shown,
+}
+
+impl ScriptedPrompt {
+    pub fn answering(decision: SasDecision, replace: bool) -> Self {
+        Self {
+            decision,
+            replace,
+            shown: Arc::default(),
+        }
+    }
+
+    pub fn codes(&self) -> Vec<PairingCode> {
+        self.shown
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(code, _)| code.clone())
+            .collect()
+    }
+}
+
+impl PairingPrompt for ScriptedPrompt {
+    async fn confirm_code(
+        &mut self,
+        code: &PairingCode,
+        _phone: &DeviceInfo,
+        replaces: &[PairedDevice],
+    ) -> SasDecision {
+        self.shown
+            .lock()
+            .unwrap()
+            .push((code.clone(), replaces.to_vec()));
+        self.decision
+    }
+
+    async fn confirm_replace(&mut self, _phone: &DeviceInfo, replaces: &[PairedDevice]) -> bool {
+        self.shown
+            .lock()
+            .unwrap()
+            .push((PairingCode::new(""), replaces.to_vec()));
+        self.replace
     }
 }
