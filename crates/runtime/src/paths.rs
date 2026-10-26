@@ -5,7 +5,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use link2linux_core::identity::{Identity, IdentityError};
+use link2linux_core::key_storage::KeyStorage;
 use link2linux_core::outbox::IdempotencyKey;
+use link2linux_platform::SecretStore;
 
 /// The directory under the user's data directory that holds this app's
 /// files.
@@ -63,10 +66,16 @@ impl DataDir {
         &self.root
     }
 
-    /// This desktop's key and certificate.
+    /// This desktop's private key, when no keyring holds it.
     #[must_use]
     pub fn identity(&self) -> PathBuf {
         self.root.join("identity.pem")
+    }
+
+    /// The note that the private key is in the keyring.
+    #[must_use]
+    pub fn identity_marker(&self) -> PathBuf {
+        self.root.join("identity-in-keyring")
     }
 
     /// The paired phones.
@@ -98,6 +107,29 @@ impl DataDir {
             .recursive(true)
             .mode(0o700)
             .create(&self.root)
+    }
+
+    /// This desktop's identity, from the keyring or the private file, or
+    /// a new one. The keyring keeps one key per installation, named after
+    /// its device id. Unlocking the keyring may prompt the user.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the key cannot be read or stored; see
+    /// [`KeyStorage::load_or_create`].
+    pub async fn load_identity<S: SecretStore>(
+        &self,
+        keyring: &S,
+    ) -> Result<Identity, IdentityError> {
+        self.create()?;
+        let device_id = self.load_or_create_device_id()?;
+        let storage = KeyStorage {
+            name: format!("device-key {device_id}"),
+            label: "link2linux device key".to_owned(),
+            file: self.identity(),
+            marker: self.identity_marker(),
+        };
+        storage.load_or_create(keyring).await
     }
 
     /// The id the phones know this desktop by: read from the data directory,

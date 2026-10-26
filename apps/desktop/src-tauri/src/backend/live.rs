@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use link2linux_platform::PresenceAdvertiser;
-use link2linux_platform::linux::DbusNotifications;
 use link2linux_platform::linux::ble::BluezPresence;
+use link2linux_platform::linux::{DbusNotifications, SecretServiceStore};
 use link2linux_runtime::notify::{Presenter, ServiceFactory};
 use link2linux_runtime::paths::{DataDir, desktop_name};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
@@ -20,6 +20,9 @@ use super::{
     PhoneTarget,
 };
 
+/// The app id, which also names this app's items in the keyring.
+const APP_ID: &str = "dev.link2linux.desktop";
+
 /// [`Backend`] over the real runtime.
 pub struct LiveBackend {
     runtime: Arc<Runtime>,
@@ -27,7 +30,7 @@ pub struct LiveBackend {
 
 impl LiveBackend {
     /// Starts the runtime on Tauri's async runtime, with data in the user's
-    /// XDG data directory.
+    /// XDG data directory and the private key in the keyring.
     ///
     /// # Errors
     ///
@@ -35,8 +38,14 @@ impl LiveBackend {
     /// phones cannot be used.
     pub fn start(events: Arc<dyn EventSink>) -> Result<Self, RuntimeError> {
         let data_dir = DataDir::from_env()?;
+        // Waits while the keyring asks the user to unlock it, within the
+        // store's timeouts.
+        let identity = tauri::async_runtime::block_on(
+            data_dir.load_identity(&SecretServiceStore::new(APP_ID)),
+        )?;
         let presenter: Arc<dyn Presenter> = Arc::new(DbusNotifications::new());
         let shell = Shell {
+            identity,
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), data_dir.images())),
             presenter,
             events,

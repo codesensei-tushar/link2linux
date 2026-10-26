@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use link2linux_core::device::{DeviceInfo, DeviceKind, Feature};
 use link2linux_core::discovery::LocalAddress;
-use link2linux_core::identity::CertificateFingerprint;
+use link2linux_core::identity::{CertificateFingerprint, Identity};
 use link2linux_core::pairing::QrPayload;
 use link2linux_core::session::{Session, SessionConfig, SessionEvent};
 use link2linux_platform::{
@@ -194,6 +194,7 @@ fn start() -> Rig {
     }];
     let presenter: Arc<dyn link2linux_runtime::notify::Presenter> = sink.clone();
     let shell = Shell {
+        identity: Identity::generate().unwrap(),
         drivers: Arc::new(ServiceFactory::new(
             presenter.clone(),
             data.path().join("images"),

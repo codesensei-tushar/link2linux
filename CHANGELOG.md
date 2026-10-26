@@ -23,6 +23,16 @@ from Unreleased to a version.
   Wi-Fi hotspot, or USB or Bluetooth tethering, and has no other network, so a
   computer that joins the phone's hotspot finds it.
 
+### Security
+
+- **The desktop's private key is in the keyring.** The key that identifies the
+  desktop to your phones now lives in the system keyring (the Secret Service of
+  GNOME Keyring, KWallet or KeePassXC) instead of a file. A key from 0.1.0 moves
+  there on the first start, and its file is overwritten and deleted. Without a
+  keyring, the key stays in a file only you can read, as before. Once the key
+  has moved, 0.1.0 no longer finds it: going back to 0.1.0 means pairing your
+  phones again.
+
 ## [0.1.0] - 2026-10-26
 
 The first release: an Android phone and a Linux desktop pair once, then find

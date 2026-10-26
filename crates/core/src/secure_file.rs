@@ -1,5 +1,5 @@
-//! Files only the user may read: the desktop's private key and its pairing
-//! records.
+//! Files only the user may read: the desktop's private key, when no keyring
+//! holds it, and its pairing records.
 //!
 //! Writes are atomic: the content goes to a new file in the same directory,
 //! created with mode 0600, is flushed to disk, and then renamed over the
@@ -74,6 +74,28 @@ pub(crate) fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     fs::read(path).map(Some)
 }
 
+/// Overwrites the file at `path` with zeros and deletes it. A missing file
+/// is not an error.
+///
+/// This is best effort: a copy-on-write file system, a journal or an SSD
+/// may still keep the old content somewhere on the disk.
+pub(crate) fn erase(path: &Path) -> io::Result<()> {
+    let mut file = match OpenOptions::new().write(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let length = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
+    file.write_all(&vec![0; length])?;
+    file.sync_all()?;
+    drop(file);
+    fs::remove_file(path)?;
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +130,17 @@ mod tests {
         assert_eq!(read(&path).unwrap().unwrap(), b"secret");
         assert_eq!(mode(&path), 0o600);
         assert_eq!(read(&dir.path().join("missing")).unwrap(), None);
+    }
+
+    #[test]
+    fn erasing_removes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.pem");
+        write(&path, b"secret").unwrap();
+
+        erase(&path).unwrap();
+        assert!(!path.exists());
+        // Erasing what is already gone is fine.
+        erase(&path).unwrap();
     }
 }

@@ -6,6 +6,7 @@
 //! - [`device`]: who a device is and which [`Feature`]s it serves;
 //! - [`identity`]: this desktop's key and certificate, and the fingerprints
 //!   devices know each other by;
+//! - [`key_storage`]: where that key is kept, the keyring or a private file;
 //! - [`discovery`]: finding devices on the local network;
 //! - [`pairing`]: the one-time trust step and the store of paired devices;
 //! - [`transport`]: the TLS stream to a phone;
@@ -33,6 +34,7 @@
 pub mod device;
 pub mod discovery;
 pub mod identity;
+pub mod key_storage;
 pub mod outbox;
 pub mod pairing;
 mod secure_file;

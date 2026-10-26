@@ -7,8 +7,10 @@
 
 pub mod ble;
 pub mod notifications;
+pub mod secrets;
 
 pub use notifications::DbusNotifications;
+pub use secrets::SecretServiceStore;
 
 use std::env;
 use std::fs;
