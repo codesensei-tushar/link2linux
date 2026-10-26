@@ -91,6 +91,12 @@ pub struct FileService {
     pending: HashMap<u64, Pending>,
     /// Transfers to cancel on the phone once it is reachable.
     cancels: Vec<TransferId>,
+    /// The requests of chunks of this session that got no answer in time.
+    /// The phone may still hold them unanswered, and a late answer never
+    /// reaches this service, so they count against the window until the
+    /// phone answers a request sent after them: it answers file requests
+    /// one at a time, in the order they came, so it has answered these too.
+    lost_chunks: Vec<u64>,
     /// Transfers from the phone that the user ended here, with when, kept
     /// for [`KEEP_UNFINISHED`]: offering one again gets `DECLINED`.
     declined: HashMap<TransferId, Instant>,
@@ -108,6 +114,7 @@ impl FileService {
             outgoing: Vec::new(),
             pending: HashMap::new(),
             cancels: Vec::new(),
+            lost_chunks: Vec::new(),
             declined: HashMap::new(),
             events: broadcast::channel(256).0,
         }
@@ -275,6 +282,7 @@ impl FileService {
     /// [`KEEP_UNFINISHED`], to go on in the next session.
     pub fn session_ended(&mut self) {
         self.pending.clear();
+        self.lost_chunks.clear();
         self.pause_all(TransferState::Interrupted, Instant::now());
         // A new session gets a new chance.
         for transfer in &mut self.outgoing {
@@ -381,6 +389,8 @@ impl FileService {
             }
             SessionEvent::Reply(reply) => match self.pending.remove(&reply.request) {
                 Some(pending) => {
+                    let request = reply.request;
+                    self.lost_chunks.retain(|lost| *lost > request);
                     self.on_answer(pending, reply.into_result());
                     None
                 }
@@ -390,6 +400,9 @@ impl FileService {
             SessionEvent::Drained => None,
             SessionEvent::RequestTimedOut { request } => match self.pending.remove(&request) {
                 Some(pending) => {
+                    if matches!(pending, Pending::Chunk { .. }) {
+                        self.lost_chunks.push(request);
+                    }
                     self.on_timeout(pending);
                     None
                 }
@@ -777,11 +790,15 @@ impl FileService {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         loop {
+            // Chunks of cancelled and paused transfers count until their
+            // answer comes, and those that got none in time until a later
+            // request's answer does.
             let unanswered = self
                 .pending
                 .values()
                 .filter(|p| matches!(p, Pending::Chunk { .. }))
-                .count();
+                .count()
+                + self.lost_chunks.len();
             if unanswered >= MAX_UNANSWERED_CHUNKS {
                 return Ok(());
             }

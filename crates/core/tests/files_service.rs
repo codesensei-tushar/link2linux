@@ -1260,6 +1260,83 @@ async fn unanswered_requests_offer_the_transfer_again_then_wait_for_the_next_ses
     desktop.settles(id, TransferState::Completed).await;
 }
 
+#[tokio::test]
+async fn chunks_that_got_no_answer_keep_their_place_in_the_window() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let config = SessionConfig {
+        request_timeout: Duration::from_millis(200),
+        ..SessionConfig::default()
+    };
+    let (session, mut phone) = connect(Availability::Ready, config).await;
+    let desktop = Driven::start(session, service(downloads.path()));
+    let one = desktop
+        .send(vec![source(
+            sources.path(),
+            "one",
+            &data(12 * CHUNK_LEN, 20),
+        )])
+        .await
+        .unwrap();
+    let two = desktop
+        .send(vec![source(
+            sources.path(),
+            "two",
+            &data(12 * CHUNK_LEN, 21),
+        )])
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let (seq, _) = read_offer(&mut phone).await;
+        phone.answer(seq, accept(0, 0)).await;
+    }
+    let mut stalled = Vec::new();
+    for _ in 0..8 {
+        let (seq, chunk) = read_chunk(&mut phone).await;
+        stalled.push((seq, chunk.transfer_id));
+    }
+
+    // The phone stalls past the timeout. Each transfer whose chunk missed
+    // its answer is offered again, but the phone may still hold all eight
+    // chunks: no ninth comes.
+    let mut stalled_transfers: Vec<&Vec<u8>> = stalled.iter().map(|(_, id)| id).collect();
+    stalled_transfers.dedup();
+    stalled_transfers.sort();
+    stalled_transfers.dedup();
+    let mut offers = Vec::new();
+    while offers.len() < stalled_transfers.len() {
+        let frame = phone.next().await;
+        match frame.payload {
+            Some(Payload::FileOffer(offer)) => offers.push((frame.seq, offer.transfer_id)),
+            other => panic!("expected only offers, got {other:?}"),
+        }
+    }
+
+    // It answers in order: the stalled chunks, too late for the desktop,
+    // then the offers. Only then the window opens again, up to eight.
+    for (seq, _) in &stalled {
+        phone.ack(*seq).await;
+    }
+    for (seq, id) in &offers {
+        let written = stalled.iter().filter(|(_, of)| of == id).count();
+        phone
+            .answer(*seq, accept(0, (written * CHUNK_LEN) as u64))
+            .await;
+    }
+    let mut sent = Vec::new();
+    for _ in 0..8 {
+        sent.push(read_chunk(&mut phone).await.1.transfer_id);
+    }
+    // Unanswered again, they bring offers, never a ninth chunk.
+    let next = phone.next().await;
+    assert!(
+        matches!(next.payload, Some(Payload::FileOffer(_))),
+        "{next:?}"
+    );
+    assert!(sent.contains(&two.0.to_vec()), "both transfers go on");
+    assert!(sent.contains(&one.0.to_vec()), "both transfers go on");
+}
+
 /// A phone running the same service, on the other end of a pipe.
 async fn pair(desktop_dir: &Path, phone_dir: &Path) -> (Driven, Driven) {
     let (here, there) = duplex(64 * 1024);
