@@ -266,10 +266,13 @@ export type PairingState =
 { step: "idle" } | 
 /**  A QR code is on screen, waiting for a phone to scan it. */
 { step: "qrOffer"; 
-/**  The `link2linux://pair?...` payload held by the code. */
-uri: string; 
 /**  The code as an SVG document, black on white so it scans in any theme. */
 svg: string; 
+/**
+ *  Which code of this activation it is, from 1. A new one replaces
+ *  it shortly before it expires.
+ */
+offerNumber: number; 
 /**  The name the phone will see for this computer. */
 desktopName: string; 
 /**  Time left until this offer is replaced. */

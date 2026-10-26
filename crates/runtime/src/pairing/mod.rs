@@ -12,6 +12,7 @@ mod state;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use link2linux_core::discovery::SecretBytes;
 use link2linux_core::discovery::onlink::is_on_link;
 use link2linux_core::discovery::reconnect::dial_plan;
 use link2linux_core::pairing::{MAX_QR_ADDRESSES, OfferStatus, QrOffer};
@@ -20,7 +21,9 @@ use tokio::time::{self, Instant};
 use crate::link::lock;
 use crate::qr;
 use crate::shared::Core;
-use crate::view::{BackendError, PairingFailure, PairingMethod, PairingState, PhoneTarget};
+use crate::view::{
+    BackendError, PairingFailure, PairingMethod, PairingState, PhoneTarget, QrImage,
+};
 
 use state::{Code, MAX_OFFERS, OFFER_REFRESH_BEFORE, Phase, SAS_MAX_ATTEMPTS};
 pub(crate) use state::{PairingCtl, PhoneList, parse_address};
@@ -278,13 +281,11 @@ fn show_offer(core: &Core, ctl: &mut PairingCtl, number: u8) {
         addresses,
         ble,
     );
-    let uri = offer.uri().to_owned();
-    let svg = qr::svg(&uri).unwrap_or_default();
-    *lock(&core.offer_secret) = Some(offer.secret().as_bytes().to_vec());
+    let svg = QrImage(qr::svg(offer.uri()).unwrap_or_default());
+    *lock(&core.offer_secret) = Some(SecretBytes::new(offer.secret().as_bytes().to_vec()));
     let expires = offer.expires_at();
     ctl.offer = Some(Arc::new(Mutex::new(offer)));
     ctl.code = Some(Code {
-        uri,
         svg,
         expires,
         number,

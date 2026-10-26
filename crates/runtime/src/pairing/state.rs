@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::view::{
-    BackendError, Device, DiscoveredPhone, PairingFailure, PairingMethod, PairingState,
+    BackendError, Device, DiscoveredPhone, PairingFailure, PairingMethod, PairingState, QrImage,
 };
 
 /// The port phones listen on unless the user types another.
@@ -66,8 +66,7 @@ pub enum Phase {
 /// failed one does not end the offer.
 #[derive(Debug)]
 pub struct Code {
-    pub uri: String,
-    pub svg: String,
+    pub svg: QrImage,
     pub expires: Instant,
     /// Which offer of [`MAX_OFFERS`] this is.
     pub number: u8,
@@ -136,8 +135,8 @@ impl PairingCtl {
             Phase::Idle => PairingState::Idle,
             Phase::Qr { last_failure } => match &self.code {
                 Some(code) => PairingState::QrOffer {
-                    uri: code.uri.clone(),
                     svg: code.svg.clone(),
+                    offer_number: code.number,
                     desktop_name: desktop_name.to_owned(),
                     expires_in_ms: left(code.expires),
                     lifetime_ms: u32::try_from(

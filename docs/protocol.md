@@ -441,7 +441,7 @@ link2linux://pair?v=1&f=<fp_D>&s=<secret>&n=<name>&a=<addresses>&b=<address>
 | `v` | Payload format version: `1`. A phone that does not know the version asks the user to update the app. |
 | `f` | `fp_D`, base64url (43 characters). |
 | `s` | The one-time secret: 16 random bytes, base64url (22 characters). |
-| `n` | The desktop's device name, percent-encoded, at most 64 bytes before encoding. Shown on the phone before it connects. |
+| `n` | The desktop's device name, percent-encoded, at most 64 bytes before encoding and never empty. Shown on the phone before it connects. |
 | `a` | Up to 4 of the desktop's addresses, comma-separated, where the phone sends its beacons: an IPv4 address or an IPv6 address, each optionally with `:port` (IPv6 in brackets then). The default port is 27381. Never an IPv6 link-local address, whose interface the phone cannot know. |
 | `b` | The desktop's Bluetooth address, as 12 hexadecimal digits, most significant first. Present only when the desktop advertises over Bluetooth LE from a public address. |
 

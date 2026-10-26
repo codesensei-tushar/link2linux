@@ -21,6 +21,7 @@
 //! from a code.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -47,6 +48,9 @@ pub const MAX_QR_NAME_LEN: usize = 64;
 pub const OFFER_LIFETIME: Duration = Duration::from_secs(5 * 60);
 /// Failed proofs after which the desktop withdraws an offer.
 pub const MAX_FAILED_PROOFS: u32 = 32;
+/// The name a code carries for a desktop without one: the phone refuses a
+/// code with an empty name.
+const UNNAMED: &str = "Linux desktop";
 
 /// Characters left as they are in the name: RFC 3986 unreserved.
 const NAME_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
@@ -94,9 +98,10 @@ pub enum QrError {
 impl QrPayload {
     /// The URI to put in the QR code.
     ///
-    /// The name is cut to [`MAX_QR_NAME_LEN`] bytes at a character boundary,
-    /// IPv6 link-local addresses are skipped, and only the first
-    /// [`MAX_QR_ADDRESSES`] of the rest are written.
+    /// The name is cut to [`MAX_QR_NAME_LEN`] bytes at a character boundary
+    /// (an empty one is written as "Linux desktop"), IPv6 link-local
+    /// addresses are skipped, and only the first [`MAX_QR_ADDRESSES`] of the
+    /// rest are written.
     #[must_use]
     pub fn to_uri(&self) -> String {
         let mut uri = format!(
@@ -104,11 +109,12 @@ impl QrPayload {
             self.desktop.to_base64url(),
             URL_SAFE_NO_PAD.encode(self.secret.as_bytes()),
         );
+        let name = match truncate(&self.name, MAX_QR_NAME_LEN) {
+            "" => UNNAMED,
+            name => name,
+        };
         uri.push_str("&n=");
-        uri.extend(utf8_percent_encode(
-            truncate(&self.name, MAX_QR_NAME_LEN),
-            NAME_ENCODE_SET,
-        ));
+        uri.extend(utf8_percent_encode(name, NAME_ENCODE_SET));
         if self
             .addresses
             .iter()
@@ -134,7 +140,7 @@ impl QrPayload {
     }
 
     /// Reads a QR code URI, as the phone does. Unknown parameters are
-    /// ignored; `n`, `a` and `b` are optional.
+    /// ignored; `a` and `b` are optional, and `n` must not be empty.
     ///
     /// # Errors
     ///
@@ -192,9 +198,14 @@ impl QrPayload {
             Some(version) => return Err(QrError::UnsupportedVersion(version)),
             None => return Err(QrError::Missing("v")),
         }
+        let desktop = desktop.ok_or(QrError::Missing("f"))?;
+        let secret = secret.ok_or(QrError::Missing("s"))?;
+        if name.is_empty() {
+            return Err(QrError::Missing("n"));
+        }
         Ok(Self {
-            desktop: desktop.ok_or(QrError::Missing("f"))?,
-            secret: secret.ok_or(QrError::Missing("s"))?,
+            desktop,
+            secret,
             name,
             addresses,
             bluetooth_address,
@@ -218,8 +229,8 @@ pub enum OfferStatus {
 /// A QR code on the desktop's screen, and what happened to it so far.
 ///
 /// Share it between the connections that may use it behind a mutex; the
-/// pairing functions lock it only briefly and never across a wait.
-#[derive(Debug)]
+/// pairing functions lock it only briefly and never across a wait. Its
+/// `Debug` output leaves out the URI, which holds the secret.
 pub struct QrOffer {
     payload: QrPayload,
     uri: String,
@@ -351,6 +362,17 @@ impl QrOffer {
     }
 }
 
+impl fmt::Debug for QrOffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QrOffer")
+            .field("payload", &self.payload)
+            .field("expires_at", &self.expires_at)
+            .field("failed_proofs", &self.failed_proofs)
+            .field("used", &self.used)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The longest prefix of `text` of at most `max` bytes that ends on a
 /// character boundary.
 fn truncate(text: &str, max: usize) -> &str {
@@ -468,6 +490,18 @@ mod tests {
     }
 
     #[test]
+    fn a_code_always_names_the_desktop() {
+        let mut payload = payload();
+        payload.name = String::new();
+        let uri = payload.to_uri();
+        assert!(uri.contains("&n=Linux%20desktop&"), "{uri}");
+        assert_eq!(QrPayload::parse(&uri).unwrap().name, "Linux desktop");
+
+        let unnamed = uri.replace("&n=Linux%20desktop", "&n=");
+        assert_eq!(QrPayload::parse(&unnamed), Err(QrError::Missing("n")));
+    }
+
+    #[test]
     fn offers_expire_get_used_and_block_failing_peers() {
         let start = Instant::now();
         let mut offer = QrOffer::from_payload(payload(), start);
@@ -495,7 +529,10 @@ mod tests {
     #[test]
     fn secrets_stay_out_of_debug_output() {
         let offer = QrOffer::new(CertificateFingerprint([0; 32]), "Desk", Vec::new(), None);
-        assert!(format!("{offer:?}").contains("PairingSecret(..)"));
+        let printed = format!("{offer:?}");
+        assert!(printed.contains("PairingSecret(..)"));
+        let secret = URL_SAFE_NO_PAD.encode(offer.secret().as_bytes());
+        assert!(!printed.contains(&secret), "{printed}");
         assert_eq!(offer.uri().len(), offer.payload().to_uri().len());
         assert!(offer.uri().ends_with("&n=Desk"));
     }

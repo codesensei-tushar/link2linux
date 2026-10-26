@@ -43,6 +43,7 @@ pub use crate::identity::CertificateFingerprint;
 use crate::transport::PeerPin;
 use link2linux_protocol::v1::GoodbyeReason;
 pub use link2linux_protocol::v1::{PairingMethod, PairingOutcome};
+use zeroize::Zeroize;
 
 /// The six-digit code both screens show while pairing without a QR code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,9 +86,16 @@ impl fmt::Display for PairingCode {
 }
 
 /// The 32-byte key behind a phone's rotating presence tags, which it gives
-/// to the desktop in `PresenceUpdate`. `Debug` never prints it.
+/// to the desktop in `PresenceUpdate`. `Debug` never prints it, and its
+/// memory is cleared on drop.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PresenceKey(pub [u8; 32]);
+
+impl Drop for PresenceKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl PresenceKey {
     /// The key from the bytes of a `PresenceUpdate`, if there are 32.

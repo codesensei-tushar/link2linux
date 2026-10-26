@@ -8,8 +8,8 @@ const svg =
 export function qrOffer(overrides: Partial<Step<"qrOffer">> = {}): Step<"qrOffer"> {
   return {
     step: "qrOffer",
-    uri: "link2linux://pair?v=1&n=Desk",
     svg,
+    offerNumber: 1,
     desktopName: "Desk",
     expiresInMs: 272_000,
     lifetimeMs: 300_000,

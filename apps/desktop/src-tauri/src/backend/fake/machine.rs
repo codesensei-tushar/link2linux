@@ -8,7 +8,7 @@ use super::script::{
 use super::support::{PHONE_NAME, demo_device, offer_uri, pretend_phones, typed_phone};
 use crate::backend::{
     BackendError, Device, DeviceStatus, DiscoveredPhone, PairingFailure, PairingMethod,
-    PairingState, PhoneTarget,
+    PairingState, PhoneTarget, QrImage,
 };
 use crate::qr;
 
@@ -16,8 +16,7 @@ use crate::qr;
 enum Phase {
     Idle,
     Qr {
-        uri: String,
-        svg: String,
+        svg: QrImage,
         offer: u8,
         expires: u64,
         /// When a pretend phone scans the code.
@@ -112,10 +111,13 @@ impl Machine {
         match &self.phase {
             Phase::Idle => PairingState::Idle,
             Phase::Qr {
-                uri, svg, expires, ..
+                svg,
+                offer,
+                expires,
+                ..
             } => PairingState::QrOffer {
-                uri: uri.clone(),
                 svg: svg.clone(),
+                offer_number: *offer,
                 desktop_name: self.desktop_name.clone(),
                 expires_in_ms: left(*expires),
                 lifetime_ms: OFFER_LIFETIME_MS,
@@ -395,13 +397,12 @@ impl Machine {
         let uri = offer_uri(seed, &self.desktop_name);
         // A URI built here always fits a code; an empty image only means the
         // fake could not draw one.
-        let svg = qr::svg(&uri).unwrap_or_default();
+        let svg = QrImage(qr::svg(&uri).unwrap_or_default());
         let scan = matches!(
             self.script,
             Script::Success | Script::Demo | Script::Declined | Script::WrongCode
         );
         self.phase = Phase::Qr {
-            uri,
             svg,
             offer,
             expires: now_ms + u64::from(OFFER_LIFETIME_MS),

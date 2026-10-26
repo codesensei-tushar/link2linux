@@ -156,7 +156,7 @@ pub(crate) struct Core {
     pub extra_locals: Vec<LocalAddress>,
     pub keys: watch::Sender<DiscoveryKeys>,
     pub evidence: Mutex<Evidence>,
-    pub offer_secret: Mutex<Option<Vec<u8>>>,
+    pub offer_secret: Mutex<Option<SecretBytes>>,
     pub ble_address: Mutex<Option<[u8; 6]>>,
     pub active: AtomicBool,
     pub cancel: CancellationToken,
@@ -370,7 +370,7 @@ impl Core {
                 })
             })
             .collect();
-        let offer_secret = lock(&self.offer_secret).clone().map(SecretBytes::new);
+        let offer_secret = lock(&self.offer_secret).clone();
         self.keys.send_replace(DiscoveryKeys {
             paired,
             offer_secret,
