@@ -8,14 +8,18 @@
 //! confirmed by the user on both screens. Each side then stores a
 //! [`PairedDevice`] record in its [`TrustStore`], keyed by the peer's
 //! [`CertificateFingerprint`]. From then on the transport only accepts peers
-//! whose key matches a record. `docs/protocol.md` ("Pairing") gives the
-//! exact rules, and [`crypto`] the exact bytes.
+//! whose key matches a record, and the functions in [`records`] keep the
+//! records current: confirmation, key rotation and unpairing.
+//! `docs/protocol.md` ("Pairing") gives the exact rules, and [`crypto`] the
+//! exact bytes.
 //!
 //! Records are found by fingerprint, never by the device id a peer claims
-//! in its `Hello`.
+//! in its `Hello`; the id is only checked against the record
+//! ([`records::check_peer`]).
 
 pub mod crypto;
 mod qr;
+pub mod records;
 
 use std::collections::BTreeMap;
 use std::fmt;
