@@ -33,26 +33,33 @@ class MappedNotification(
 class NotificationMapper(
     private val images: ImageStore,
     private val redaction: RedactionDetector = RedactionDetector(),
+    private val oneTimeCodes: OneTimeCodeDetector = OneTimeCodeDetector(),
 ) {
-    /** @param contentHidden the user chose not to share this app's content. */
-    fun map(s: NotificationSnapshot, contentHidden: Boolean = false): MappedNotification {
+    /**
+     * @param contentHidden the user chose not to share this app's content.
+     * @param hideOneTimeCodes the user keeps one-time codes on the phone.
+     */
+    fun map(s: NotificationSnapshot, contentHidden: Boolean = false, hideOneTimeCodes: Boolean = true): MappedNotification {
         val content = when {
             contentHidden -> NotificationContent.NOTIFICATION_CONTENT_HIDDEN_BY_USER
+            // Before Android's own redaction, so a code in a field Android left alone is caught too.
+            hideOneTimeCodes && oneTimeCodes.detect(s) -> NotificationContent.NOTIFICATION_CONTENT_ONE_TIME_CODE
             else -> redaction.detect(s)
         }
         val full = content == NotificationContent.NOTIFICATION_CONTENT_FULL
-        // Hidden by the user: only the app, the time and the category. Redacted by
-        // Android: whatever text it left, but nothing that could hold the withheld part.
-        val showText = content != NotificationContent.NOTIFICATION_CONTENT_HIDDEN_BY_USER
+        // Hidden by the user or holding a code: only the app, the time and the category.
+        // Redacted by Android: whatever text it left, but nothing that could hold the withheld part.
+        val withheld = content == NotificationContent.NOTIFICATION_CONTENT_HIDDEN_BY_USER ||
+            content == NotificationContent.NOTIFICATION_CONTENT_ONE_TIME_CODE
 
-        val builtActions = if (contentHidden) emptyList() else buildActions(s, allowReply = full)
+        val builtActions = if (withheld) emptyList() else buildActions(s, allowReply = full)
         val appIcon = images.intern(s.appIcon, ImageKind.APP_ICON)
         val largeIcon = if (full) images.intern(s.largeIcon, ImageKind.LARGE_ICON) else null
         val picture = if (full) images.intern(s.picture, ImageKind.PICTURE) else null
         val messages = if (full) s.conversation?.messages.orEmpty() else emptyList()
 
         fun clean(value: String, max: Int): String =
-            if (!showText || redaction.isPlaceholder(value)) "" else WireText.truncate(value, max)
+            if (withheld || redaction.isPlaceholder(value)) "" else WireText.truncate(value, max)
 
         val title = clean(s.bigTitle.ifBlank { s.title }, Limits.SHORT_TEXT)
         var body = clean(s.bigText.ifBlank { s.text }, Limits.LONG_TEXT)
@@ -66,7 +73,7 @@ class NotificationMapper(
             appName = WireText.truncate(s.appName, Limits.APP_NAME)
             appIcon?.let { this.appIcon = it }
             whenUnixMs = if (s.eventTimeMillis > 0) s.eventTimeMillis else s.postTimeMillis
-            if (showText) {
+            if (!withheld) {
                 this.title = title
                 text = body
                 subText = clean(s.subText, Limits.SHORT_TEXT)
@@ -78,7 +85,7 @@ class NotificationMapper(
             actions += builtActions.map { it.first }
             this.messages += messages.takeLast(Limits.MESSAGES).map(::message)
             if (group && full) conversationTitle = clean(s.conversation.title, Limits.SHORT_TEXT)
-            s.progress?.takeIf { !contentHidden }?.let { p ->
+            s.progress?.takeIf { !withheld }?.let { p ->
                 progress = notificationProgress {
                     current = p.current.coerceAtLeast(0)
                     max = p.max.coerceAtLeast(0)

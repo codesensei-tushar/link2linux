@@ -55,6 +55,16 @@ class NotificationEngineRequestsTest {
     }
 
     @Test
+    fun `a notification hidden for its one-time code can still be dismissed but not acted on`() = runTest {
+        val rec = Recorder()
+        val h = ready(this, snap("n", text = "Your code is 482913").copy(actions = listOf(ActionSnapshot("Copy", invoker = rec))))
+        assertEquals(ErrorCode.ERROR_CODE_NOT_FOUND, h.act("n", "a:any").errorCode)
+        assertTrue(rec.calls.isEmpty())
+        h.dismiss("n").also { assertEquals(NotificationReply.Ack, it.single) }
+        assertEquals(listOf("n"), h.canceller.cancelled)
+    }
+
+    @Test
     fun `a removal the desktop did not ask for keeps its own reason`() = runTest {
         val h = ready(this, snap("n"), snap("m"))
         h.dismiss("n")

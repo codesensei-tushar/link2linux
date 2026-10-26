@@ -187,6 +187,32 @@ class NotificationEngineSyncTest {
     }
 
     @Test
+    fun `an update that brings a one-time code is re-sent without its content`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a", text = "Signing you in"))
+        h.attach()
+        h.sync()
+        h.post(snap("a", text = "Your login code is 482913"))
+        val n = h.transport.posted.single().notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_ONE_TIME_CODE, n.content)
+        assertEquals("", n.title)
+        assertEquals("", n.text)
+    }
+
+    @Test
+    fun `turning code hiding off re-sends codes in full`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a", text = "Your code is 482913"))
+        h.attach()
+        h.sync()
+        h.policy.hideOneTimeCodes = false
+        h.changePolicy()
+        val n = h.transport.posted.single().notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_FULL, n.content)
+        assertEquals("Your code is 482913", n.text)
+    }
+
+    @Test
     fun `a request while the feature is off or access is missing is refused`() = runTest {
         val h = EngineHarness(this)
         h.connect(snap("a"))

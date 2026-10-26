@@ -57,6 +57,7 @@ class NotificationSessionTest {
 
         @Volatile override var accessGranted = true
         override val dismissSync = true
+        override val hideOneTimeCodes = true
 
         override fun isExcluded(packageName: String) = false
 

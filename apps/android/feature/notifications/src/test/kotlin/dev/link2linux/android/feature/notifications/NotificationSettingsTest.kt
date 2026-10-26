@@ -24,10 +24,11 @@ class NotificationSettingsTest {
     }
 
     @Test
-    fun `the feature is off, dismiss sync is on and nothing is filtered by default`() {
+    fun `the feature is off, dismiss sync and code hiding are on and nothing is filtered by default`() {
         val s = NotificationSettings(MemoryStore()).state.value
         assertFalse(s.enabled)
         assertTrue(s.dismissSync)
+        assertTrue(s.hideOneTimeCodes)
         assertTrue(s.excluded.isEmpty())
         assertTrue(s.contentHidden.isEmpty())
     }
@@ -38,12 +39,14 @@ class NotificationSettingsTest {
         val a = NotificationSettings(store)
         a.setEnabled(true)
         a.setDismissSync(false)
+        a.setHideOneTimeCodes(false)
         a.setShared("org.chat", false)
         a.setContentHidden("org.mail", true)
         a.rememberApp("org.chat", "Chat")
         val b = NotificationSettings(store).state.value
         assertTrue(b.enabled)
         assertFalse(b.dismissSync)
+        assertFalse(b.hideOneTimeCodes)
         assertEquals(setOf("org.chat"), b.excluded)
         assertEquals(setOf("org.mail"), b.contentHidden)
         assertEquals(mapOf("org.chat" to "Chat"), b.knownApps)
@@ -66,8 +69,9 @@ class NotificationSettingsTest {
         val s = NotificationSettings(MemoryStore()) { calls++ }
         s.setEnabled(true)
         s.setShared("p", false)
+        s.setHideOneTimeCodes(false)
         s.rememberApp("p", "P")
-        assertEquals(2, calls)
+        assertEquals(3, calls)
     }
 
     @Test

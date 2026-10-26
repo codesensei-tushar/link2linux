@@ -345,6 +345,70 @@ class NotificationMapperTest {
     }
 
     @Test
+    fun `a one-time code keeps only the app, time and category`() {
+        val m = mapper.map(
+            base.copy(
+                title = "Bank",
+                text = "482913 is your OTP. Do not share it.",
+                bigText = "482913 is your OTP. Do not share it with anyone.",
+                subText = "Card 1234",
+                category = "msg",
+                appIcon = png(1),
+                largeIcon = png(2),
+                picture = png(3),
+                actions = listOf(action("Copy 482913"), action("Reply", reply = ReplyInput(), replyKey = "r")),
+                conversation = ConversationSnapshot(
+                    listOf(MessageSnapshot("Bank", "482913 is your OTP", 1, false)),
+                    title = "Bank",
+                    isGroup = true,
+                ),
+                progress = ProgressSnapshot(1, 2, false),
+            ),
+        )
+        val n = m.notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_ONE_TIME_CODE, n.content)
+        assertEquals("Chat", n.appName)
+        assertEquals(1_000L, n.whenUnixMs)
+        assertEquals(NotificationCategory.NOTIFICATION_CATEGORY_MESSAGE, n.category)
+        assertTrue(n.dismissible)
+        assertEquals(listOf("", "", "", ""), listOf(n.title, n.text, n.subText, n.conversationTitle))
+        assertEquals(0, n.messagesCount)
+        assertEquals(0, n.actionsCount)
+        assertTrue(m.actions.isEmpty())
+        assertFalse(n.hasLargeIcon() || n.hasPicture() || n.hasProgress())
+        assertEquals(setOf(n.appIcon.sha256), m.imageHashes)
+        assertFalse(n.toByteString().toStringUtf8().contains("482913"))
+    }
+
+    @Test
+    fun `a code only on an action label hides the whole notification`() {
+        val n = mapper.map(base.copy(text = "New message", actions = listOf(action("Copy 482913")))).notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_ONE_TIME_CODE, n.content)
+        assertEquals(0, n.actionsCount)
+        assertEquals("", n.text)
+    }
+
+    @Test
+    fun `a code next to Android's placeholder is hidden as a code`() {
+        val n = mapper.map(base.copy(title = "Code 482913", text = "Sensitive notification content hidden")).notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_ONE_TIME_CODE, n.content)
+        assertEquals("", n.title)
+    }
+
+    @Test
+    fun `codes are shared when the user turned hiding them off`() {
+        val n = mapper.map(base.copy(text = "Your code is 482913"), hideOneTimeCodes = false).notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_FULL, n.content)
+        assertEquals("Your code is 482913", n.text)
+    }
+
+    @Test
+    fun `hiding an app's content wins over a one-time code`() {
+        val n = mapper.map(base.copy(text = "Your code is 482913"), contentHidden = true).notification
+        assertEquals(NotificationContent.NOTIFICATION_CONTENT_HIDDEN_BY_USER, n.content)
+    }
+
+    @Test
     fun `image hashes are collected for pinning`() {
         val m = mapper.map(base.copy(appIcon = png(1), largeIcon = png(2), picture = png(3)))
         assertEquals(3, m.imageHashes.size)

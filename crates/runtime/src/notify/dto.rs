@@ -222,7 +222,9 @@ fn content(value: NotificationContent) -> NotificationContentView {
         }
         NotificationContent::RedactedBySystem => NotificationContentView::RedactedBySystem,
         NotificationContent::RedactedAppLocked => NotificationContentView::RedactedAppLocked,
-        NotificationContent::HiddenByUser => NotificationContentView::HiddenByUser,
+        NotificationContent::HiddenByUser | NotificationContent::OneTimeCode => {
+            NotificationContentView::HiddenByUser
+        }
     }
 }
 

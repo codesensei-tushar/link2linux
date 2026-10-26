@@ -239,6 +239,11 @@ enum NotificationContent {
   // (Android 17 and later). Detected heuristically, like
   // NOTIFICATION_CONTENT_REDACTED_BY_SYSTEM.
   NOTIFICATION_CONTENT_REDACTED_APP_LOCKED = 4;
+  // The phone withheld the content because it looks like it holds a
+  // one-time code. Only the app, the time and the category are filled in.
+  // A desktop treats any value it does not know as withheld content too,
+  // never as full content.
+  NOTIFICATION_CONTENT_ONE_TIME_CODE = 5;
 }
 
 // How private the app marked the content, for the desktop to honor while

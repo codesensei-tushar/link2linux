@@ -84,6 +84,7 @@ class NotificationEngine(
     private class Candidate(val snapshot: NotificationSnapshot) {
         var mapped: MappedNotification? = null
         var mappedHidden = false
+        var mappedHideCodes = false
     }
 
     private class Shared(val protoKey: String, val mapped: MappedNotification)
@@ -156,7 +157,7 @@ class NotificationEngine(
         queue.trySend(Event.Removed(platformKey, cause))
     }
 
-    /** The user changed the policy: feature on or off, an app filter, or access. */
+    /** The user changed the policy: feature on or off, an app filter, hiding one-time codes, or access. */
     fun onPolicyChanged() {
         queue.trySend(Event.PolicyChanged)
     }
@@ -315,11 +316,13 @@ class NotificationEngine(
             return
         }
         val hidden = policy.isContentHidden(candidate.snapshot.packageName)
+        val hideCodes = policy.hideOneTimeCodes
         var mapped = candidate.mapped
-        if (mapped == null || candidate.mappedHidden != hidden) {
-            mapped = mapper.map(candidate.snapshot, hidden)
+        if (mapped == null || candidate.mappedHidden != hidden || candidate.mappedHideCodes != hideCodes) {
+            mapped = mapper.map(candidate.snapshot, hidden, hideCodes)
             candidate.mapped = mapped
             candidate.mappedHidden = hidden
+            candidate.mappedHideCodes = hideCodes
         }
         val protoKey = mapped.notification.key
         val previous = shared[protoKey]
