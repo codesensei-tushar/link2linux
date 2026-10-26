@@ -36,6 +36,8 @@ pub(crate) enum Expects {
     ImageData,
     /// One or more `NotificationSyncBatch`.
     NotificationSyncBatch,
+    /// `FileAccept`.
+    FileAccept,
 }
 
 impl Expects {
@@ -50,6 +52,7 @@ impl Expects {
                     Self::NotificationSyncBatch,
                     Payload::NotificationSyncBatch(_)
                 )
+                | (Self::FileAccept, Payload::FileAccept(_))
         )
     }
 }
@@ -71,6 +74,7 @@ pub(crate) fn of(payload: &Payload) -> Rules {
     use Payload as P;
 
     const NOTIFICATIONS: Option<Feature> = Some(Feature::Notifications);
+    const FILES: Option<Feature> = Some(Feature::Files);
     const CLIPBOARD: Option<Feature> = Some(Feature::Clipboard);
     let (name, kind, feature) = match payload {
         P::Hello(_) => ("Hello", Control, None),
@@ -106,6 +110,10 @@ pub(crate) fn of(payload: &Payload) -> Rules {
             Request(Expects::Ack),
             NOTIFICATIONS,
         ),
+        P::FileOffer(_) => ("FileOffer", Request(Expects::FileAccept), FILES),
+        P::FileAccept(_) => ("FileAccept", Reply, FILES),
+        P::FileChunk(_) => ("FileChunk", Request(Expects::Ack), FILES),
+        P::FileCancel(_) => ("FileCancel", Request(Expects::Ack), FILES),
         P::ClipboardPush(_) => ("ClipboardPush", Request(Expects::Ack), CLIPBOARD),
     };
     Rules {
@@ -124,8 +132,8 @@ pub(crate) fn is_last_answer(answer: &Payload) -> bool {
 #[cfg(test)]
 mod tests {
     use link2linux_protocol::v1::{
-        Ack, ClipboardPush, ErrorReply, ImageData, ImageRequest, NotificationDismissRequest,
-        NotificationSyncBatch,
+        Ack, ClipboardPush, ErrorReply, FileAccept, ImageData, ImageRequest,
+        NotificationDismissRequest, NotificationSyncBatch,
     };
 
     use super::*;
@@ -175,6 +183,11 @@ mod tests {
         assert!(Expects::ImageData.allows(&data));
         assert!(!Expects::ImageData.allows(&ack));
         assert!(Expects::NotificationSyncBatch.allows(&error));
+        let accept = Payload::FileAccept(FileAccept::default());
+        assert!(Expects::FileAccept.allows(&accept));
+        assert!(Expects::FileAccept.allows(&error));
+        assert!(!Expects::FileAccept.allows(&ack));
+        assert!(!Expects::Ack.allows(&accept));
     }
 
     #[test]

@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The files feature, capability token "files": the user sends files from
+// one device to the other, in either direction.
+//
+// A transfer is one or more files the user sent together. The sender
+// offers them with FileOffer, then sends their bytes in order with
+// FileChunk. A transfer cut short by a lost connection resumes where it
+// stopped when the sender offers it again. docs/protocol.md, "Files", gives
+// the rules.
+
+// From the sender: the files of a transfer. Answered by FileAccept, or by an
+// ErrorReply such as ERROR_CODE_DISABLED or ERROR_CODE_NO_SPACE.
+message FileOffer {
+  // 16 random bytes naming the transfer. The same on an offer that resumes
+  // it after a reconnect.
+  bytes transfer_id = 1;
+  // When the user sent the files, in Unix milliseconds.
+  int64 created_unix_ms = 2;
+  // 1 to 500 files, in the order their bytes follow.
+  repeated FileInfo files = 3;
+}
+
+// One file of a transfer.
+message FileInfo {
+  // The file's name without any directory: 1 to 255 bytes, no "/", no
+  // NUL, and neither "." nor "..".
+  string name = 1;
+  // Size in bytes.
+  uint64 size = 2;
+  // The MIME type, such as "image/jpeg", when the sender knows it.
+  string mime_type = 3;
+  // When the file was last modified, in Unix milliseconds, or 0 when the
+  // sender does not know.
+  int64 modified_unix_ms = 4;
+}
+
+// From the receiver: the answer to FileOffer, saying where the bytes start.
+// For a new transfer that is 0 and 0; for a resumed one, the first file not
+// yet complete and the bytes of it already written. file_index equal to the
+// number of files means the receiver already has them all.
+message FileAccept {
+  uint32 file_index = 1;
+  uint64 offset = 2;
+}
+
+// From the sender: the next bytes of a file. Answered by an Ack once the
+// receiver has written them, or by an ErrorReply.
+message FileChunk {
+  bytes transfer_id = 1;
+  // The file's position in FileOffer.files.
+  uint32 file_index = 2;
+  // Where data starts in the file. Always the end of the previous chunk of
+  // the same file.
+  uint64 offset = 3;
+  // At most 256 KiB. Empty only in the one chunk of an empty file.
+  bytes data = 4;
+  // Set on the chunk that ends the file, and only there: the SHA-256 of the
+  // whole file, 32 bytes.
+  bytes sha256 = 5;
+}
+
+// From either side: stop a transfer. The receiver deletes the files it has
+// not finished. Answered by an Ack, also for a transfer the receiving side
+// no longer knows.
+message FileCancel {
+  bytes transfer_id = 1;
+}

@@ -435,7 +435,8 @@ impl<S: OutboxStore> Outbox<S> {
             | ErrorCode::InvalidArgument
             | ErrorCode::Declined
             | ErrorCode::Expired
-            | ErrorCode::NotAllowed => {
+            | ErrorCode::NotAllowed
+            | ErrorCode::NoSpace => {
                 self.store.remove(key)?;
                 Ok(Outcome::Failed(code))
             }
@@ -664,6 +665,7 @@ mod tests {
             ErrorCode::Declined,
             ErrorCode::Expired,
             ErrorCode::NotAllowed,
+            ErrorCode::NoSpace,
         ] {
             let (mut outbox, key) = one_in_flight();
             let outcome = outbox.refused(&key, &refusal(code, 0), at(1)).unwrap();
