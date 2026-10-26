@@ -2,6 +2,7 @@ package dev.link2linux.android.core.network
 
 import dev.link2linux.protocol.v1.DeviceKind
 import dev.link2linux.protocol.v1.Envelope
+import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.envelope
 import dev.link2linux.protocol.v1.hello
 import dev.link2linux.protocol.v1.ping
@@ -11,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
@@ -67,7 +69,83 @@ class SessionTest {
             assertEquals(desktopHello, phone.handshake(phoneHello))
             assertEquals(phoneHello, desktopSaw.await())
         }
-        assertEquals(SessionState.Established(desktopHello), phone.state.value)
+        assertEquals(SessionState.Established(desktopHello, version = 1), phone.state.value)
+    }
+
+    @Test
+    fun theHighestVersionInBothRangesIsUsed() {
+        fun hello(min: Int, max: Int) = hello { minProtocolVersion = min; protocolVersion = max }
+        assertEquals(1, Session.negotiateVersion(hello(0, 1), hello(1, 3)))
+        assertEquals(2, Session.negotiateVersion(hello(1, 2), hello(2, 3)))
+        assertEquals(3, Session.negotiateVersion(hello(0, 3), hello(0, 3)))
+        assertNull(Session.negotiateVersion(hello(0, 1), hello(2, 3)))
+        assertNull(Session.negotiateVersion(hello(0, 1), hello(0, 2)))
+        assertNull(Session.negotiateVersion(hello(0, 0), hello(0, 0)))
+    }
+
+    @Test
+    fun aPeerThatAlsoSpeaksANewerVersionIsAccepted() = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        val newer = desktopHello.toBuilder().setProtocolVersion(2).setMinProtocolVersion(1).build()
+        FrameCodec().write(envelope { seq = 1; hello = newer }, desktopEnd.output)
+        desktopEnd.output.flush()
+        val phone = Session(phoneEnd)
+
+        withTimeout(5_000) { phone.handshake(phoneHello) }
+        assertEquals(SessionState.Established(newer, version = 1), phone.state.value)
+    }
+
+    @Test
+    fun noCommonVersionSendsVersionMismatch() = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        val newer = desktopHello.toBuilder().setProtocolVersion(3).setMinProtocolVersion(2).build()
+        FrameCodec().write(envelope { seq = 1; hello = newer }, desktopEnd.output)
+        desktopEnd.output.flush()
+
+        val error = withTimeout(5_000) { runCatching { Session(phoneEnd).handshake(phoneHello) }.exceptionOrNull() }
+
+        assertTrue("got $error", error is VersionMismatchException)
+        val desktop = FrameCodec()
+        assertTrue(desktop.read(desktopEnd.input)!!.hasHello())
+        assertEquals(GoodbyeReason.GOODBYE_REASON_VERSION_MISMATCH, desktop.read(desktopEnd.input)!!.goodbye.reason)
+    }
+
+    @Test
+    fun aSkippedSequenceNumberIsAProtocolError() = assertProtocolError(
+        envelope { seq = 1; hello = desktopHello },
+        envelope { seq = 3; ping = ping { nonce = 1 } },
+    )
+
+    @Test
+    fun aRepeatedSequenceNumberIsAProtocolError() = assertProtocolError(
+        envelope { seq = 1; hello = desktopHello },
+        envelope { seq = 1; ping = ping { nonce = 1 } },
+    )
+
+    @Test
+    fun aSecondHelloIsAProtocolError() = assertProtocolError(
+        envelope { seq = 1; hello = desktopHello },
+        envelope { seq = 2; hello = desktopHello },
+    )
+
+    /** The phone reads [fromDesktop] after its Hello, fails, and says why in a Goodbye. */
+    private fun assertProtocolError(vararg fromDesktop: Envelope) = runBlocking {
+        val (phoneEnd, desktopEnd) = connectedPair()
+        val desktop = FrameCodec()
+        fromDesktop.forEach { desktop.write(it, desktopEnd.output) }
+        desktopEnd.output.flush()
+        val phone = Session(phoneEnd)
+
+        val error = withTimeout(5_000) {
+            phone.handshake(phoneHello)
+            runCatching { phone.next() }.exceptionOrNull()
+        }
+
+        assertTrue("expected SessionException, got $error", error is SessionException)
+        assertEquals(SessionState.Closed, phone.state.value)
+        val sent = generateSequence { desktop.read(desktopEnd.input) }.toList()
+        assertEquals(GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR, sent.last().goodbye.reason)
+        assertEquals((1L..sent.size).toList(), sent.map { it.seq })
     }
 
     @Test
