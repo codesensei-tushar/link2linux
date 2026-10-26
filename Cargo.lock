@@ -1885,6 +1885,7 @@ dependencies = [
  "futures-util",
  "link2linux-protocol",
  "proptest",
+ "socket2",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",

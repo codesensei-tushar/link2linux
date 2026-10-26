@@ -12,6 +12,7 @@
 use std::net::SocketAddr;
 
 pub mod beacon;
+pub mod listener;
 pub mod presence;
 
 use crate::device::{DeviceInfo, DeviceKind};
