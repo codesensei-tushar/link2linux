@@ -6,5 +6,7 @@
 //! discovery, keeps a session with each paired phone, pairs new ones, and
 //! reports every change as a snapshot through [`view::EventSink`].
 
+pub mod candidates;
+pub mod dial;
 pub mod paths;
 pub mod view;
