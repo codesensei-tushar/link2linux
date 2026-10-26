@@ -14,5 +14,11 @@ workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio = { workspace = true, features = ["sync", "time"] }
+zbus.workspace = true
+
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+# Peer-to-peer connections let the tests stand in for BlueZ without a bus.
+zbus = { workspace = true, features = ["p2p"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
