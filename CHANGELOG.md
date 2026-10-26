@@ -8,10 +8,15 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-26
+
+Security fixes from a review of pairing, connections and notifications on
+both apps, and fixes for crashes and for the phone not keeping to its
+"Stay connected" switch.
+
 ### Security
 
-Fixes from a security review of the pairing, connection and notification
-code. None of them was known to be exploited.
+None of these was known to be exploited.
 
 - Pairing: a forged message during a reconnect can no longer make the
   computer think the phone removed it, and the phone's real refusal is now
@@ -153,6 +158,7 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/codesensei-tushar/link2linux/releases/tag/v0.1.0

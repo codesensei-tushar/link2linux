@@ -9,8 +9,8 @@ android {
 
     defaultConfig {
         applicationId = "dev.link2linux.android"
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
     }
 }
 
