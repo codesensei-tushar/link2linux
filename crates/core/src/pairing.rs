@@ -18,6 +18,7 @@
 //! ([`records::check_peer`]).
 
 pub mod crypto;
+mod desktop;
 mod qr;
 pub mod records;
 mod store;
@@ -28,6 +29,9 @@ use std::net::SocketAddr;
 use std::time::SystemTime;
 
 pub use self::crypto::PairingSecret;
+pub use self::desktop::{
+    PairingBinding, PairingChannel, PairingPrompt, PairingTimeouts, SasDecision,
+};
 pub use self::qr::{
     DEFAULT_BEACON_PORT, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, QR_PAYLOAD_VERSION, QR_URI_PREFIX,
     QrError, QrPayload,
@@ -36,7 +40,7 @@ pub use self::store::FileTrustStore;
 use crate::device::DeviceKind;
 pub use crate::identity::CertificateFingerprint;
 use crate::transport::PeerPin;
-pub use link2linux_protocol::v1::PairingOutcome;
+pub use link2linux_protocol::v1::{PairingMethod, PairingOutcome};
 
 /// The six-digit code both screens show while pairing without a QR code.
 #[derive(Debug, Clone, PartialEq, Eq)]
