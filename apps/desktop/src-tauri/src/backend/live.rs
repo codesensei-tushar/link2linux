@@ -72,6 +72,7 @@ impl LiveBackend {
             store_key,
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), images)),
             presenter,
+            clipboard: None,
             events,
         };
         let config = RuntimeConfig::new(data_dir.clone());

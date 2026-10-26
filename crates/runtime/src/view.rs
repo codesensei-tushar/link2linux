@@ -24,6 +24,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+pub use crate::clipboard::{
+    ClipboardActivity, ClipboardDirection, ClipboardMode, ClipboardPhone, ClipboardPhoneState,
+    ClipboardProblem, ClipboardProblemKind, ClipboardStatus, HeldClipboard,
+};
 pub use crate::notify::dto::{
     ConversationMessageInfo, ImageRef, MirroredNotification, NotificationActionInfo,
     NotificationActionKindView, NotificationCategoryView, NotificationContentView,
@@ -241,4 +245,6 @@ pub trait EventSink: Send + Sync {
     fn devices_changed(&self, devices: &[Device]);
     /// A phone's mirrored notifications changed.
     fn notification_changed(&self, _device_id: &str, _event: &NotificationEvent) {}
+    /// The shared clipboard's state changed.
+    fn clipboard_changed(&self, _status: &ClipboardStatus) {}
 }

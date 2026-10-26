@@ -188,6 +188,20 @@ impl Presenter for PrivatePopups {
         })
     }
 
+    fn show_own<'a>(
+        &'a self,
+        notification: &'a DesktopNotification,
+        replaces: Option<NotificationId>,
+    ) -> BoxFuture<'a, Result<NotificationId, PlatformError>> {
+        // Nothing in it comes from the phone, so it shows as it is, also
+        // on a locked screen.
+        let popup = with_open(notification.clone());
+        Box::pin(async move {
+            let replaces = replaces.filter(|id| *id != NOT_SHOWN);
+            self.inner.show(&popup, replaces).await
+        })
+    }
+
     fn close(&self, id: NotificationId) -> BoxFuture<'_, Result<(), PlatformError>> {
         if id == NOT_SHOWN {
             return Box::pin(async { Ok(()) });
@@ -541,6 +555,37 @@ mod tests {
             let response = rig.popups.next_response().await.unwrap();
             assert!(matches!(response, NotificationResponse::Action { key: k, .. } if k == key));
         }
+        assert_eq!(rig.opened.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn the_apps_own_popups_show_as_they_are_and_open_the_window() {
+        let rig = rig(false);
+        let own = DesktopNotification {
+            app_name: "link2linux".into(),
+            summary: "Clipboard from Pixel".into(),
+            body: "Click to put it on this computer's clipboard.".into(),
+            ..DesktopNotification::default()
+        };
+        // Locked, and without the text of notifications: still as it is.
+        let id = rig.popups.show_own(&own, None).await.unwrap();
+        let shown = rig.desktop.shown.lock().unwrap().clone();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].0.summary, own.summary);
+        assert_eq!(shown[0].0.body, own.body);
+        assert_eq!(shown[0].0.actions[0].key, OPEN_KEY);
+        // Unlocking leaves it alone.
+        rig.popups.set_locked(false).await;
+        rig.popups.set_locked(true).await;
+        assert_eq!(rig.desktop.shown.lock().unwrap().len(), 1);
+
+        rig.respond
+            .send(NotificationResponse::Action {
+                id,
+                key: OPEN_KEY.into(),
+            })
+            .unwrap();
+        rig.popups.next_response().await.unwrap();
         assert_eq!(rig.opened.load(Ordering::Relaxed), 1);
     }
 }

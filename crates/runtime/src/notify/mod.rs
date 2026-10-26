@@ -57,6 +57,17 @@ pub trait Presenter: Send + Sync {
     /// See [`NotificationSink::close`].
     fn close(&self, id: NotificationId) -> BoxFuture<'_, Result<(), PlatformError>>;
 
+    /// Shows a pop-up of this app's own, whose words are the app's and
+    /// never come from the phone, such as "Clipboard from Pixel". Clicking
+    /// it opens the app window. See [`NotificationSink::show`].
+    fn show_own<'a>(
+        &'a self,
+        notification: &'a DesktopNotification,
+        replaces: Option<NotificationId>,
+    ) -> BoxFuture<'a, Result<NotificationId, PlatformError>> {
+        self.show(notification, replaces)
+    }
+
     /// See [`NotificationSink::capabilities`].
     fn capabilities(&self) -> BoxFuture<'_, Result<NotificationCapabilities, PlatformError>>;
 

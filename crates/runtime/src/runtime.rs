@@ -3,16 +3,19 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use link2linux_core::clipboard::ClipboardSettings;
 use link2linux_core::notifications::CachedImage;
 use link2linux_core::pairing::{StoreKey, TrustStore, records};
 use tokio::runtime::Handle;
 
+use crate::clipboard;
 use crate::discovery::{pump_responses, run_discovery, watch_network};
 use crate::link::{Command, lock};
 use crate::pairing;
 use crate::shared::{Core, RuntimeConfig, RuntimeError, Shell};
 use crate::view::{
-    BackendError, Device, MirroredNotification, PairingMethod, PairingState, PhoneTarget,
+    BackendError, ClipboardStatus, Device, MirroredNotification, PairingMethod, PairingState,
+    PhoneTarget,
 };
 
 /// Discovery, pairing and a session with each paired phone.
@@ -43,6 +46,7 @@ impl Runtime {
         }
         handle.spawn(watch_network(core.clone()));
         handle.spawn(pump_responses(core.clone()));
+        handle.spawn(clipboard::watch(core.clone()));
         Ok(Self { core })
     }
 
@@ -199,12 +203,41 @@ impl Runtime {
     }
 
     /// Tells the sessions whether the user can see the window, which sets
-    /// how often they ping.
+    /// how often they ping. On a desktop that lets the app use its
+    /// clipboard only while the window has focus, gaining focus also puts
+    /// text from a phone on the clipboard, or shares what the user copied
+    /// meanwhile.
     pub fn set_active(&self, active: bool) {
         self.core.active.store(active, Ordering::Relaxed);
         for slot in lock(&self.core.slots).values() {
             let _ = slot.commands.send(Command::SetActive(active));
         }
+        clipboard::window_focus(&self.core, active);
+    }
+
+    /// What the clipboard page shows.
+    #[must_use]
+    pub fn clipboard(&self) -> ClipboardStatus {
+        self.core.clipboard_status()
+    }
+
+    /// Sends what the clipboard holds to every phone, as the user asked.
+    /// What came of it arrives as a new clipboard status.
+    pub fn send_clipboard(&self) {
+        clipboard::send_now(&self.core);
+    }
+
+    /// Changes the clipboard settings. They apply at once, and the phones
+    /// are told when sharing turns on or off.
+    pub fn set_clipboard_settings(&self, settings: ClipboardSettings) {
+        let core = &self.core;
+        core.clipboard_hub.set_settings(settings);
+        if core.clipboard.is_some() {
+            for slot in lock(&core.slots).values() {
+                let _ = slot.commands.send(Command::ClipboardSharing);
+            }
+        }
+        core.clipboard_changed();
     }
 
     /// The Bluetooth LE address this computer advertises from, which QR

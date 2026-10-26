@@ -326,6 +326,16 @@ export type Settings = {
 	 *  service, where other programs can read them.
 	 */
 	showNotificationText?: boolean,
+	/**
+	 *  The clipboard is shared with the phones. On by default: each phone
+	 *  has its own switch, off until its user turns it on.
+	 */
+	shareClipboard?: boolean,
+	/**
+	 *  Text that a password manager marked as secret is shared too. Off by
+	 *  default.
+	 */
+	sharePasswords?: boolean,
 };
 
 /**  Why the app could not start, for the page shown instead of the app. */

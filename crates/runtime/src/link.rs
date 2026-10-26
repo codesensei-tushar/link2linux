@@ -11,7 +11,16 @@ use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
+use crate::clipboard::{ClipboardDriver, Copies, Outgoing};
 use crate::notify::{DriverError, NotificationsDriver, PhoneSession};
+
+/// The features of one phone, which stay with it across sessions.
+pub struct Features {
+    /// Its notifications.
+    pub notifications: Box<dyn NotificationsDriver>,
+    /// Its part of the shared clipboard.
+    pub clipboard: ClipboardDriver,
+}
 
 /// What the owner of a session can ask of it.
 #[derive(Debug)]
@@ -34,6 +43,8 @@ pub enum Command {
         /// The text of a reply.
         reply: Option<String>,
     },
+    /// The user turned clipboard sharing on or off on this desktop.
+    ClipboardSharing,
     /// The user removed the pairing: tell the phone and leave.
     Unpair,
     /// The network changed or the user asked to reconnect: no session
@@ -77,27 +88,36 @@ pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Runs `session` until it ends.
 ///
-/// The driver sees every event first. The loop itself keeps the pairing
+/// The features see every event first: notifications, then the
+/// clipboard, which also pushes each new copy from `copies`. A copy made
+/// before the session started is not pushed from there: the clipboard
+/// service pushes a recent one by itself. The loop itself keeps the pairing
 /// record in step with the phone: it confirms the record on the phone's
 /// first `FeatureStatus`, stores its presence key, and deletes the record
 /// when the phone says `UNPAIRED`.
 pub async fn run(
     mut session: PhoneSession,
-    driver: &mut dyn NotificationsDriver,
+    features: &mut Features,
     commands: &mut UnboundedReceiver<Command>,
+    copies: &mut Copies,
     cancel: &CancellationToken,
     context: &LinkContext<'_>,
 ) -> Ending {
+    copies.mark_unchanged();
     if context.active
         && let Err(error) = session.set_active(true).await
     {
         tracing::debug!(%error, "could not set the session active");
     }
-    if let Err(error) = driver.session_started(&mut session).await {
+    if let Err(error) = features.notifications.session_started(&mut session).await {
         tracing::warn!(%error, "notifications could not start");
     }
-    let ending = drive(&mut session, driver, commands, cancel, context).await;
-    driver.session_ended();
+    if let Err(error) = features.clipboard.session_started(&mut session).await {
+        tracing::debug!(%error, "the clipboard could not start");
+    }
+    let ending = drive(&mut session, features, commands, copies, cancel, context).await;
+    features.notifications.session_ended();
+    features.clipboard.session_ended();
     match &ending {
         Ending::Shutdown => {
             let _ = session
@@ -126,14 +146,31 @@ pub async fn run(
 
 async fn drive(
     session: &mut PhoneSession,
-    driver: &mut dyn NotificationsDriver,
+    features: &mut Features,
     commands: &mut UnboundedReceiver<Command>,
+    copies: &mut Copies,
     cancel: &CancellationToken,
     context: &LinkContext<'_>,
 ) -> Ending {
+    let driver = &mut *features.notifications;
+    let clipboard = &mut features.clipboard;
+    // The sender goes with the phone's slot, when the phone is forgotten.
+    let mut copying = true;
     loop {
         tokio::select! {
             () = cancel.cancelled() => return Ending::Shutdown,
+            changed = copies.changed(), if copying => {
+                let copy = copies.borrow_and_update().clone();
+                match (changed, copy) {
+                    (Err(_), _) => copying = false,
+                    (Ok(()), Some(Outgoing { clip, origin })) => {
+                        if let Err(error) = clipboard.share(session, clip, origin).await {
+                            tracing::debug!(%error, "could not push the clipboard");
+                        }
+                    }
+                    (Ok(()), None) => {}
+                }
+            }
             command = commands.recv() => match command {
                 None => return Ending::Shutdown,
                 Some(Command::Unpair) => return Ending::Removed,
@@ -166,6 +203,11 @@ async fn drive(
                         tracing::warn!(%error, "could not run a notification action");
                     }
                 }
+                Some(Command::ClipboardSharing) => {
+                    if let Err(error) = clipboard.sharing_changed(session).await {
+                        tracing::debug!(%error, "could not tell the phone about clipboard sharing");
+                    }
+                }
                 Some(Command::Reconnect | Command::NetworkChanged) => {}
             },
             event = session.next_event() => match event {
@@ -180,6 +222,13 @@ async fn drive(
                             tracing::warn!(%error, "notification event failed");
                             None
                         }
+                    };
+                    let rest = match rest {
+                        Some(event) => clipboard.handle_event(session, event).await.unwrap_or_else(|error| {
+                            tracing::debug!(%error, "clipboard event failed");
+                            None
+                        }),
+                        None => None,
                     };
                     if let Some(end) = rest.and_then(|event| handle(&event, context)) {
                         return Ending::Peer(end);
