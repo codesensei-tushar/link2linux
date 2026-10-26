@@ -8,14 +8,16 @@
 //!   protocol) when it is too big for one request. It also hears of every
 //!   clipboard change through XFixes;
 //! - the reader, on a worker thread, asks the app holding `CLIPBOARD` for
-//!   its content and waits for it, up to a timeout.
+//!   its content and waits for it, up to a timeout. It hears of clipboard
+//!   changes too, to tell when a read spans two copies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::ops::Range;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -34,8 +36,8 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
 use super::{
-    MAX_READ_BYTES, OPEN_TIMEOUT, PlatformError, Reporter, TRANSFER_TIMEOUT, Worker, read_text,
-    too_long, unavailable,
+    Caller, MAX_READ_BYTES, OPEN_TIMEOUT, PlatformError, READ_TIMEOUT, Reporter, Source,
+    TRANSFER_TIMEOUT, Worker, caller_left, too_long, unavailable,
 };
 use crate::ClipboardText;
 
@@ -49,9 +51,8 @@ x11rb::atom_manager! {
         TEXT_PLAIN_UTF8: b"text/plain;charset=utf-8",
         TEXT_PLAIN: b"text/plain",
         PASSWORD_HINT: b"x-kde-passwordManagerHint",
-        // Properties on our own windows: where the clipboard is delivered,
-        // and one written to learn the server's time.
-        TRANSFER: b"LINK2LINUX_CLIPBOARD",
+        // A property of the reader's window, written to learn the server's
+        // time.
         CLOCK: b"LINK2LINUX_CLOCK",
     }
 }
@@ -60,6 +61,15 @@ x11rb::atom_manager! {
 const MAX_TARGETS: usize = 1024;
 /// Text over this size is sent in parts, at most this big each.
 const MAX_PART_BYTES: usize = 1 << 20;
+/// How many properties the reader takes turns with, one per conversion, so
+/// that a late answer to one is never taken for the next one's.
+const TRANSFER_PROPERTIES: usize = 8;
+/// How long the reader keeps a window it replaced, and how many at most: an
+/// app that answers late then writes to a window that still exists. Writing
+/// to one that is gone is an error, on which apps that leave Xlib's default
+/// error handler in place exit, taking their clipboard with them.
+const RETIRED_WINDOW_LIFETIME: Duration = Duration::from_secs(30);
+const MAX_RETIRED_WINDOWS: usize = 16;
 
 pub(super) struct X11Clipboard {
     worker: Worker<Session>,
@@ -127,28 +137,42 @@ impl X11Clipboard {
 
     pub(super) async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
         self.worker
-            .run(|session: &mut Session| session.reader.read())
+            .run(|session: &mut Session, caller: &Caller| {
+                super::read(&mut session.reader, Instant::now() + READ_TIMEOUT, caller)
+            })
             .await
     }
 
     pub(super) async fn write(&self, text: ClipboardText) -> Result<(), PlatformError> {
         self.worker
-            .run(move |session: &mut Session| {
+            .run(move |session: &mut Session, caller: &Caller| {
                 let time = session.reader.server_time()?;
-                session.owner.take(text, time)
+                session.owner.take(text, time, caller)
             })
             .await
     }
 }
 
-/// Makes a connection and a window that is never shown, which receives
-/// property changes.
+/// Connects to the X server, and returns its root window and the atoms.
+/// Fails on servers without XFixes, whose clipboard cannot be watched.
 fn connect(display: Option<&str>) -> Result<(RustConnection, Window, Atoms), ReplyOrIdError> {
     let (conn, screen) = x11rb::connect(display)
         .map_err(|e| ConnectionError::IoError(io::Error::new(io::ErrorKind::NotConnected, e)))?;
     let atoms = Atoms::new(&conn)?;
-    let window = conn.generate_id()?;
     let root = conn.setup().roots[screen].root;
+    let atoms = atoms.reply()?;
+    conn.xfixes_query_version(1, 0)?.reply()?;
+    Ok((conn, root, atoms))
+}
+
+/// Creates a window that is never shown, which hears of changes to its
+/// properties and to the clipboard's owner.
+fn create_window(
+    conn: &RustConnection,
+    root: Window,
+    atoms: &Atoms,
+) -> Result<Window, ReplyOrIdError> {
+    let window = conn.generate_id()?;
     conn.create_window(
         0,
         window,
@@ -162,8 +186,14 @@ fn connect(display: Option<&str>) -> Result<(RustConnection, Window, Atoms), Rep
         0,
         &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
     )?;
-    let atoms = atoms.reply()?;
-    Ok((conn, window, atoms))
+    conn.xfixes_select_selection_input(
+        window,
+        atoms.CLIPBOARD,
+        SelectionEventMask::SET_SELECTION_OWNER
+            | SelectionEventMask::SELECTION_WINDOW_DESTROY
+            | SelectionEventMask::SELECTION_CLIENT_CLOSE,
+    )?;
+    Ok(window)
 }
 
 /// Waits until `conn` has data to read, until `timeout` if given. Also
@@ -191,53 +221,118 @@ fn wait(
 /// Reads the clipboard on its own connection, one conversion at a time.
 struct Reader {
     conn: RustConnection,
+    root: Window,
+    /// Replaced after a conversion that was given up on, so that whatever
+    /// is still on its way for that one never reaches the next.
     window: Window,
+    /// Windows replaced, and when, destroyed once they are old enough.
+    retired: VecDeque<(Window, Instant)>,
     atoms: Atoms,
+    /// Where conversions are delivered, taking turns.
+    properties: [Atom; TRANSFER_PROPERTIES],
+    next_property: usize,
     /// Atom names already asked for. The server never forgets an atom.
     names: HashMap<Atom, String>,
+    /// The read in progress: the types offered, by atom and name, and the
+    /// clipboard's owner when it began.
+    offered: Vec<(Atom, String)>,
+    owner: Window,
+    /// The clipboard changed since the read began, as XFixes reported.
+    changed: bool,
+    deadline: Instant,
 }
 
 impl Reader {
     fn connect(display: Option<&str>) -> Result<Self, ReplyOrIdError> {
-        let (conn, window, atoms) = connect(display)?;
+        let (conn, root, atoms) = connect(display)?;
+        let window = create_window(&conn, root, &atoms)?;
+        let cookies = (0..TRANSFER_PROPERTIES)
+            .map(|i| conn.intern_atom(false, format!("LINK2LINUX_CLIPBOARD_{i}").as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut properties = [NONE; TRANSFER_PROPERTIES];
+        for (property, cookie) in properties.iter_mut().zip(cookies) {
+            *property = cookie.reply()?.atom;
+        }
         conn.flush()?;
         Ok(Self {
             conn,
+            root,
             window,
+            retired: VecDeque::new(),
             atoms,
+            properties,
+            next_property: 0,
             names: HashMap::new(),
+            offered: Vec::new(),
+            owner: NONE,
+            changed: false,
+            deadline: Instant::now(),
         })
     }
 
-    fn read(&mut self) -> Result<Option<ClipboardText>, PlatformError> {
-        let owner = self
+    /// Replaces the window after a conversion that was given up on. The old
+    /// one stops reporting anything but lives on for a while, so an answer
+    /// still on its way lands where nobody reads it, and an app still
+    /// sending its text in parts waits for a deletion that never comes and
+    /// gives up.
+    fn replace_window(&mut self) -> Result<(), PlatformError> {
+        let old = self.window;
+        self.conn
+            .change_window_attributes(
+                old,
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+            )
+            .map_err(unavailable)?;
+        self.conn
+            .xfixes_select_selection_input(
+                old,
+                self.atoms.CLIPBOARD,
+                SelectionEventMask::from(0u32),
+            )
+            .map_err(unavailable)?;
+        self.retired.push_back((old, Instant::now()));
+        self.window = create_window(&self.conn, self.root, &self.atoms).map_err(unavailable)?;
+        self.destroy_retired(Instant::now())?;
+        self.conn.flush().map_err(unavailable)?;
+        Ok(())
+    }
+
+    /// Destroys the retired windows that are old enough, or too many.
+    fn destroy_retired(&mut self, now: Instant) -> Result<(), PlatformError> {
+        while let Some(&(window, retired)) = self.retired.front()
+            && (now.saturating_duration_since(retired) >= RETIRED_WINDOW_LIFETIME
+                || self.retired.len() > MAX_RETIRED_WINDOWS)
+        {
+            self.conn.destroy_window(window).map_err(unavailable)?;
+            self.retired.pop_front();
+        }
+        Ok(())
+    }
+
+    fn selection_owner(&self) -> Result<Window, PlatformError> {
+        Ok(self
             .conn
             .get_selection_owner(self.atoms.CLIPBOARD)
             .map_err(unavailable)?
             .reply()
             .map_err(unavailable)?
-            .owner;
-        if owner == NONE {
-            return Ok(None);
+            .owner)
+    }
+
+    /// Goes through the events already received, noting clipboard changes.
+    fn drain(&mut self) -> Result<(), PlatformError> {
+        while let Some(event) = self.conn.poll_for_event().map_err(unavailable)? {
+            self.note(&event);
         }
-        let Some(list) = self.convert(self.atoms.TARGETS, MAX_TARGETS * 4)? else {
-            return Ok(None);
-        };
-        let atoms: Vec<Atom> = list
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|atom| u32::from_ne_bytes(*atom))
-            .collect();
-        let targets = self.names(&atoms)?;
-        let types: Vec<&str> = targets.iter().map(|(_, name)| name.as_str()).collect();
-        read_text(&types, |name, limit| {
-            let (atom, _) = targets
-                .iter()
-                .find(|(_, offered)| offered == name)
-                .expect("one of the offered types");
-            self.convert(*atom, limit)
-        })
+        Ok(())
+    }
+
+    fn note(&mut self, event: &Event) {
+        if let Event::XfixesSelectionNotify(notify) = event
+            && notify.selection == self.atoms.CLIPBOARD
+        {
+            self.changed = true;
+        }
     }
 
     /// The names of `atoms`, skipping any the server does not know.
@@ -272,34 +367,49 @@ impl Reader {
 
     /// Asks the clipboard's owner for its content as `target`, and waits
     /// for it, up to `limit` bytes. `None` when the owner refuses.
-    fn convert(&self, target: Atom, limit: usize) -> Result<Option<Vec<u8>>, PlatformError> {
-        let (conn, atoms) = (&self.conn, &self.atoms);
-        // Left over from a conversion that timed out.
-        conn.delete_property(self.window, atoms.TRANSFER)
+    fn convert(&mut self, target: Atom, limit: usize) -> Result<Option<Vec<u8>>, PlatformError> {
+        let converted = self.try_convert(target, limit);
+        if converted.is_err() {
+            let _ = self.replace_window();
+        }
+        converted
+    }
+
+    fn try_convert(
+        &mut self,
+        target: Atom,
+        limit: usize,
+    ) -> Result<Option<Vec<u8>>, PlatformError> {
+        let property = self.properties[self.next_property];
+        self.next_property = (self.next_property + 1) % TRANSFER_PROPERTIES;
+        let (window, clipboard) = (self.window, self.atoms.CLIPBOARD);
+        self.conn
+            .delete_property(window, property)
             .map_err(unavailable)?;
-        conn.convert_selection(
-            self.window,
-            atoms.CLIPBOARD,
-            target,
-            atoms.TRANSFER,
-            CURRENT_TIME,
-        )
-        .map_err(unavailable)?;
-        conn.flush().map_err(unavailable)?;
-        let notified = self.next_event(|event| {
+        self.conn
+            .convert_selection(window, clipboard, target, property, CURRENT_TIME)
+            .map_err(unavailable)?;
+        self.conn.flush().map_err(unavailable)?;
+        // Its answer names its property, or none for a refusal.
+        let answer = self.next_event(|event| {
             matches!(event, Event::SelectionNotify(notify)
-                if notify.requestor == self.window
-                    && notify.selection == atoms.CLIPBOARD
-                    && notify.target == target)
+                if notify.requestor == window
+                    && notify.selection == clipboard
+                    && notify.target == target
+                    && (notify.property == property || notify.property == NONE))
         })?;
-        let Some(Event::SelectionNotify(notify)) = notified else {
+        let Some(Event::SelectionNotify(notify)) = answer else {
             return Err(unavailable("the app that copied did not answer"));
         };
         if notify.property == NONE {
             return Ok(None);
         }
-        let first = self.take_property(limit)?;
-        if first.type_ != atoms.INCR {
+        let first = self.take_property(property, limit)?;
+        // Answered without writing anything: a refusal in all but name.
+        if first.type_ == NONE {
+            return Ok(None);
+        }
+        if first.type_ != self.atoms.INCR {
             return Ok(Some(first.value));
         }
         // Sent in parts: each comes once the last is deleted, and an empty
@@ -308,39 +418,30 @@ impl Reader {
         loop {
             let written = self.next_event(|event| {
                 matches!(event, Event::PropertyNotify(change)
-                    if change.window == self.window
-                        && change.atom == atoms.TRANSFER
+                    if change.window == window
+                        && change.atom == property
                         && change.state == Property::NEW_VALUE)
             })?;
             if written.is_none() {
                 return Err(unavailable("the app that copied stopped sending"));
             }
-            let part = self.take_property(limit)?;
+            let part = self.take_property(property, limit)?;
             if parts.add(&part.value)? {
                 return Ok(Some(parts.data));
             }
         }
     }
 
-    /// Reads and deletes the transfer property, up to `limit` bytes.
-    fn take_property(&self, limit: usize) -> Result<Received, PlatformError> {
+    /// Reads and deletes `property` of the window, up to `limit` bytes.
+    fn take_property(&self, property: Atom, limit: usize) -> Result<Received, PlatformError> {
         let long_length = u32::try_from(limit / 4 + 1).unwrap_or(u32::MAX);
         let reply = self
             .conn
-            .get_property(
-                true,
-                self.window,
-                self.atoms.TRANSFER,
-                AtomEnum::ANY,
-                0,
-                long_length,
-            )
+            .get_property(true, self.window, property, AtomEnum::ANY, 0, long_length)
             .map_err(unavailable)?
             .reply()
             .map_err(unavailable)?;
         if reply.bytes_after > 0 || reply.value.len() > limit {
-            // Too big to have been deleted with the read.
-            let _ = self.conn.delete_property(self.window, self.atoms.TRANSFER);
             return Err(too_long());
         }
         Ok(Received {
@@ -351,20 +452,16 @@ impl Reader {
 
     /// The server's current time, which taking the clipboard needs: learnt
     /// from the time stamp of a change to one of our own properties.
-    fn server_time(&self) -> Result<Timestamp, PlatformError> {
+    fn server_time(&mut self) -> Result<Timestamp, PlatformError> {
+        let (window, clock) = (self.window, self.atoms.CLOCK);
+        self.deadline = Instant::now() + TRANSFER_TIMEOUT;
         self.conn
-            .change_property8(
-                PropMode::APPEND,
-                self.window,
-                self.atoms.CLOCK,
-                AtomEnum::STRING,
-                &[],
-            )
+            .change_property8(PropMode::APPEND, window, clock, AtomEnum::STRING, &[])
             .map_err(unavailable)?;
         self.conn.flush().map_err(unavailable)?;
         let changed = self.next_event(|event| {
             matches!(event, Event::PropertyNotify(change)
-                if change.window == self.window && change.atom == self.atoms.CLOCK)
+                if change.window == window && change.atom == clock)
         })?;
         match changed {
             Some(Event::PropertyNotify(change)) => Ok(change.time),
@@ -372,16 +469,20 @@ impl Reader {
         }
     }
 
-    /// The next event `wanted` accepts, dropping the others, or `None` after
-    /// [`TRANSFER_TIMEOUT`]. Only this connection's own requests cause
-    /// events on it.
-    fn next_event(&self, wanted: impl Fn(&Event) -> bool) -> Result<Option<Event>, PlatformError> {
-        let deadline = Instant::now() + TRANSFER_TIMEOUT;
+    /// The next event `wanted` accepts, noting clipboard changes among the
+    /// others and dropping them, or `None` after [`TRANSFER_TIMEOUT`] or at
+    /// the read's deadline, whichever comes first.
+    fn next_event(
+        &mut self,
+        wanted: impl Fn(&Event) -> bool,
+    ) -> Result<Option<Event>, PlatformError> {
+        let deadline = (Instant::now() + TRANSFER_TIMEOUT).min(self.deadline);
         loop {
             while let Some(event) = self.conn.poll_for_event().map_err(unavailable)? {
                 if wanted(&event) {
                     return Ok(Some(event));
                 }
+                self.note(&event);
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -389,6 +490,49 @@ impl Reader {
             }
             wait(&self.conn, None, Some(left))?;
         }
+    }
+}
+
+impl Source for Reader {
+    fn begin(&mut self, deadline: Instant) -> Result<Option<Vec<String>>, PlatformError> {
+        self.deadline = deadline;
+        self.offered.clear();
+        self.destroy_retired(Instant::now())?;
+        // The owner's reply comes after every event sent before it, so the
+        // changes it brings in are older than this read.
+        self.owner = self.selection_owner()?;
+        self.drain()?;
+        self.changed = false;
+        if self.owner == NONE {
+            return Ok(None);
+        }
+        let Some(list) = self.convert(self.atoms.TARGETS, MAX_TARGETS * 4)? else {
+            return Ok(None);
+        };
+        let atoms: Vec<Atom> = list
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|atom| u32::from_ne_bytes(*atom))
+            .collect();
+        self.offered = self.names(&atoms)?;
+        Ok(Some(
+            self.offered.iter().map(|(_, name)| name.clone()).collect(),
+        ))
+    }
+
+    fn fetch(&mut self, mime_type: &str, limit: usize) -> Result<Option<Vec<u8>>, PlatformError> {
+        let Some(&(atom, _)) = self.offered.iter().find(|(_, name)| name == mime_type) else {
+            return Ok(None);
+        };
+        self.convert(atom, limit)
+    }
+
+    fn changed_since_begin(&mut self) -> Result<bool, PlatformError> {
+        // A round trip brings in every change reported before it.
+        let owner = self.selection_owner()?;
+        self.drain()?;
+        Ok(self.changed || owner != self.owner)
     }
 }
 
@@ -438,25 +582,86 @@ struct OwnerHandle {
 struct Take {
     text: ClipboardText,
     time: Timestamp,
+    /// [`WAITING`] until the owner thread claims it or the worker gives up
+    /// on it, whichever comes first.
+    state: Arc<AtomicU8>,
     done: mpsc::SyncSender<Result<(), PlatformError>>,
 }
 
+/// How often a take waiting for the owner thread checks on its caller.
+const CALLER_CHECK_INTERVAL: Duration = Duration::from_millis(50);
+
+const WAITING: u8 = 0;
+const CLAIMED: u8 = 1;
+const GIVEN_UP: u8 = 2;
+
+impl Take {
+    /// Claims it for the owner thread; `false` when the worker gave up on
+    /// it, and it must not happen.
+    fn claim(&self) -> bool {
+        self.state
+            .compare_exchange(WAITING, CLAIMED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+fn closed() -> PlatformError {
+    unavailable("the X11 clipboard connection closed")
+}
+
 impl OwnerHandle {
-    fn take(&mut self, text: ClipboardText, time: Timestamp) -> Result<(), PlatformError> {
+    /// Has the owner thread take the clipboard. A take it does not get to in
+    /// time, or before `caller` gives up, is given up on, and never happens
+    /// later.
+    fn take(
+        &mut self,
+        text: ClipboardText,
+        time: Timestamp,
+        caller: &Caller,
+    ) -> Result<(), PlatformError> {
+        if !caller.waits() {
+            return Err(caller_left());
+        }
         let (done, result) = mpsc::sync_channel(1);
-        let stopped = || unavailable("the X11 clipboard connection closed");
+        let state = Arc::new(AtomicU8::new(WAITING));
         self.commands
-            .send(Take { text, time, done })
-            .map_err(|_| stopped())?;
+            .send(Take {
+                text,
+                time,
+                state: state.clone(),
+                done,
+            })
+            .map_err(|_| closed())?;
         match self.wake.write(&[0]) {
             Ok(_) => {}
             // Full of wake-ups not read yet: it wakes anyway.
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(_) => return Err(stopped()),
+            Err(_) => return Err(closed()),
         }
-        result
-            .recv_timeout(TRANSFER_TIMEOUT)
-            .map_err(|_| stopped())?
+        let deadline = Instant::now() + TRANSFER_TIMEOUT;
+        loop {
+            match result.recv_timeout(CALLER_CHECK_INTERVAL) {
+                Ok(taken) => return taken,
+                Err(RecvTimeoutError::Disconnected) => return Err(closed()),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            let gone = !caller.waits();
+            if !gone && Instant::now() < deadline {
+                continue;
+            }
+            if state
+                .compare_exchange(WAITING, GIVEN_UP, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Err(if gone {
+                    caller_left()
+                } else {
+                    unavailable("the clipboard was not taken in time")
+                });
+            }
+            // Claimed just now: it is being taken.
+            return result.recv().map_err(|_| closed())?;
+        }
     }
 }
 
@@ -511,16 +716,8 @@ impl Transfer {
 
 impl Owner {
     fn connect(display: Option<&str>) -> Result<Self, ReplyOrIdError> {
-        let (conn, window, atoms) = connect(display)?;
-        // Fails on servers without XFixes, whose clipboard cannot be watched.
-        conn.xfixes_query_version(1, 0)?.reply()?;
-        conn.xfixes_select_selection_input(
-            window,
-            atoms.CLIPBOARD,
-            SelectionEventMask::SET_SELECTION_OWNER
-                | SelectionEventMask::SELECTION_WINDOW_DESTROY
-                | SelectionEventMask::SELECTION_CLIENT_CLOSE,
-        )?;
+        let (conn, root, atoms) = connect(display)?;
+        let window = create_window(&conn, root, &atoms)?;
         // With BIG-REQUESTS, a request may carry far more than 256 KiB.
         conn.prefetch_maximum_request_bytes();
         let part_bytes = conn
@@ -555,14 +752,22 @@ impl Owner {
             .map_err(ConnectionError::IoError)?;
         loop {
             while let Ok(take) = commands.try_recv() {
-                let result = self.take(&take.text, take.time);
-                let _ = take.done.send(result);
+                if take.claim() {
+                    let result = self.take(&take.text, take.time);
+                    let _ = take.done.send(result);
+                }
             }
             self.give_up_stalled(Instant::now())?;
             while let Some(event) = self.conn.poll_for_event()? {
                 self.handle(event, changes)?;
             }
             self.conn.flush()?;
+            // Flushing may read what the server sent meanwhile into the
+            // connection's queue, where waiting on the socket would miss it.
+            if let Some(event) = self.conn.poll_for_event()? {
+                self.handle(event, changes)?;
+                continue;
+            }
             let timeout = self
                 .transfers
                 .iter()
@@ -622,7 +827,16 @@ impl Owner {
             Event::SelectionClear(clear)
                 if clear.selection == self.atoms.CLIPBOARD && clear.owner == self.window =>
             {
-                self.owned = None;
+                // Late news when the clipboard was taken again since: the
+                // server says who holds it now.
+                let owner = self
+                    .conn
+                    .get_selection_owner(self.atoms.CLIPBOARD)?
+                    .reply()?
+                    .owner;
+                if owner != self.window {
+                    self.owned = None;
+                }
             }
             Event::PropertyNotify(change) if change.state == Property::DELETE => {
                 self.send_next_part(&change)?;
@@ -645,6 +859,9 @@ impl Owner {
         } else {
             request.property
         };
+        // Asked again on that property: whatever was being sent there ends,
+        // so a deletion of the new answer does not move the old one on.
+        self.end_transfers_to(request.requestor, property)?;
         let answered = match self.owned.clone() {
             Some(owned)
                 if request.selection == self.atoms.CLIPBOARD && request.owner == self.window =>
@@ -781,6 +998,21 @@ impl Owner {
         Ok(())
     }
 
+    fn end_transfers_to(
+        &mut self,
+        requestor: Window,
+        property: Atom,
+    ) -> Result<(), ReplyOrIdError> {
+        while let Some(index) = self
+            .transfers
+            .iter()
+            .position(|transfer| transfer.requestor == requestor && transfer.property == property)
+        {
+            self.finish_transfer(index)?;
+        }
+        Ok(())
+    }
+
     fn give_up_stalled(&mut self, now: Instant) -> Result<(), ReplyOrIdError> {
         while let Some(index) = self
             .transfers
@@ -809,7 +1041,9 @@ impl Owner {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{NO_X_SERVER, guard_session_clipboard};
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    use super::super::tests::{NO_X_SERVER, PrivateX};
     use super::super::{Link, link};
     use super::*;
 
@@ -865,89 +1099,395 @@ mod tests {
         }
     }
 
-    /// Opens the clipboard of the X server in `DISPLAY`.
-    fn open(part_bytes: Option<usize>) -> (X11Clipboard, Link) {
+    #[test]
+    fn a_take_given_up_on_never_happens() {
+        // An owner thread that never gets to it.
+        let (commands, received) = mpsc::channel();
+        let (wake, _woken) = UnixStream::pair().unwrap();
+        wake.set_nonblocking(true).unwrap();
+        let mut owner = OwnerHandle { commands, wake };
+        let text = ClipboardText {
+            text: "late".into(),
+            sensitive: false,
+        };
+        let started = Instant::now();
+        let error = owner.take(text, 1, &Caller::waiting()).unwrap_err();
+        assert!(started.elapsed() >= TRANSFER_TIMEOUT);
+        assert!(error.to_string().contains("not taken in time"), "{error}");
+        // When the owner thread gets to it after all, it leaves it.
+        let take = received.try_recv().unwrap();
+        assert!(!take.claim());
+    }
+
+    #[test]
+    fn a_take_whose_caller_left_never_happens() {
+        let (commands, received) = mpsc::channel();
+        let (wake, _woken) = UnixStream::pair().unwrap();
+        wake.set_nonblocking(true).unwrap();
+        let mut owner = OwnerHandle { commands, wake };
+        let waiting = Arc::new(AtomicBool::new(true));
+        let caller = Caller(waiting.clone());
+        let leaving = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            waiting.store(false, Ordering::Release);
+        });
+        let started = Instant::now();
+        let error = owner.take(text("late", false), 1, &caller).unwrap_err();
+        assert!(started.elapsed() < TRANSFER_TIMEOUT);
+        assert!(error.to_string().contains("given up"), "{error}");
+        assert!(!received.try_recv().unwrap().claim());
+        leaving.join().unwrap();
+    }
+
+    /// Opens the clipboard of the X server on `display`.
+    fn open(display: &str, part_bytes: Option<usize>) -> (X11Clipboard, Link) {
         let (reporter, link) = link();
-        let clipboard = X11Clipboard::open_with(reporter, None, part_bytes).expect("an X server");
+        let clipboard =
+            X11Clipboard::open_with(reporter, Some(display), part_bytes).expect("the X server");
         (clipboard, link)
     }
 
-    async fn next_change(link: &Link) -> Result<(), String> {
+    async fn next_change(link: &Link) {
         tokio::time::timeout(TRANSFER_TIMEOUT, link.changed())
             .await
-            .map_err(|_| "no change reported in time")?
-            .map_err(|e| e.to_string())
+            .expect("a change in time")
+            .unwrap();
     }
 
-    async fn expect_text(clipboard: &X11Clipboard, expected: &ClipboardText) -> Result<(), String> {
-        let read = clipboard.read().await.map_err(|e| e.to_string())?;
-        if read.as_ref() == Some(expected) {
-            Ok(())
-        } else {
-            Err(format!("read {read:?}, expected {expected:?}"))
+    fn text(text: &str, sensitive: bool) -> ClipboardText {
+        ClipboardText {
+            text: text.into(),
+            sensitive,
         }
     }
 
-    /// Needs an X server, and replaces its clipboard while it runs (the
-    /// text on it before is put back). Refuses the desktop session's: X
-    /// display 0, or any while `WAYLAND_DISPLAY` is set, unless
-    /// `L2L_LIVE_SESSION_CLIPBOARD=1`. Run it on a private one:
-    /// `env -u WAYLAND_DISPLAY xvfb-run -a cargo test -p link2linux-platform -- --ignored --test-threads=1 x11_clipboard`
+    /// What a [`FakeOwner`] answers to a request.
+    enum Answer {
+        /// The targets it offers.
+        Targets,
+        /// Data of the type named.
+        Data(&'static str, Vec<u8>),
+        Refuse,
+    }
+
+    /// Another app, holding the clipboard of a private X server: it offers
+    /// `targets` and answers each request, on a thread of its own, as
+    /// `answer` says, which may also wait first.
+    struct FakeOwner {
+        stop: Arc<AtomicBool>,
+        /// X errors it got, as for writing to a window that is gone.
+        errors: Arc<AtomicUsize>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl FakeOwner {
+        fn start(
+            display: &str,
+            targets: &[&str],
+            answer: impl FnMut(&str) -> Answer + Send + 'static,
+        ) -> Self {
+            let (conn, root, atoms) = connect(Some(display)).unwrap();
+            let window = create_window(&conn, root, &atoms).unwrap();
+            let offered: Vec<Atom> = targets.iter().map(|name| intern(&conn, name)).collect();
+            conn.set_selection_owner(window, atoms.CLIPBOARD, CURRENT_TIME)
+                .unwrap();
+            let owner = conn.get_selection_owner(atoms.CLIPBOARD).unwrap();
+            assert_eq!(owner.reply().unwrap().owner, window);
+            let stop = Arc::new(AtomicBool::new(false));
+            let errors = Arc::new(AtomicUsize::new(0));
+            let (stopping, counting) = (stop.clone(), errors.clone());
+            let thread = thread::spawn(move || {
+                serve_fake(&conn, &offered, answer, &stopping, &counting);
+            });
+            Self {
+                stop,
+                errors,
+                thread: Some(thread),
+            }
+        }
+
+        fn errors(&self) -> usize {
+            self.errors.load(Ordering::Acquire)
+        }
+    }
+
+    impl Drop for FakeOwner {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn intern(conn: &RustConnection, name: &str) -> Atom {
+        conn.intern_atom(false, name.as_bytes())
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom
+    }
+
+    fn serve_fake(
+        conn: &RustConnection,
+        offered: &[Atom],
+        mut answer: impl FnMut(&str) -> Answer,
+        stop: &AtomicBool,
+        errors: &AtomicUsize,
+    ) {
+        while !stop.load(Ordering::Acquire) {
+            let Some(event) = conn.poll_for_event().unwrap() else {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            let request = match event {
+                Event::SelectionRequest(request) => request,
+                Event::Error(_) => {
+                    errors.fetch_add(1, Ordering::AcqRel);
+                    continue;
+                }
+                _ => continue,
+            };
+            let name = conn.get_atom_name(request.target).unwrap().reply().unwrap();
+            let property = match answer(&String::from_utf8_lossy(&name.name)) {
+                Answer::Targets => {
+                    conn.change_property32(
+                        PropMode::REPLACE,
+                        request.requestor,
+                        request.property,
+                        AtomEnum::ATOM,
+                        offered,
+                    )
+                    .unwrap();
+                    request.property
+                }
+                Answer::Data(kind, data) => {
+                    let kind = intern(conn, kind);
+                    conn.change_property8(
+                        PropMode::REPLACE,
+                        request.requestor,
+                        request.property,
+                        kind,
+                        &data,
+                    )
+                    .unwrap();
+                    request.property
+                }
+                Answer::Refuse => NONE,
+            };
+            conn.send_event(
+                false,
+                request.requestor,
+                EventMask::NO_EVENT,
+                SelectionNotifyEvent {
+                    response_type: SELECTION_NOTIFY_EVENT,
+                    sequence: 0,
+                    time: request.time,
+                    requestor: request.requestor,
+                    selection: request.selection,
+                    target: request.target,
+                    property,
+                },
+            )
+            .unwrap();
+            conn.flush().unwrap();
+        }
+    }
+
+    // The tests below start their own Xvfb, so they never reach the desktop
+    // session: `cargo test -p link2linux-platform -- --ignored own_xvfb`
+
     #[tokio::test]
-    #[ignore = "replaces the clipboard: run under `env -u WAYLAND_DISPLAY xvfb-run -a`"]
-    async fn x11_clipboard_round_trip() {
-        let on_session = guard_session_clipboard(true, false);
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_x11_clipboard_round_trip() {
+        let server = PrivateX::start();
         // Another app, as far as the X server can tell: its own connections.
-        let (reader, changed) = open(None);
-        let saved = reader.read().await.unwrap();
-        let outcome = async {
-            // Sends anything over 4 KiB in parts.
-            let (writer, _) = open(Some(4096));
-            let secret = ClipboardText {
-                text: "ü".repeat(128 << 10),
-                sensitive: true,
-            };
-            changed.changes.lock().await.mark_unchanged();
-            writer
-                .write(secret.clone())
-                .await
-                .map_err(|e| e.to_string())?;
-            next_change(&changed).await?;
-            expect_text(&reader, &secret).await?;
-            // Its own text too.
-            expect_text(&writer, &secret).await?;
+        let (reader, changed) = open(&server.display, None);
+        // Sends anything over 4 KiB in parts.
+        let (writer, _) = open(&server.display, Some(4096));
+        let secret = text(&"ü".repeat(128 << 10), true);
+        writer.write(secret.clone()).await.unwrap();
+        next_change(&changed).await;
+        assert_eq!(reader.read().await.unwrap(), Some(secret.clone()));
+        // Its own text too.
+        assert_eq!(writer.read().await.unwrap(), Some(secret));
 
-            let plain = ClipboardText {
-                text: "plain".into(),
-                sensitive: false,
-            };
-            writer
-                .write(plain.clone())
-                .await
-                .map_err(|e| e.to_string())?;
-            next_change(&changed).await?;
-            expect_text(&reader, &plain).await?;
+        let plain = text("plain", false);
+        writer.write(plain.clone()).await.unwrap();
+        next_change(&changed).await;
+        assert_eq!(reader.read().await.unwrap(), Some(plain));
 
-            // 256 KiB in one request, as BIG-REQUESTS allows.
-            let (whole, _) = open(None);
-            let big = ClipboardText {
-                text: "x".repeat(256 << 10),
-                sensitive: false,
-            };
-            whole.write(big.clone()).await.map_err(|e| e.to_string())?;
-            expect_text(&reader, &big).await
+        // 256 KiB in one request, as BIG-REQUESTS allows.
+        let (whole, _) = open(&server.display, None);
+        let big = text(&"x".repeat(256 << 10), false);
+        whole.write(big.clone()).await.unwrap();
+        assert_eq!(reader.read().await.unwrap(), Some(big));
+    }
+
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_a_password_copied_mid_read_is_not_shared_unmarked() {
+        let server = PrivateX::start();
+        let (clipboard, _) = open(&server.display, None);
+        let (password_manager, _) = open(&server.display, None);
+        // Plain text, whose app answers which types it offers only once the
+        // password manager copied, so the read fetches the password next.
+        let (copy_now, time_to_copy) = tokio::sync::oneshot::channel();
+        let mut copy_now = Some(copy_now);
+        let _plain = FakeOwner::start(&server.display, &["TARGETS", "UTF8_STRING"], move |name| {
+            if name != "TARGETS" {
+                return Answer::Data("UTF8_STRING", b"note".to_vec());
+            }
+            if let Some(copy_now) = copy_now.take() {
+                let _ = copy_now.send(());
+                thread::sleep(Duration::from_millis(300));
+            }
+            Answer::Targets
+        });
+        let password = text("hunter2", true);
+        let (read, wrote) = tokio::join!(clipboard.read(), async {
+            time_to_copy.await.unwrap();
+            password_manager.write(password.clone()).await
+        });
+        wrote.unwrap();
+        assert_eq!(read.unwrap(), Some(password));
+    }
+
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_types_in_any_letter_case() {
+        let server = PrivateX::start();
+        let targets = [
+            "TARGETS",
+            "UTF8_STRING",
+            "TEXT/URI-LIST",
+            "X-KDE-PASSWORDMANAGERHINT",
+        ];
+        let _owner = FakeOwner::start(&server.display, &targets, |name| match name {
+            "TARGETS" => Answer::Targets,
+            "UTF8_STRING" => Answer::Data("UTF8_STRING", b"hunter2".to_vec()),
+            "TEXT/URI-LIST" => Answer::Data("TEXT/URI-LIST", b"https://example.com/".to_vec()),
+            "X-KDE-PASSWORDMANAGERHINT" => Answer::Data("STRING", b"secret".to_vec()),
+            _ => Answer::Refuse,
+        });
+        let (clipboard, _) = open(&server.display, None);
+        // Twice: the first read leaves the clipboard working.
+        for _ in 0..2 {
+            assert_eq!(clipboard.read().await.unwrap(), Some(text("hunter2", true)));
         }
-        .await;
-        let restored = match saved {
-            Some(saved) => reader.write(saved).await,
-            None => Ok(()),
-        };
-        if on_session {
-            // A clipboard manager, such as GNOME's, keeps the last text it
-            // copied once the app that wrote it exits: give it time to.
-            tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_a_hint_that_says_nothing_counts_as_secret() {
+        let server = PrivateX::start();
+        let (clipboard, _) = open(&server.display, None);
+        let targets = ["TARGETS", "UTF8_STRING", "x-kde-passwordManagerHint"];
+        for hint in [Some(Vec::new()), None] {
+            let _owner = FakeOwner::start(&server.display, &targets, move |name| match name {
+                "TARGETS" => Answer::Targets,
+                "UTF8_STRING" => Answer::Data("UTF8_STRING", b"hunter2".to_vec()),
+                _ => hint
+                    .clone()
+                    .map_or(Answer::Refuse, |hint| Answer::Data("STRING", hint)),
+            });
+            assert_eq!(clipboard.read().await.unwrap(), Some(text("hunter2", true)));
         }
-        outcome.unwrap();
-        restored.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_a_late_answer_never_reaches_the_next_read() {
+        let server = PrivateX::start();
+        let (clipboard, _) = open(&server.display, None);
+        let targets = ["TARGETS", "UTF8_STRING"];
+        // Refuses, but only after the read gave up on it.
+        let slow = FakeOwner::start(&server.display, &targets, |name| {
+            if name == "TARGETS" {
+                thread::sleep(TRANSFER_TIMEOUT + Duration::from_millis(500));
+            }
+            Answer::Refuse
+        });
+        assert!(clipboard.read().await.is_err());
+        // Another app copies, and answers after the slow app's refusal.
+        let _next = FakeOwner::start(&server.display, &targets, |name| {
+            if name == "TARGETS" {
+                thread::sleep(Duration::from_secs(1));
+                return Answer::Targets;
+            }
+            Answer::Data("UTF8_STRING", b"from the next app".to_vec())
+        });
+        let read = clipboard.read().await.unwrap();
+        assert_eq!(read, Some(text("from the next app", false)));
+        drop(slow);
+    }
+
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_a_late_answer_lands_on_a_window_that_still_exists() {
+        let server = PrivateX::start();
+        let (clipboard, _) = open(&server.display, None);
+        let slow = FakeOwner::start(&server.display, &["TARGETS", "UTF8_STRING"], |name| {
+            if name == "TARGETS" {
+                thread::sleep(TRANSFER_TIMEOUT + Duration::from_millis(500));
+                return Answer::Targets;
+            }
+            Answer::Data("UTF8_STRING", b"late".to_vec())
+        });
+        assert!(clipboard.read().await.is_err());
+        // By now it answered, to a window that is no longer read.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(slow.errors(), 0);
+    }
+
+    #[test]
+    #[ignore = "starts its own Xvfb"]
+    fn own_xvfb_a_slow_app_cannot_hold_a_read_past_its_deadline() {
+        let server = PrivateX::start();
+        // Takes 1.5 s over each answer: under the time one may take, but
+        // three of them are over the read's deadline.
+        let targets = ["TARGETS", "UTF8_STRING", "x-kde-passwordManagerHint"];
+        let _owner = FakeOwner::start(&server.display, &targets, |name| {
+            thread::sleep(Duration::from_millis(1500));
+            match name {
+                "TARGETS" => Answer::Targets,
+                _ => Answer::Data("UTF8_STRING", b"slow".to_vec()),
+            }
+        });
+        let mut reader = Reader::connect(Some(&server.display)).unwrap();
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(2500);
+        assert!(super::super::read(&mut reader, deadline, &Caller::waiting()).is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    #[ignore = "starts its own Xvfb"]
+    async fn own_xvfb_a_stale_selection_clear_does_not_stop_serving() {
+        let server = PrivateX::start();
+        let (writer, _) = open(&server.display, None);
+        let (reader, _) = open(&server.display, None);
+        let written = text("from the phone", false);
+        writer.write(written.clone()).await.unwrap();
+        // News that another app took the clipboard, which it did not.
+        let (conn, _, atoms) = connect(Some(&server.display)).unwrap();
+        let owner = conn.get_selection_owner(atoms.CLIPBOARD).unwrap();
+        let owner = owner.reply().unwrap().owner;
+        conn.send_event(
+            false,
+            owner,
+            EventMask::NO_EVENT,
+            x11rb::protocol::xproto::SelectionClearEvent {
+                response_type: x11rb::protocol::xproto::SELECTION_CLEAR_EVENT,
+                sequence: 0,
+                time: 0,
+                owner,
+                selection: atoms.CLIPBOARD,
+            },
+        )
+        .unwrap();
+        conn.sync().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(reader.read().await.unwrap(), Some(written));
     }
 }
