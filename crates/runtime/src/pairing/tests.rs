@@ -71,6 +71,7 @@ fn desktop(handle: Handle, locals: Vec<LocalAddress>) -> (tempfile::TempDir, Arc
         drivers: Arc::new(ServiceFactory::new(presenter.clone(), None)),
         presenter,
         clipboard: None,
+        files: None,
         events: Arc::new(NoEvents),
     };
     let core = Core::open(handle, &config, shell).unwrap();

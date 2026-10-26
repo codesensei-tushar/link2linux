@@ -9,26 +9,31 @@
 mod support;
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use link2linux_core::device::{DeviceInfo, DeviceKind, Feature};
 use link2linux_core::discovery::LocalAddress;
+use link2linux_core::files::{
+    Direction, FileService, Transfer, TransferEvent, TransferId, TransferState,
+};
 use link2linux_core::identity::{CertificateFingerprint, Identity};
 use link2linux_core::notifications::present::OPEN_KEY;
 use link2linux_core::notifications::{Answer, Change};
 use link2linux_core::pairing::{QrPayload, StoreKey};
 use link2linux_core::session::{Reply, Session, SessionConfig, SessionEvent};
 use link2linux_platform::{
-    Clipboard, ClipboardAccess, ClipboardText, DesktopNotification, NotificationCapabilities,
-    NotificationId, NotificationResponse, NotificationSink, PlatformError,
+    Clipboard, ClipboardAccess, ClipboardText, DesktopNotification, FileStore,
+    NotificationCapabilities, NotificationId, NotificationResponse, NotificationSink,
+    PlatformError,
 };
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    ClipboardPush, ErrorCode, GoodbyeReason, NotificationAction, NotificationCategory,
-    NotificationContent, NotificationImportance, NotificationPosted, NotificationSyncBatch,
-    PairingProof, PhoneNotification, SyncCursor,
+    ClipboardPush, ErrorCode, FileAccept, FileChunk, FileInfo, FileOffer, GoodbyeReason,
+    NotificationAction, NotificationCategory, NotificationContent, NotificationImportance,
+    NotificationPosted, NotificationSyncBatch, PairingProof, PhoneNotification, SyncCursor,
 };
 use link2linux_runtime::clipboard::ClipboardPort;
 use link2linux_runtime::notify::{
@@ -37,12 +42,14 @@ use link2linux_runtime::notify::{
 use link2linux_runtime::paths::DataDir;
 use link2linux_runtime::view::{
     ClipboardDirection, ClipboardMode, ClipboardPhoneState, ClipboardProblemKind, ClipboardStatus,
-    Device, DeviceStatus, EventSink, NotificationEvent, PairingMethod, PairingState, PhoneTarget,
+    Device, DeviceStatus, EventSink, FileTransfer, FileTransferEvent, NotificationEvent,
+    PairingMethod, PairingState, PhoneTarget, TransferDirection, TransferStatus,
 };
 use link2linux_runtime::{Runtime, RuntimeConfig, Shell};
 use support::{PhoneTls, TestPhone};
 use tokio::net::TcpStream;
-use tokio::sync::{Notify, broadcast, mpsc, watch};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
 use tokio_rustls::server::TlsStream;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -321,6 +328,7 @@ struct Events {
     devices: Mutex<Vec<Vec<Device>>>,
     notifications: Mutex<Vec<(String, NotificationEvent)>>,
     clipboard: Mutex<Vec<ClipboardStatus>>,
+    transfers: Mutex<Vec<(String, FileTransferEvent)>>,
     changed: Notify,
 }
 
@@ -337,6 +345,14 @@ impl EventSink for Events {
 
     fn notification_changed(&self, device_id: &str, event: &NotificationEvent) {
         self.notifications
+            .lock()
+            .unwrap()
+            .push((device_id.to_owned(), event.clone()));
+        self.changed.notify_waiters();
+    }
+
+    fn transfer_changed(&self, device_id: &str, event: &FileTransferEvent) {
+        self.transfers
             .lock()
             .unwrap()
             .push((device_id.to_owned(), event.clone()));
@@ -406,11 +422,38 @@ async fn wait<T>(changed: &Notify, check: impl Fn() -> Option<T>) -> T {
     result.expect("timed out waiting for the runtime")
 }
 
+/// The desktop's files: a Downloads directory of the test's own, and a
+/// record of what the user opened.
+struct FakeFiles {
+    downloads: PathBuf,
+    opened: Mutex<Vec<(&'static str, PathBuf)>>,
+    changed: Notify,
+}
+
+impl FileStore for FakeFiles {
+    fn downloads_dir(&self) -> Result<PathBuf, PlatformError> {
+        Ok(self.downloads.clone())
+    }
+
+    async fn open(&self, path: &Path) -> Result<(), PlatformError> {
+        self.opened.lock().unwrap().push(("open", path.to_owned()));
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    async fn show_in_folder(&self, path: &Path) -> Result<(), PlatformError> {
+        self.opened.lock().unwrap().push(("show", path.to_owned()));
+        self.changed.notify_waiters();
+        Ok(())
+    }
+}
+
 struct Rig {
     runtime: Runtime,
     events: Arc<Events>,
     sink: Arc<FakeSink>,
     respond: mpsc::UnboundedSender<NotificationResponse>,
+    files: Arc<FakeFiles>,
     _data: tempfile::TempDir,
 }
 
@@ -441,6 +484,11 @@ fn start_full(
         interface_index: None,
     }];
     let presenter: Arc<dyn link2linux_runtime::notify::Presenter> = sink.clone();
+    let files = Arc::new(FakeFiles {
+        downloads: data.path().join("Downloads"),
+        opened: Mutex::default(),
+        changed: Notify::new(),
+    });
     let shell = Shell {
         identity: Identity::generate().unwrap(),
         store_key: Some(StoreKey::generate()),
@@ -452,6 +500,7 @@ fn start_full(
         }),
         presenter,
         clipboard,
+        files: Some(files.clone()),
         events: events.clone(),
     };
     let runtime = Runtime::start(tokio::runtime::Handle::current(), &config, shell).unwrap();
@@ -460,6 +509,7 @@ fn start_full(
         events,
         sink,
         respond,
+        files,
         _data: data,
     }
 }
@@ -1423,6 +1473,468 @@ async fn unpairing_a_phone_drops_its_text_that_waits() {
         .wait_for(|clipboard| clipboard.reads.load(Ordering::Relaxed) >= 1)
         .await;
     assert!(clipboard.text().is_none());
+}
+
+/// The phone side of a session with the paired desktop, for a phone that
+/// sends and receives files, once both sides report files ready.
+async fn files_session(
+    phone: &TestPhone,
+    desktop: CertificateFingerprint,
+) -> Session<TlsStream<TcpStream>> {
+    let connection = phone.accept(PhoneTls::pinned(desktop)).await.unwrap();
+    let info = DeviceInfo::new(
+        phone.id.clone(),
+        phone.name.clone(),
+        DeviceKind::Phone,
+        [Feature::Files],
+    );
+    let mut session =
+        Session::handshake(connection.wire.into_inner(), info, SessionConfig::phone())
+            .await
+            .unwrap();
+    assert!(session.peer().features.contains(&Feature::Files));
+    while !session.is_ready(Feature::Files) {
+        next_event(&mut session).await;
+    }
+    session
+}
+
+/// When the stand-in phone stops on its own, after the bytes of a
+/// transfer passed a mark.
+#[derive(Clone, Copy)]
+enum Stop {
+    /// It drops the connection once it received this many bytes.
+    DropAfterReceiving(u64),
+    /// It cancels what it sends once this many bytes went.
+    CancelAfterSending(u64),
+}
+
+/// The stand-in phone's side of files: the core's own service on its
+/// session, run until the session ends or the phone stops.
+struct PhoneFiles {
+    sends: mpsc::UnboundedSender<(Vec<PathBuf>, oneshot::Sender<TransferId>)>,
+    events: broadcast::Receiver<TransferEvent>,
+    task: JoinHandle<FileService>,
+}
+
+impl PhoneFiles {
+    fn start(
+        mut session: Session<TlsStream<TcpStream>>,
+        mut service: FileService,
+        stop: Option<Stop>,
+    ) -> Self {
+        let events = service.subscribe();
+        let (sends, mut inbox) =
+            mpsc::unbounded_channel::<(Vec<PathBuf>, oneshot::Sender<TransferId>)>();
+        let task = tokio::spawn(async move {
+            service.session_started(&mut session).await.unwrap();
+            loop {
+                tokio::select! {
+                    send = inbox.recv() => {
+                        let Some((paths, sent)) = send else { break };
+                        let _ = sent.send(service.send(paths).await.unwrap());
+                        if service.run(&mut session).await.is_err() {
+                            break;
+                        }
+                    }
+                    event = session.next_event() => match event {
+                        Ok(Some(event)) => {
+                            if service.handle_event(&mut session, event).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) | Err(_) => break,
+                    },
+                }
+                let passed = |direction: Direction, mark: u64| {
+                    service.transfers().into_iter().find(|t| {
+                        t.direction == direction && t.done >= mark && !t.state.is_finished()
+                    })
+                };
+                match stop {
+                    Some(Stop::DropAfterReceiving(mark)) => {
+                        if passed(Direction::Incoming, mark).is_some() {
+                            break;
+                        }
+                    }
+                    Some(Stop::CancelAfterSending(mark)) => {
+                        if let Some(transfer) = passed(Direction::Outgoing, mark) {
+                            service.cancel(transfer.id).await;
+                            let _ = service.run(&mut session).await;
+                        }
+                    }
+                    None => {}
+                }
+            }
+            service.session_ended();
+            service
+        });
+        Self {
+            sends,
+            events,
+            task,
+        }
+    }
+
+    async fn send(&self, paths: Vec<PathBuf>) -> TransferId {
+        let (sent, id) = oneshot::channel();
+        self.sends.send((paths, sent)).unwrap();
+        id.await.unwrap()
+    }
+
+    /// Waits for a change of a transfer to a state `check` accepts.
+    async fn reaches(&mut self, check: impl Fn(&Transfer) -> bool) -> Transfer {
+        within(async {
+            loop {
+                match self.events.recv().await {
+                    Ok(TransferEvent::Changed(transfer)) if check(&transfer) => return transfer,
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("the phone stopped"),
+                }
+            }
+        })
+        .await
+    }
+}
+
+impl Events {
+    /// Waits for the page to hear that a transfer with phone `device_id`
+    /// changed to a state `check` accepts.
+    async fn transfer_where(
+        &self,
+        device_id: &str,
+        check: impl Fn(&FileTransfer) -> bool,
+    ) -> FileTransfer {
+        wait(&self.changed, || {
+            self.transfers
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|(device, event)| match event {
+                    FileTransferEvent::Changed { transfer }
+                        if device == device_id && check(transfer) =>
+                    {
+                        Some(transfer.clone())
+                    }
+                    _ => None,
+                })
+        })
+        .await
+    }
+}
+
+impl FakeFiles {
+    async fn opened(&self, what: &'static str, path: &Path) {
+        wait(&self.changed, || {
+            self.opened
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(done, opened)| *done == what && opened == path)
+                .then_some(())
+        })
+        .await;
+    }
+}
+
+/// Bytes that differ from one position to the next.
+fn file_data(len: usize, seed: u8) -> Vec<u8> {
+    (0..len)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed) ^ (i >> 8) as u8)
+        .collect()
+}
+
+fn completed(direction: TransferDirection) -> impl Fn(&FileTransfer) -> bool {
+    move |t| t.direction == direction && t.status == TransferStatus::Completed
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn files_go_both_ways_and_arrive_with_a_banner_that_opens_them() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "files-1").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+    let on_phone = tempfile::tempdir().unwrap();
+    let sources = tempfile::tempdir().unwrap();
+    let session = within(files_session(&phone, desktop)).await;
+    let mut phone_files =
+        PhoneFiles::start(session, FileService::new(on_phone.path().into()), None);
+
+    // To the phone, and from it at the same time.
+    let report = file_data(600 * 1024, 1);
+    let photo = file_data(300 * 1024, 2);
+    std::fs::write(sources.path().join("report.pdf"), &report).unwrap();
+    std::fs::write(sources.path().join("photo.jpg"), &photo).unwrap();
+    rig.runtime
+        .send_files("files-1", vec![sources.path().join("report.pdf")])
+        .unwrap();
+    phone_files
+        .send(vec![sources.path().join("photo.jpg")])
+        .await;
+
+    phone_files
+        .reaches(|t| t.direction == Direction::Incoming && t.state == TransferState::Completed)
+        .await;
+    assert_eq!(
+        std::fs::read(on_phone.path().join("report.pdf")).unwrap(),
+        report
+    );
+    rig.events
+        .transfer_where("files-1", completed(TransferDirection::Outgoing))
+        .await;
+    let received = rig
+        .events
+        .transfer_where("files-1", completed(TransferDirection::Incoming))
+        .await;
+    assert_eq!(received.files[0].name, "photo.jpg");
+    assert!(received.files[0].saved);
+    let saved = rig.files.downloads.join("photo.jpg");
+    assert_eq!(std::fs::read(&saved).unwrap(), photo);
+
+    // A banner says so, without the file's name, and shows it in its folder.
+    let banners = rig.sink.wait_for_banners(1).await;
+    let (id, banner) = banners
+        .iter()
+        .find(|(_, banner)| banner.summary == "Received a file from Phone files-1")
+        .expect("a banner for the file")
+        .clone();
+    assert!(!format!("{banner:?}").contains("photo.jpg"), "{banner:?}");
+    let keys: Vec<&str> = banner.actions.iter().map(|a| a.key.as_str()).collect();
+    assert_eq!(keys, ["files-open", "files-show"]);
+    rig.respond
+        .send(NotificationResponse::Action {
+            id,
+            key: "files-show".into(),
+        })
+        .unwrap();
+    rig.files.opened("show", &saved).await;
+
+    // The page lists both, and opens the received file by its place.
+    let listed = rig.runtime.transfers("files-1").unwrap();
+    assert_eq!(listed.len(), 2);
+    let incoming = listed
+        .iter()
+        .find(|t| t.direction == TransferDirection::Incoming)
+        .unwrap();
+    rig.runtime
+        .open_received_file("files-1", &incoming.id, 0)
+        .unwrap();
+    rig.files.opened("open", &saved).await;
+    assert_eq!(
+        rig.runtime.open_received_file("files-1", &incoming.id, 1),
+        Err(link2linux_runtime::view::BackendError::NotFound)
+    );
+
+    // Folders are refused at once, and nothing goes out.
+    assert_eq!(
+        rig.runtime
+            .send_files("files-1", vec![sources.path().to_owned()]),
+        Err(link2linux_runtime::view::BackendError::FolderNotSendable)
+    );
+    drop(phone_files);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_goes_on_after_the_connection_drops() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "files-2").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+    let on_phone = tempfile::tempdir().unwrap();
+    let sources = tempfile::tempdir().unwrap();
+    let big = file_data(3 * 1024 * 1024, 3);
+    std::fs::write(sources.path().join("big.bin"), &big).unwrap();
+
+    // The phone drops the connection once a megabyte is in.
+    let session = within(files_session(&phone, desktop)).await;
+    let first = PhoneFiles::start(
+        session,
+        FileService::new(on_phone.path().into()),
+        Some(Stop::DropAfterReceiving(1024 * 1024)),
+    );
+    rig.runtime
+        .send_files("files-2", vec![sources.path().join("big.bin")])
+        .unwrap();
+    let service = within(first.task).await.unwrap();
+    let partial = service.transfers()[0].clone();
+    assert_eq!(partial.state, TransferState::Interrupted);
+    assert!(partial.done >= 1024 * 1024 && partial.done < big.len() as u64);
+    rig.events
+        .transfer_where("files-2", |t| t.status == TransferStatus::Interrupted)
+        .await;
+
+    // The desktop comes back, offers it again, and goes on from there.
+    let session = within(files_session(&phone, desktop)).await;
+    let mut second = PhoneFiles::start(session, service, None);
+    let resumed = second.reaches(|t| t.state == TransferState::Running).await;
+    assert!(resumed.done >= partial.done, "{resumed:?}");
+    second
+        .reaches(|t| t.state == TransferState::Completed)
+        .await;
+    assert_eq!(std::fs::read(on_phone.path().join("big.bin")).unwrap(), big);
+    rig.events
+        .transfer_where("files-2", completed(TransferDirection::Outgoing))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_the_phone_cancels_leaves_nothing_behind() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "files-3").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+    let sources = tempfile::tempdir().unwrap();
+    let big = file_data(3 * 1024 * 1024, 4);
+    std::fs::write(sources.path().join("video.mp4"), &big).unwrap();
+    let session = within(files_session(&phone, desktop)).await;
+    let phone_dir = tempfile::tempdir().unwrap();
+    let mut phone_files = PhoneFiles::start(
+        session,
+        FileService::new(phone_dir.path().into()),
+        Some(Stop::CancelAfterSending(512 * 1024)),
+    );
+
+    phone_files
+        .send(vec![sources.path().join("video.mp4")])
+        .await;
+    phone_files
+        .reaches(|t| t.state == TransferState::Cancelled { by_peer: false })
+        .await;
+    rig.events
+        .transfer_where("files-3", |t| {
+            t.status == TransferStatus::Cancelled { by_phone: true }
+        })
+        .await;
+    let banners = rig.sink.wait_for_banners(1).await;
+    assert!(
+        banners
+            .iter()
+            .any(|(_, b)| b.summary == "Phone files-3 stopped sending files"),
+        "{banners:?}"
+    );
+    // The partial file is gone: nothing at all is in Downloads.
+    let left: Vec<_> = std::fs::read_dir(&rig.files.downloads)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+/// SHA-256 of nothing, and of "abc".
+const EMPTY_SHA256: [u8; 32] = [
+    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+    0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+];
+const ABC_SHA256: [u8; 32] = [
+    0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+    0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+];
+
+/// Offers `files` (name, size) as transfer `id` and returns the answer.
+async fn offer(
+    session: &mut Session<TlsStream<TcpStream>>,
+    id: u8,
+    files: &[(&str, u64)],
+) -> Result<Reply, link2linux_core::session::RequestError> {
+    let offer = FileOffer {
+        transfer_id: vec![id; 16],
+        created_unix_ms: 1_700_000_000_000,
+        files: files
+            .iter()
+            .map(|(name, size)| FileInfo {
+                name: (*name).into(),
+                size: *size,
+                ..FileInfo::default()
+            })
+            .collect(),
+    };
+    within(session.send_request(Payload::FileOffer(offer))).await
+}
+
+async fn chunk(
+    session: &mut Session<TlsStream<TcpStream>>,
+    id: u8,
+    index: u32,
+    data: &[u8],
+    sha256: [u8; 32],
+) -> Result<Reply, link2linux_core::session::RequestError> {
+    let chunk = FileChunk {
+        transfer_id: vec![id; 16],
+        file_index: index,
+        offset: 0,
+        data: data.to_vec(),
+        sha256: sha256.to_vec(),
+    };
+    within(session.send_request(Payload::FileChunk(chunk))).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn received_names_are_made_safe_and_damaged_files_are_refused() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "files-4").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+    let downloads = rig.files.downloads.clone();
+    std::fs::create_dir_all(&downloads).unwrap();
+    std::fs::write(downloads.join("photo.jpg"), b"mine").unwrap();
+    let mut session = within(files_session(&phone, desktop)).await;
+    let accept = |reply: Reply| match reply.payload {
+        Payload::FileAccept(FileAccept { file_index, offset }) => (file_index, offset),
+        other => panic!("expected FileAccept, got {other:?}"),
+    };
+
+    // A name that climbs out of Downloads stays in it, and a damaged file
+    // is refused.
+    let files = [("../../.evil.sh", 0), ("notes.txt", 3)];
+    assert_eq!(
+        accept(offer(&mut session, 1, &files).await.unwrap()),
+        (0, 0)
+    );
+    assert!(chunk(&mut session, 1, 0, b"", EMPTY_SHA256).await.is_ok());
+    let damaged = chunk(&mut session, 1, 1, b"abd", ABC_SHA256).await;
+    match damaged {
+        Err(link2linux_core::session::RequestError::Refused(error)) => {
+            assert_eq!(error.code(), ErrorCode::InvalidArgument);
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    rig.events
+        .transfer_where("files-4", |t| {
+            matches!(t.status, TransferStatus::Failed { .. })
+        })
+        .await;
+
+    // A name that is taken gets a number.
+    assert_eq!(
+        accept(offer(&mut session, 2, &[("photo.jpg", 3)]).await.unwrap()),
+        (0, 0)
+    );
+    assert!(chunk(&mut session, 2, 0, b"abc", ABC_SHA256).await.is_ok());
+    rig.events
+        .transfer_where("files-4", completed(TransferDirection::Incoming))
+        .await;
+
+    let mut names: Vec<String> = std::fs::read_dir(&downloads)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["_.._.evil.sh", "photo (1).jpg", "photo.jpg"]);
+    assert_eq!(std::fs::read(downloads.join("photo.jpg")).unwrap(), b"mine");
+    assert_eq!(
+        std::fs::read(downloads.join("photo (1).jpg")).unwrap(),
+        b"abc"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(downloads.join("_.._.evil.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o111, 0, "{mode:o}");
+    let banners = rig.sink.wait_for_banners(2).await;
+    assert!(
+        banners.iter().any(
+            |(_, b)| b.summary == "Couldn't receive files from Phone files-4"
+                && b.body == "A file arrived damaged, so it was deleted."
+        ),
+        "{banners:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

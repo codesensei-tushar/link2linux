@@ -1,21 +1,25 @@
 //! The runtime the shell holds.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use link2linux_core::clipboard::ClipboardSettings;
+use link2linux_core::files::TransferId;
 use link2linux_core::notifications::CachedImage;
 use link2linux_core::pairing::{StoreKey, TrustStore, records};
+use link2linux_core::session::Availability;
 use tokio::runtime::Handle;
 
 use crate::clipboard;
 use crate::discovery::{pump_responses, run_discovery, watch_network};
+use crate::files;
 use crate::link::{Command, lock};
 use crate::pairing;
 use crate::shared::{Core, RuntimeConfig, RuntimeError, Shell};
 use crate::view::{
-    BackendError, ClipboardStatus, Device, MirroredNotification, PairingMethod, PairingState,
-    PhoneTarget,
+    BackendError, ClipboardStatus, Device, FileTransfer, MirroredNotification, PairingMethod,
+    PairingState, PhoneTarget,
 };
 
 /// Discovery, pairing and a session with each paired phone.
@@ -225,6 +229,122 @@ impl Runtime {
     /// What came of it arrives as a new clipboard status.
     pub fn send_clipboard(&self) {
         clipboard::send_now(&self.core);
+    }
+
+    /// The file transfers with phone `device_id`, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn transfers(&self, device_id: &str) -> Result<Vec<FileTransfer>, BackendError> {
+        let transfers = self
+            .core
+            .files
+            .transfers(device_id)
+            .ok_or(BackendError::NotFound)?;
+        Ok(transfers.iter().map(files::dto::transfer).collect())
+    }
+
+    /// Sends the files at `paths` to phone `device_id` as one transfer: at
+    /// once when it is connected, otherwise once it is back, for up to an
+    /// hour. It looks at every file first, so it blocks.
+    ///
+    /// # Errors
+    ///
+    /// Fails while files are turned off here, for a phone that is not
+    /// paired, and for files that cannot be sent: a folder, a file that
+    /// cannot be read, none or too many.
+    pub fn send_files(&self, device_id: &str, paths: Vec<PathBuf>) -> Result<(), BackendError> {
+        if self.core.files.availability() != Availability::Ready {
+            return Err(BackendError::FilesOff);
+        }
+        files::check_files(&paths)?;
+        self.send(device_id, Command::SendFiles { paths })
+    }
+
+    /// Cancels a transfer with phone `device_id` that has not finished.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired, or a malformed transfer id.
+    pub fn cancel_transfer(&self, device_id: &str, transfer_id: &str) -> Result<(), BackendError> {
+        let id = TransferId::from_hex(transfer_id).ok_or(BackendError::NotFound)?;
+        self.send(device_id, Command::CancelTransfer { id })
+    }
+
+    /// Removes a finished transfer with phone `device_id` from the list.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired, or a malformed transfer id.
+    pub fn forget_transfer(&self, device_id: &str, transfer_id: &str) -> Result<(), BackendError> {
+        let id = TransferId::from_hex(transfer_id).ok_or(BackendError::NotFound)?;
+        self.send(device_id, Command::ForgetTransfer { id })
+    }
+
+    /// Opens file `index` of a transfer from phone `device_id` with the
+    /// desktop's default application, once it has arrived.
+    ///
+    /// # Errors
+    ///
+    /// Fails when there is no such received file.
+    pub fn open_received_file(
+        &self,
+        device_id: &str,
+        transfer_id: &str,
+        index: usize,
+    ) -> Result<(), BackendError> {
+        self.with_received_file(device_id, transfer_id, index, false)
+    }
+
+    /// Shows file `index` of a transfer from phone `device_id` in its
+    /// folder, once it has arrived.
+    ///
+    /// # Errors
+    ///
+    /// Fails when there is no such received file.
+    pub fn show_received_file(
+        &self,
+        device_id: &str,
+        transfer_id: &str,
+        index: usize,
+    ) -> Result<(), BackendError> {
+        self.with_received_file(device_id, transfer_id, index, true)
+    }
+
+    fn with_received_file(
+        &self,
+        device_id: &str,
+        transfer_id: &str,
+        index: usize,
+        show: bool,
+    ) -> Result<(), BackendError> {
+        let files = &self.core.files;
+        let path = files
+            .received_file(device_id, transfer_id, index)
+            .ok_or(BackendError::NotFound)?;
+        let opener = files.opener();
+        self.core.handle.spawn(async move {
+            let done = if show {
+                opener.show_in_folder(&path).await
+            } else {
+                opener.open(&path).await
+            };
+            if let Err(error) = done {
+                tracing::warn!(%error, "could not open a received file");
+            }
+        });
+        Ok(())
+    }
+
+    /// Turns files on or off. It applies at once, and the phones hear of
+    /// it.
+    pub fn set_files_enabled(&self, enabled: bool) {
+        let core = &self.core;
+        core.files.set_enabled(enabled);
+        for slot in lock(&core.slots).values() {
+            let _ = slot.commands.send(Command::FilesSwitch);
+        }
     }
 
     /// Changes the clipboard settings. They apply at once, and the phones

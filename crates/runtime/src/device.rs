@@ -194,8 +194,10 @@ impl Supervisor {
                 None => std::future::pending().await,
             }
         };
+        let files_due = self.features.next_deadline();
         tokio::select! {
             () = self.cancel.cancelled() => return false,
+            () = link::sleep_until(files_due) => self.features.tick(None).await,
             () = self.wake.notified() => self.reconnector.evidence(),
             command = self.commands.recv() => match command {
                 None | Some(Command::Unpair) => return false,
@@ -204,7 +206,14 @@ impl Supervisor {
                     self.reconnector.user_reconnect(Instant::now());
                 }
                 Some(Command::NetworkChanged) => self.reconnector.network_changed(Instant::now()),
-                Some(Command::SetActive(_) | Command::ClipboardSharing) => {}
+                Some(Command::SetActive(_) | Command::ClipboardSharing | Command::FilesSwitch) => {}
+                Some(Command::SendFiles { paths }) => {
+                    if let Err(error) = self.features.files.send(None, paths).await {
+                        tracing::warn!(%error, "could not queue files to send");
+                    }
+                }
+                Some(Command::CancelTransfer { id }) => self.features.files.cancel(None, id).await,
+                Some(Command::ForgetTransfer { id }) => self.features.files.forget(id),
                 Some(Command::Dismiss { key }) => {
                     if let Err(error) = self.features.notifications.dismiss(None, &key).await {
                         tracing::warn!(%error, "could not queue a dismissal");
@@ -221,9 +230,8 @@ impl Supervisor {
                     }
                 }
                 Some(Command::Response(response)) => {
-                    if let Err(error) = self.features.notifications.handle_response(None, response).await {
-                        tracing::warn!(%error, "notification response failed");
-                    }
+                    // Without a session, no rule can be broken.
+                    let _ = self.features.handle_response(None, response).await;
                 }
             },
             () = sleep => {}

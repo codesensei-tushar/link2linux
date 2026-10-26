@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use link2linux_core::Feature;
 use link2linux_core::files::{
     Direction, Failure, FileService, SendError, ServiceError, Transfer, TransferEvent, TransferId,
     TransferState,
@@ -17,7 +18,7 @@ use link2linux_platform::{
 use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::time::Instant;
 
-use super::{Opener, dto};
+use super::{FilesSwitch, Opener, dto};
 use crate::link::lock;
 use crate::notify::{PhoneSession, Presenter};
 use crate::view::EventSink;
@@ -48,6 +49,7 @@ pub struct FilesDriver {
     events: Arc<dyn EventSink>,
     presenter: Arc<dyn Presenter>,
     opener: Arc<dyn Opener>,
+    switch: Arc<FilesSwitch>,
     /// The banners on screen, with the transfer each tells about.
     banners: HashMap<NotificationId, TransferId>,
     /// Transfers that ended and still need their banner.
@@ -65,6 +67,7 @@ pub struct DriverParts {
     pub events: Arc<dyn EventSink>,
     pub presenter: Arc<dyn Presenter>,
     pub opener: Arc<dyn Opener>,
+    pub switch: Arc<FilesSwitch>,
 }
 
 impl FilesDriver {
@@ -81,6 +84,7 @@ impl FilesDriver {
             events: parts.events,
             presenter: parts.presenter,
             opener: parts.opener,
+            switch: parts.switch,
             banners: HashMap::new(),
             due: Vec::new(),
             progress_sent: HashMap::new(),
@@ -120,6 +124,21 @@ impl FilesDriver {
         let rest = self.service.handle_event(session, event).await;
         self.publish().await;
         rest
+    }
+
+    /// The user turned files on or off: tells the phone, and pauses or goes
+    /// on with the transfers.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the session does.
+    pub async fn switched(&mut self, session: &mut PhoneSession) -> Result<(), ServiceError> {
+        session
+            .set_availability(Feature::Files, self.switch.availability())
+            .await?;
+        let ran = self.service.run(session).await;
+        self.publish().await;
+        ran
     }
 
     /// The session is over: running transfers pause.

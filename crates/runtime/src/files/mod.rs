@@ -11,9 +11,11 @@ pub mod dto;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use link2linux_core::files::{FileService, SendError, Transfer, TransferId, check_sendable};
+use link2linux_core::session::Availability;
 use link2linux_platform::{FileStore, PlatformError};
 
 pub use driver::{Board, DriverParts, FilesDriver};
@@ -52,22 +54,65 @@ impl<F: FileStore> Opener for F {
     }
 }
 
+/// Stands in for the desktop's files when the shell has none: nothing can
+/// be received or opened.
+pub(crate) struct NoFiles;
+
+impl FileStore for NoFiles {
+    fn downloads_dir(&self) -> Result<PathBuf, PlatformError> {
+        Err(PlatformError::Unsupported("received files"))
+    }
+
+    async fn open(&self, _path: &Path) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported("opening files"))
+    }
+
+    async fn show_in_folder(&self, _path: &Path) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported("opening folders"))
+    }
+}
+
+/// Whether files can be used on this desktop: the user's switch, and a
+/// place for received files. Shared by every phone's driver.
+#[derive(Debug)]
+pub struct FilesSwitch {
+    enabled: AtomicBool,
+    can_receive: bool,
+}
+
+impl FilesSwitch {
+    /// What this desktop reports for the feature: `UNAVAILABLE` without a
+    /// Downloads directory, `DISABLED` while the user turned it off.
+    #[must_use]
+    pub fn availability(&self) -> Availability {
+        if !self.can_receive {
+            Availability::Unavailable
+        } else if self.enabled.load(Ordering::Relaxed) {
+            Availability::Ready
+        } else {
+            Availability::Disabled
+        }
+    }
+}
+
 /// Makes each phone's [`FilesDriver`], and keeps their boards for the
 /// files page.
 pub struct FilesFactory {
     opener: Arc<dyn Opener>,
     /// Where received files go, when the desktop says.
     downloads: Option<PathBuf>,
+    switch: Arc<FilesSwitch>,
     boards: Mutex<HashMap<String, Board>>,
 }
 
 impl FilesFactory {
     /// A factory whose drivers save into the Downloads directory that
-    /// `opener` names, and open files through it. It removes what transfers
-    /// of an earlier run left there, so make it once, when the app starts
-    /// and before any session; that reads the directory, so it blocks.
+    /// `opener` names, and open files through it, with files turned on when
+    /// `enabled`. It removes what transfers of an earlier run left there,
+    /// so make it once, when the app starts and before any session; that
+    /// reads the directory, so it blocks.
     #[must_use]
-    pub fn new(opener: Arc<dyn Opener>) -> Self {
+    pub fn new(opener: Arc<dyn Opener>, enabled: bool) -> Self {
         let downloads = opener
             .downloads_dir()
             .inspect_err(
@@ -81,18 +126,28 @@ impl FilesFactory {
                 Err(error) => tracing::debug!(%error, "could not look for unfinished downloads"),
             }
         }
+        let switch = Arc::new(FilesSwitch {
+            enabled: AtomicBool::new(enabled),
+            can_receive: downloads.is_some(),
+        });
         Self {
             opener,
             downloads,
+            switch,
             boards: Mutex::default(),
         }
     }
 
-    /// Whether received files have somewhere to go. Without, the feature
-    /// is unavailable.
+    /// What this desktop reports for the feature now.
     #[must_use]
-    pub fn can_receive(&self) -> bool {
-        self.downloads.is_some()
+    pub fn availability(&self) -> Availability {
+        self.switch.availability()
+    }
+
+    /// Turns files on or off. Each phone's driver tells its phone when it
+    /// gets [`FilesDriver::switched`].
+    pub fn set_enabled(&self, enabled: bool) {
+        self.switch.enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// The driver of phone `device_id`, named `phone_name`, which stays with
@@ -117,6 +172,7 @@ impl FilesFactory {
             events,
             presenter,
             opener: self.opener.clone(),
+            switch: self.switch.clone(),
         })
     }
 

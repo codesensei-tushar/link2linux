@@ -7,10 +7,16 @@
 //! other events. Requests the
 //! user makes of a feature, such as dismissing a notification, are
 //! [`Command`](crate::link::Command)s, which the loop hands to its driver.
+//! A feature with timers of its own reports them through
+//! [`Features::next_deadline`], and the loop calls [`Features::tick`] then;
+//! banner responses go through [`Features::handle_response`].
 
 use link2linux_core::session::SessionEvent;
+use link2linux_platform::NotificationResponse;
+use tokio::time::Instant;
 
 use crate::clipboard::ClipboardDriver;
+use crate::files::FilesDriver;
 use crate::notify::{DriverError, NotificationsDriver, PhoneSession};
 
 /// The features of one phone, which stay with it across sessions.
@@ -19,6 +25,8 @@ pub struct Features {
     pub notifications: Box<dyn NotificationsDriver>,
     /// Its part of the shared clipboard.
     pub clipboard: ClipboardDriver,
+    /// Its file transfers.
+    pub files: FilesDriver,
 }
 
 /// The phone broke a feature's rules: the session ends as a protocol error.
@@ -34,6 +42,9 @@ impl Features {
         }
         if let Err(error) = self.clipboard.session_started(session).await {
             tracing::debug!(%error, "the clipboard could not start");
+        }
+        if let Err(error) = self.files.session_started(session).await {
+            tracing::debug!(%error, "files could not start");
         }
     }
 
@@ -53,14 +64,19 @@ impl Features {
             let states = states.clone();
             self.notifications_event(session, SessionEvent::FeatureStatus(states.clone()))
                 .await?;
-            self.clipboard_event(session, SessionEvent::FeatureStatus(states))
+            self.clipboard_event(session, SessionEvent::FeatureStatus(states.clone()))
+                .await;
+            self.files_event(session, SessionEvent::FeatureStatus(states))
                 .await;
             return Ok(Some(event));
         }
         let Some(event) = self.notifications_event(session, event).await? else {
             return Ok(None);
         };
-        Ok(self.clipboard_event(session, event).await)
+        let Some(event) = self.clipboard_event(session, event).await else {
+            return Ok(None);
+        };
+        Ok(self.files_event(session, event).await)
     }
 
     async fn notifications_event(
@@ -95,9 +111,72 @@ impl Features {
             })
     }
 
+    async fn files_event(
+        &mut self,
+        session: &mut PhoneSession,
+        event: SessionEvent,
+    ) -> Option<SessionEvent> {
+        self.files
+            .handle_event(session, event)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(%error, "files event failed");
+                None
+            })
+    }
+
+    /// Acts on what the user did with a banner: each feature looks for its
+    /// own. `session` is `None` between sessions.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the phone broke a feature's rules.
+    pub async fn handle_response(
+        &mut self,
+        session: Option<&mut PhoneSession>,
+        response: NotificationResponse,
+    ) -> Result<(), BrokeRules> {
+        if self.files.handle_response(&response) {
+            return Ok(());
+        }
+        match self.notifications.handle_response(session, response).await {
+            Ok(Some(_)) => tracing::debug!("a banner asks to open the app"),
+            Ok(None) => {}
+            Err(DriverError::PhoneBrokeRules(error)) => {
+                tracing::warn!(%error, "the phone broke the notification rules");
+                return Err(BrokeRules);
+            }
+            Err(error) => tracing::warn!(%error, "notification response failed"),
+        }
+        Ok(())
+    }
+
+    /// When a feature next has something to do by itself, such as ending a
+    /// transfer kept too long.
+    #[must_use]
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.files.next_deadline()
+    }
+
+    /// The time [`Self::next_deadline`] named has come. `session` is `None`
+    /// between sessions.
+    pub async fn tick(&mut self, session: Option<&mut PhoneSession>) {
+        if let Err(error) = self.files.tick(session).await {
+            tracing::debug!(%error, "files could not go on");
+        }
+    }
+
+    /// Whether something the user sees happen is going on, such as a file
+    /// transfer, so sessions ping often.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        self.files.is_busy()
+    }
+
     /// The session is over: each feature forgets what only held within it.
     pub fn session_ended(&mut self) {
         self.notifications.session_ended();
         self.clipboard.session_ended();
+        self.files.session_ended();
     }
 }
