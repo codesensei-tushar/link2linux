@@ -34,11 +34,20 @@ const MAX_QUEUED_BYTES: usize = 512 * 1024;
 /// Room a transfer from the phone leaves free on the disk.
 const SPARE_SPACE: u64 = 64 * 1024 * 1024;
 
-/// Answers a transfer may miss in a row before it fails.
+/// Answers a transfer may miss in a row before it waits for the next
+/// session.
 const MAX_MISSES: u32 = 3;
 
 /// How long a busy phone is left alone when it does not say.
 const BUSY_RETRY: Duration = Duration::from_secs(5);
+
+/// When to offer again after each `INTERNAL` answer to an offer. One more
+/// fails the transfer.
+const INTERNAL_RETRIES: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(4),
+    Duration::from_secs(16),
+];
 
 /// Finished transfers kept in the list.
 const MAX_FINISHED: usize = 100;
@@ -82,6 +91,9 @@ pub struct FileService {
     pending: HashMap<u64, Pending>,
     /// Transfers to cancel on the phone once it is reachable.
     cancels: Vec<TransferId>,
+    /// Transfers from the phone that the user ended here, with when, kept
+    /// for [`KEEP_UNFINISHED`]: offering one again gets `DECLINED`.
+    declined: HashMap<TransferId, Instant>,
     events: broadcast::Sender<TransferEvent>,
 }
 
@@ -96,6 +108,7 @@ impl FileService {
             outgoing: Vec::new(),
             pending: HashMap::new(),
             cancels: Vec::new(),
+            declined: HashMap::new(),
             events: broadcast::channel(256).0,
         }
     }
@@ -181,6 +194,7 @@ impl FileService {
             transfer.state = TransferState::Cancelled { by_peer: false };
             transfer.live = false;
             let view = transfer.view();
+            self.declined.insert(id, Instant::now());
             self.cancel_on_phone(id);
             self.publish(TransferEvent::Changed(view));
         } else {
@@ -226,6 +240,9 @@ impl FileService {
         let now = Instant::now();
         self.expire(now).await;
         if !session.is_ready(Feature::Files) {
+            if refusal(session).is_some() {
+                self.end_running_incoming(now).await;
+            }
             self.pause_all(TransferState::Waiting, now);
             return Ok(());
         }
@@ -259,6 +276,11 @@ impl FileService {
     pub fn session_ended(&mut self) {
         self.pending.clear();
         self.pause_all(TransferState::Interrupted, Instant::now());
+        // A new session gets a new chance.
+        for transfer in &mut self.outgoing {
+            transfer.held = false;
+            transfer.misses = 0;
+        }
     }
 
     /// Ends the unfinished transfers kept for longer than
@@ -284,6 +306,7 @@ impl FileService {
                 changed.push(transfer.view());
             }
         }
+        self.declined.retain(|_, at| now < *at + KEEP_UNFINISHED);
         if !changed.is_empty() {
             tracing::info!(transfers = changed.len(), "unfinished transfers expired");
             for view in changed {
@@ -399,6 +422,9 @@ impl FileService {
         {
             return error(ErrorCode::InvalidArgument, "a name has 1 to 255 bytes");
         }
+        if self.declined.contains_key(&id) {
+            return error(ErrorCode::Declined, "the user cancelled the transfer");
+        }
 
         if let Some(transfer) = self.incoming.iter_mut().find(|t| t.id == id) {
             if !transfer.matches(&offer) {
@@ -425,8 +451,9 @@ impl FileService {
         let running = self
             .incoming
             .iter()
-            .filter(|t| t.live && t.state == TransferState::Running);
-        if running.clone().count() >= MAX_RUNNING_TRANSFERS {
+            .filter(|t| t.live && t.state == TransferState::Running)
+            .count();
+        if running >= MAX_RUNNING_TRANSFERS {
             return Payload::ErrorReply(ErrorReply {
                 code: ErrorCode::Busy.into(),
                 detail: "4 transfers are running".into(),
@@ -434,11 +461,18 @@ impl FileService {
                 ..ErrorReply::default()
             });
         }
+        // The bytes still to come of every transfer accepted before, also of
+        // those kept for the phone to resume, count too.
+        let accepted = self
+            .incoming
+            .iter()
+            .filter(|t| !t.state.is_finished())
+            .map(Incoming::remaining);
         let needed = offer
             .files
             .iter()
             .map(|file| file.size)
-            .chain(running.map(Incoming::remaining))
+            .chain(accepted)
             .fold(SPARE_SPACE, u64::saturating_add);
         let (dir, free_space) = (self.dir.clone(), self.free_space.clone());
         let free = blocking(move || {
@@ -615,6 +649,24 @@ impl FileService {
                 transfer.retry_at = Some(now + wait);
                 TransferEvent::Changed(transfer.view())
             }
+            (Pending::Offer { .. }, Err(refused))
+                if refused.code() == ErrorCode::Internal
+                    && transfer.internal_errors < INTERNAL_RETRIES.len() =>
+            {
+                let now = Instant::now();
+                let wait = INTERNAL_RETRIES[transfer.internal_errors];
+                transfer.internal_errors += 1;
+                let since = transfer.since;
+                transfer.pause(TransferState::Waiting, now);
+                transfer.since = since;
+                transfer.retry_at = Some(now + wait);
+                TransferEvent::Changed(transfer.view())
+            }
+            (Pending::Offer { .. }, Err(refused)) if refused.code() == ErrorCode::Declined => {
+                tracing::info!(transfer = %id, "the phone's user cancelled the transfer");
+                transfer.finish(TransferState::Cancelled { by_peer: true });
+                TransferEvent::Changed(transfer.view())
+            }
             (Pending::Chunk { mark, .. }, Ok(_)) => {
                 transfer.acked(mark);
                 if transfer.is_complete() {
@@ -650,7 +702,8 @@ impl FileService {
     }
 
     /// One of this side's requests got no answer in time. The transfer is
-    /// offered again, unless it missed too many answers.
+    /// offered again, or, after too many answers missed in a row, in the
+    /// next session.
     fn on_timeout(&mut self, pending: Pending) {
         let (Pending::Offer { id, generation } | Pending::Chunk { id, generation, .. }) = pending
         else {
@@ -663,15 +716,14 @@ impl FileService {
         };
         transfer.misses += 1;
         if transfer.misses >= MAX_MISSES {
-            tracing::info!(transfer = %id, "the phone stopped answering");
-            transfer.finish(TransferState::Failed(Failure::Unanswered));
-            self.cancels.push(id);
+            tracing::info!(transfer = %id, "the phone stopped answering: going on in the next session");
+            transfer.pause(TransferState::Interrupted, Instant::now());
+            transfer.held = true;
         } else {
             transfer.pause(TransferState::Waiting, Instant::now());
         }
         let view = transfer.view();
         self.publish(TransferEvent::Changed(view));
-        self.prune();
     }
 
     /// Offers the waiting transfers, as many as the phone runs at once.
@@ -696,7 +748,7 @@ impl FileService {
                 transfer.state,
                 TransferState::Waiting | TransferState::Interrupted
             );
-            if !waiting || transfer.retry_at.is_some_and(|at| at > now) {
+            if !waiting || transfer.held || transfer.retry_at.is_some_and(|at| at > now) {
                 continue;
             }
             let seq = session.queue_request(Payload::FileOffer(transfer.offer()))?;
@@ -780,6 +832,32 @@ impl FileService {
                     self.prune();
                 }
             }
+        }
+    }
+
+    /// The user turned files off here: the transfers the phone is sending
+    /// end, and what was not finished of them is deleted. Offering one
+    /// again gets `DECLINED`.
+    async fn end_running_incoming(&mut self, now: Instant) {
+        let mut ended = Vec::new();
+        for transfer in &mut self.incoming {
+            if transfer.live && transfer.state == TransferState::Running {
+                transfer.discard().await;
+                transfer.state = TransferState::Cancelled { by_peer: false };
+                transfer.live = false;
+                self.declined.insert(transfer.id, now);
+                ended.push(transfer.view());
+            }
+        }
+        if !ended.is_empty() {
+            tracing::info!(
+                transfers = ended.len(),
+                "files turned off: ended the transfers from the phone"
+            );
+            for view in ended {
+                self.publish(TransferEvent::Changed(view));
+            }
+            self.prune();
         }
     }
 

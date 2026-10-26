@@ -176,8 +176,6 @@ pub enum Failure {
     Invalid,
     /// A received file could not be saved here.
     WriteFailed,
-    /// The phone stopped answering.
-    Unanswered,
     /// The phone stayed away for longer than [`KEEP_UNFINISHED`].
     Expired,
 }

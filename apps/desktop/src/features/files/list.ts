@@ -80,8 +80,6 @@ export function failureText(
       return `${phoneName} sent the files incorrectly`;
     case "writeFailed":
       return "A file couldn't be saved";
-    case "unanswered":
-      return `${phoneName} stopped answering`;
     case "expired":
       return `${phoneName} didn't reconnect within an hour`;
   }

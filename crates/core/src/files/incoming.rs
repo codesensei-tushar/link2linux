@@ -88,7 +88,9 @@ impl Incoming {
             .map(|(index, info)| Target {
                 offered_name: info.name.clone(),
                 size: info.size,
-                mime_type: info.mime_type.clone(),
+                // The phone's type is only a hint: a saved file is typed by
+                // its name.
+                mime_type: names::mime_type(&names::received(&info.name)).to_owned(),
                 name: names::received(&info.name),
                 temp: dir.join(disk::temp_name(id, index)),
                 saved_to: None,

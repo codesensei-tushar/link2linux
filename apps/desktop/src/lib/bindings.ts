@@ -581,8 +581,6 @@ export type TransferFailure =
 "invalid" | 
 /**  A received file could not be saved. */
 "writeFailed" | 
-/**  The phone stopped answering. */
-"unanswered" | 
 /**  The phone stayed away for more than an hour. */
 "expired";
 

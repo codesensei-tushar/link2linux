@@ -192,6 +192,8 @@ enum Command {
     Send(Vec<PathBuf>, oneshot::Sender<Result<TransferId, SendError>>),
     Cancel(TransferId),
     Transfers(oneshot::Sender<Vec<Transfer>>),
+    /// The user turned files on or off here.
+    Switch(Availability),
 }
 
 /// A service on its session, driven the way the runtime drives it.
@@ -220,6 +222,11 @@ impl Driven {
                             }
                             Some(Command::Transfers(reply)) => {
                                 let _ = reply.send(service.transfers());
+                            }
+                            Some(Command::Switch(availability)) => {
+                                if session.set_availability(Feature::Files, availability).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                         if service.run(&mut session).await.is_err() {
@@ -254,6 +261,10 @@ impl Driven {
 
     fn cancel(&self, id: TransferId) {
         self.commands.send(Command::Cancel(id)).unwrap();
+    }
+
+    fn switch(&self, availability: Availability) {
+        self.commands.send(Command::Switch(availability)).unwrap();
     }
 
     async fn transfers(&self) -> Vec<Transfer> {
@@ -388,6 +399,9 @@ async fn files_from_the_phone_get_safe_names_and_replace_nothing() {
     assert_eq!(saved[1], downloads.path().join("_.hidden_gpj.exe"));
     assert_eq!(saved[2], downloads.path().join("empty"));
     assert_eq!(done.files[0].name, "photo (1).jpg");
+    // Typed by their names, whatever the phone said.
+    assert_eq!(done.files[0].mime_type, "image/jpeg");
+    assert_eq!(done.files[2].mime_type, "");
     assert_eq!(fs::read(&saved[0]).unwrap(), photo);
     assert_eq!(fs::read(&saved[1]).unwrap(), tricky);
     assert_eq!(fs::read(&saved[2]).unwrap(), b"");
@@ -578,6 +592,9 @@ async fn transfers_from_the_phone_resume_after_a_lost_connection() {
     );
 
     let (mut desktop, mut phone) = desktop_with(service).await;
+    // Chunks wait for the offer that resumes the transfer.
+    let early = chunk(id, 0, CHUNK_LEN, &a[CHUNK_LEN..2 * CHUNK_LEN], Vec::new());
+    assert_eq!(code_of(&phone.ask(early).await), ErrorCode::NotFound);
     let other = phone.offer(id, &[("a.bin", &a)]).await;
     assert_eq!(code_of(&other), ErrorCode::InvalidArgument);
     assert_eq!(phone.offer(id, &files).await, accept(0, CHUNK_LEN as u64));
@@ -590,8 +607,10 @@ async fn transfers_from_the_phone_resume_after_a_lost_connection() {
     assert_eq!(fs::read(done.files[0].path.as_ref().unwrap()).unwrap(), a);
     assert_eq!(fs::read(done.files[1].path.as_ref().unwrap()).unwrap(), b);
 
-    // Offered again, it is already complete.
+    // Offered again, it is already complete, and takes no more chunks.
     assert_eq!(phone.offer(id, &files).await, accept(2, 0));
+    let late = chunk(id, 1, 0, &b, sha256(&b));
+    assert_eq!(code_of(&phone.ask(late).await), ErrorCode::NotFound);
     assert_eq!(names_in(downloads.path()), ["a.bin", "b.bin"]);
 }
 
@@ -656,8 +675,114 @@ async fn cancelling_a_transfer_from_the_phone_keeps_only_finished_files() {
         )
         .await;
     assert_eq!(names_in(downloads.path()), ["small"]);
+    // Offered again, it is declined.
     let again = phone.offer([2; 16], &[("big", &big)]).await;
-    assert_eq!(code_of(&again), ErrorCode::NotFound);
+    assert_eq!(code_of(&again), ErrorCode::Declined);
+}
+
+#[tokio::test]
+async fn kept_transfers_count_against_the_room_and_a_resume_is_never_busy() {
+    let downloads = tempfile::tempdir().unwrap();
+    let free = 100 * 1024 * 1024;
+    let service = service(downloads.path()).with_free_space(move |_| Ok(free));
+    let (desktop, mut phone) = desktop_with(service).await;
+    let size = |id: u8, size: u64| {
+        Payload::FileOffer(FileOffer {
+            transfer_id: vec![id; 16],
+            files: vec![FileInfo {
+                name: "big".into(),
+                size,
+                ..FileInfo::default()
+            }],
+            ..FileOffer::default()
+        })
+    };
+    assert_eq!(phone.ask(size(1, 30 << 20)).await, accept(0, 0));
+    drop(phone);
+    let service = desktop.stopped().await;
+
+    // The 30 MiB kept for the phone count: 10 more do not fit.
+    let (_desktop, mut phone) = desktop_with(service).await;
+    assert_eq!(
+        code_of(&phone.ask(size(2, 10 << 20)).await),
+        ErrorCode::NoSpace
+    );
+    for n in 3..=6 {
+        assert_eq!(phone.ask(size(n, 1024)).await, accept(0, 0));
+    }
+    assert_eq!(code_of(&phone.ask(size(7, 1024)).await), ErrorCode::Busy);
+    // Four are running, but the kept one goes on.
+    assert_eq!(phone.ask(size(1, 30 << 20)).await, accept(0, 0));
+}
+
+#[tokio::test]
+async fn turning_files_off_ends_what_the_phone_sends() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (mut desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let big = data(600 * KIB, 18);
+    let files: [(&str, &[u8]); 1] = [("big", &big)];
+    assert_eq!(phone.offer([1; 16], &files).await, accept(0, 0));
+    let first = chunk([1; 16], 0, 0, &big[..CHUNK_LEN], Vec::new());
+    assert!(is_ack(&phone.ask(first).await));
+
+    desktop.switch(Availability::Disabled);
+    let status = phone.next().await;
+    assert!(
+        matches!(status.payload, Some(Payload::FeatureStatus(_))),
+        "{status:?}"
+    );
+    desktop
+        .reaches(
+            TransferId([1; 16]),
+            TransferState::Cancelled { by_peer: false },
+        )
+        .await;
+    assert_eq!(names_in(downloads.path()), Vec::<String>::new());
+    let next = chunk(
+        [1; 16],
+        0,
+        CHUNK_LEN,
+        &big[CHUNK_LEN..2 * CHUNK_LEN],
+        Vec::new(),
+    );
+    assert_eq!(code_of(&phone.ask(next).await), ErrorCode::Disabled);
+
+    // Back on, the phone cannot take it up again.
+    desktop.switch(Availability::Ready);
+    let status = phone.next().await;
+    assert!(
+        matches!(status.payload, Some(Payload::FeatureStatus(_))),
+        "{status:?}"
+    );
+    assert_eq!(
+        code_of(&phone.offer([1; 16], &files).await),
+        ErrorCode::Declined
+    );
+}
+
+#[tokio::test]
+async fn a_cancel_made_while_the_phone_is_away_reaches_it_in_the_next_session() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let big = data(600 * KIB, 19);
+    assert_eq!(phone.offer([1; 16], &[("big", &big)]).await, accept(0, 0));
+    let first = chunk([1; 16], 0, 0, &big[..CHUNK_LEN], Vec::new());
+    assert!(is_ack(&phone.ask(first).await));
+    drop(phone);
+    let mut service = desktop.stopped().await;
+
+    assert!(service.cancel(TransferId([1; 16])).await);
+    assert_eq!(names_in(downloads.path()), Vec::<String>::new());
+    let (_desktop, mut phone) = desktop_with(service).await;
+    let cancel = phone.next().await;
+    assert!(cancel.expects_reply);
+    assert_eq!(
+        cancel.payload,
+        Some(Payload::FileCancel(FileCancel {
+            transfer_id: vec![1; 16]
+        }))
+    );
+    phone.ack(cancel.seq).await;
 }
 
 #[tokio::test]
@@ -937,9 +1062,25 @@ async fn refusals_end_or_delay_transfers() {
     desktop.transfers().await;
     let (seq, offer) = read_offer(&mut phone).await;
     assert_eq!(offer.transfer_id, busy.0);
+    // A phone that failed gets it again a second later.
+    phone.answer(seq, refusal(ErrorCode::Internal)).await;
+    desktop.reaches(busy, TransferState::Waiting).await;
+    phone.quiet().await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    desktop.transfers().await;
+    let (seq, offer) = read_offer(&mut phone).await;
+    assert_eq!(offer.transfer_id, busy.0);
     phone.answer(seq, refusal(ErrorCode::Disabled)).await;
     desktop
         .reaches(busy, TransferState::Failed(Failure::Disabled))
+        .await;
+
+    // The phone's user cancelled it earlier.
+    let declined = desktop.send(vec![path.clone()]).await.unwrap();
+    let (seq, _) = read_offer(&mut phone).await;
+    phone.answer(seq, refusal(ErrorCode::Declined)).await;
+    desktop
+        .reaches(declined, TransferState::Cancelled { by_peer: true })
         .await;
 
     let full = desktop.send(vec![path.clone()]).await.unwrap();
@@ -1083,7 +1224,7 @@ async fn cancelling_stops_sending_on_either_side() {
 }
 
 #[tokio::test]
-async fn unanswered_requests_offer_the_transfer_again_then_give_up() {
+async fn unanswered_requests_offer_the_transfer_again_then_wait_for_the_next_session() {
     let sources = tempfile::tempdir().unwrap();
     let downloads = tempfile::tempdir().unwrap();
     let file = data(CHUNK_LEN + 10, 15);
@@ -1105,11 +1246,18 @@ async fn unanswered_requests_offer_the_transfer_again_then_give_up() {
         let (_, offer) = read_offer(&mut phone).await;
         assert_eq!(offer.transfer_id, id.0);
     }
-    let cancel = phone.next().await;
-    assert!(matches!(cancel.payload, Some(Payload::FileCancel(_))));
-    desktop
-        .reaches(id, TransferState::Failed(Failure::Unanswered))
-        .await;
+    // Three missed: nothing more in this session, and no cancel.
+    desktop.reaches(id, TransferState::Interrupted).await;
+    phone.quiet().await;
+    drop(phone);
+    let service = desktop.stopped().await;
+
+    // The next session goes on with it.
+    let (desktop, mut phone) = desktop_with(service).await;
+    let (seq, offer) = read_offer(&mut phone).await;
+    assert_eq!(offer.transfer_id, id.0);
+    phone.answer(seq, accept(1, 0)).await;
+    desktop.settles(id, TransferState::Completed).await;
 }
 
 /// A phone running the same service, on the other end of a pipe.

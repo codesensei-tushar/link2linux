@@ -40,8 +40,6 @@ pub enum TransferFailure {
     Invalid,
     /// A received file could not be saved.
     WriteFailed,
-    /// The phone stopped answering.
-    Unanswered,
     /// The phone stayed away for more than an hour.
     Expired,
 }
@@ -195,7 +193,6 @@ fn failure(failure: Failure) -> TransferFailure {
         Failure::Damaged => F::Damaged,
         Failure::Invalid => F::Invalid,
         Failure::WriteFailed => F::WriteFailed,
-        Failure::Unanswered => F::Unanswered,
         Failure::Expired => F::Expired,
         // A reason added later reads as a refusal until it has its own.
         _ => F::Refused,

@@ -133,6 +133,11 @@ pub(super) struct Outgoing {
     pub(super) in_flight: usize,
     /// Answers missed in a row.
     pub(super) misses: u32,
+    /// It missed too many answers: it is offered again in the next
+    /// session, not in this one.
+    pub(super) held: bool,
+    /// How often the phone failed its offer with `INTERNAL`.
+    pub(super) internal_errors: usize,
     /// When it started waiting or was interrupted, for expiry.
     pub(super) since: Instant,
     /// When a busy phone may be asked again.
@@ -175,6 +180,8 @@ impl Outgoing {
             generation: 0,
             in_flight: 0,
             misses: 0,
+            held: false,
+            internal_errors: 0,
             since: Instant::now(),
             retry_at: None,
             started_unix_ms: unix_ms(SystemTime::now()),
@@ -236,6 +243,7 @@ impl Outgoing {
             .iter()
             .fold(offset, |total, source| total.saturating_add(source.size));
         self.accepted = true;
+        self.misses = 0;
         Ok(())
     }
 

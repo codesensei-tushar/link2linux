@@ -416,7 +416,6 @@ fn failure_text(failure: Failure, incoming: bool, phone: &str) -> String {
         Failure::Damaged => "A file arrived damaged, so it was deleted.".to_owned(),
         Failure::Invalid => format!("{phone} sent the files incorrectly."),
         Failure::WriteFailed => "A file couldn't be saved.".to_owned(),
-        Failure::Unanswered => format!("{phone} stopped answering."),
         Failure::Expired => format!("{phone} didn't reconnect within an hour."),
         _ => format!("{phone} didn't accept the files."),
     }
