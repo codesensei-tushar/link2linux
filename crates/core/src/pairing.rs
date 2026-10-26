@@ -17,25 +17,7 @@ use std::fmt;
 use std::time::SystemTime;
 
 use crate::device::DeviceKind;
-
-/// SHA-256 of a device's public key, taken over the DER SubjectPublicKeyInfo
-/// of its TLS certificate. Peers pin this, not the certificate, so a device
-/// can reissue its certificate for the same key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CertificateFingerprint(pub [u8; 32]);
-
-impl fmt::Display for CertificateFingerprint {
-    /// Lowercase hex, two digits per byte.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
-    }
-}
-
-impl fmt::Debug for CertificateFingerprint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CertificateFingerprint({self})")
-    }
-}
+pub use crate::identity::CertificateFingerprint;
 
 /// The six-digit code both screens show while pairing without a QR code.
 #[derive(Debug, Clone, PartialEq, Eq)]

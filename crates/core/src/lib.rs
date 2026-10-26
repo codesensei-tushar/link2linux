@@ -4,9 +4,11 @@
 //! without a window:
 //!
 //! - [`device`]: who a device is and which [`Feature`]s it serves;
+//! - [`identity`]: this desktop's key and certificate, and the fingerprints
+//!   devices know each other by;
 //! - [`discovery`]: finding devices on the local network;
 //! - [`pairing`]: the one-time trust step and the store of paired devices;
-//! - [`transport`]: the TLS stream to a paired device;
+//! - [`transport`]: the TLS stream to a phone;
 //! - [`session`]: the `Hello` exchange on that stream, which settles the
 //!   protocol version, who the peer is and which features both sides use,
 //!   then liveness, requests and their answers, and the flow of feature
@@ -30,6 +32,7 @@
 
 pub mod device;
 pub mod discovery;
+pub mod identity;
 pub mod outbox;
 pub mod pairing;
 pub mod session;
@@ -45,4 +48,5 @@ pub mod photos;
 pub mod screen;
 
 pub use device::{DeviceInfo, DeviceKind, Feature, FeatureError};
+pub use identity::CertificateFingerprint;
 pub use session::{Session, SessionConfig, SessionError, SessionEvent};
