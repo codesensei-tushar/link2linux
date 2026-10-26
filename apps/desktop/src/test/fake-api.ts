@@ -1,7 +1,8 @@
+import { act } from "@testing-library/react";
 import { vi, type Mock } from "vitest";
 
 import type { MirroredNotification, NotificationEvent } from "@/features/notifications/types";
-import type { AppInfo, DesktopApi, Device } from "@/lib/api";
+import type { AppInfo, DesktopApi, Device, PairingState } from "@/lib/api";
 
 export const testAppInfo: AppInfo = {
   name: "link2linux",
@@ -22,6 +23,8 @@ export function testDevice(overrides: Partial<Device> = {}): Device {
     ...overrides,
   };
 }
+
+type Methods = Omit<DesktopApi, "onPairingChanged" | "onDevicesChanged">;
 
 export function testNotification(
   overrides: Partial<MirroredNotification> = {},
@@ -64,11 +67,27 @@ export interface FakeApi extends DesktopApi {
   emitNotification: (event: NotificationEvent) => void;
   /** How many notification subscriptions are active. */
   notificationSubscribers: () => number;
+  unpairDevice: Mock<DesktopApi["unpairDevice"]>;
+  getPairingState: Mock<DesktopApi["getPairingState"]>;
+  startPairing: Mock<DesktopApi["startPairing"]>;
+  pairWith: Mock<DesktopApi["pairWith"]>;
+  answerCode: Mock<DesktopApi["answerCode"]>;
+  cancelPairing: Mock<DesktopApi["cancelPairing"]>;
+  /** Pushes a pairing event, as the backend would. */
+  emitPairing(state: PairingState): void;
+  /** Pushes a devices event, as the backend would. */
+  emitDevices(devices: Device[]): void;
+  /** How many listeners are attached right now. */
+  listenerCount(): number;
 }
 
-/** A `DesktopApi` backed by spies. Starts with no paired phones. */
+/** A `DesktopApi` backed by spies. Starts idle with no paired phones. */
 export function createFakeApi(): FakeApi {
+  const pairingListeners = new Set<(state: PairingState) => void>();
+  const deviceListeners = new Set<(devices: Device[]) => void>();
   const subscribers = new Set<(event: NotificationEvent) => void>();
+  const ok = () => vi.fn<Methods["startPairing"]>().mockResolvedValue(undefined);
+
   return {
     appInfo: vi.fn<DesktopApi["appInfo"]>().mockResolvedValue(testAppInfo),
     listDevices: vi.fn<DesktopApi["listDevices"]>().mockResolvedValue([]),
@@ -88,5 +107,36 @@ export function createFakeApi(): FakeApi {
       for (const subscriber of [...subscribers]) subscriber(event);
     },
     notificationSubscribers: () => subscribers.size,
+    unpairDevice: vi.fn<DesktopApi["unpairDevice"]>().mockResolvedValue(undefined),
+    getPairingState: vi
+      .fn<DesktopApi["getPairingState"]>()
+      .mockResolvedValue({ step: "idle" } satisfies PairingState),
+    startPairing: ok(),
+    pairWith: vi.fn<DesktopApi["pairWith"]>().mockResolvedValue(undefined),
+    answerCode: vi.fn<DesktopApi["answerCode"]>().mockResolvedValue(undefined),
+    cancelPairing: vi.fn<DesktopApi["cancelPairing"]>().mockResolvedValue(undefined),
+    onPairingChanged: (listener) => {
+      pairingListeners.add(listener);
+      return Promise.resolve(() => pairingListeners.delete(listener));
+    },
+    onDevicesChanged: (listener) => {
+      deviceListeners.add(listener);
+      return Promise.resolve(() => deviceListeners.delete(listener));
+    },
+    emitPairing: (state) => {
+      act(() => {
+        pairingListeners.forEach((listener) => {
+          listener(state);
+        });
+      });
+    },
+    emitDevices: (devices) => {
+      act(() => {
+        deviceListeners.forEach((listener) => {
+          listener(devices);
+        });
+      });
+    },
+    listenerCount: () => pairingListeners.size + deviceListeners.size,
   };
 }
