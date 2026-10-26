@@ -4,6 +4,7 @@
 //! and starts the window. Discovery, pairing, transport and feature logic
 //! belong in the workspace crates, not here.
 
+pub mod backend;
 mod commands;
 mod state;
 
