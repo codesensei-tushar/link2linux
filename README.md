@@ -1,42 +1,159 @@
+<div align="center">
+
 # link2linux
 
-Connect your Android phone to your Linux desktop: notifications, messages,
-calls, photos, files, clipboard and screen, over your local network.
+**Your Android phone, right on your Linux desktop.**
 
-> Status: early development. Nothing here is usable yet.
+Notifications, messages, calls, photos, files and your clipboard, shared
+directly between your phone and your computer over your own network.
+No account. No cloud. Open source.
 
-## Layout
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Platforms: Linux | Android](https://img.shields.io/badge/platforms-Linux%20%7C%20Android-informational.svg)
+![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange.svg)
+
+[Website](https://codesensei-tushar.github.io/link2linux/) ·
+[Protocol](docs/protocol.md) ·
+[Architecture](docs/architecture.md) ·
+[Contributing](CONTRIBUTING.md)
+
+</div>
+
+---
+
+> **Status:** link2linux is in active development and has not had its first
+> release yet. The first release, v0.1.0, ships pairing and notifications.
+> Follow the [releases page](https://github.com/codesensei-tushar/link2linux/releases)
+> to hear when it lands.
+
+## Why link2linux
+
+Your phone already knows about every message, call and photo. Your desktop
+is where you spend the working day. link2linux joins the two, and does it on
+your terms.
+
+- **Local-first.** The phone and the computer talk directly over your local
+  network. There is no account to create, no relay server and no cloud copy
+  of your data.
+- **Encrypted end to end.** Every connection uses mutual TLS 1.3. Each device
+  creates its own keys, and a device only accepts the one it was paired
+  with.
+- **Pair once, in seconds.** Scan a QR code on your desktop with your phone.
+  The two devices find each other on their own from then on.
+- **Built for Linux.** A native desktop app for GNOME, KDE Plasma and other
+  desktops, on Wayland and X11, packaged as .deb, .rpm and AppImage.
+- **You decide what's shared.** Every feature starts switched off, and
+  Android asks for each permission only when you turn that feature on.
+- **Open source.** Apache-2.0, all of it: the desktop app, the Android app and
+  the protocol.
+
+## Features
+
+| Feature | What it does | Status |
+|---|---|---|
+| Pairing | Pair with a QR code, or compare a 6-digit code if you have no camera | In progress (v0.1) |
+| Notifications | Phone notifications on your desktop: reply inline, run actions, dismiss on both devices | In progress (v0.1) |
+| Messages | Reply to texts from your keyboard, straight from the notification | Planned (v0.2) |
+| Clipboard | Copy on one device, paste on the other | Planned (v0.2) |
+| Files | Send files both ways with drag and drop or the share sheet | Planned (v0.2) |
+| Photos | Send recent photos to your computer in a couple of taps | Planned (v0.2) |
+| Calls | See who's calling and talk through your computer over Bluetooth | Planned (v0.3) |
+| Phone status | Battery, signal and ring-my-phone | Planned (v0.3) |
+| Screen | Mirror your phone in a window on your desktop | Later |
+
+## How it works
+
+```
+  Android phone                                   Linux desktop
+ ┌─────────────────────────┐                     ┌──────────────────────────┐
+ │ link2linux for Android  │   mutual TLS 1.3    │ link2linux desktop app   │
+ │                         │◄───────────────────►│                          │
+ │  • announces itself on  │   protobuf frames   │  • finds the phone and   │
+ │    the local network    │   on your own LAN   │    connects to it        │
+ │  • listens for its      │                     │  • shows notifications,  │
+ │    paired desktop       │                     │    messages and more     │
+ └─────────────────────────┘                     └──────────────────────────┘
+```
+
+1. **Pair.** The desktop shows a QR code with its address, its key's
+   fingerprint and a one-time secret. The phone scans it, the two connect,
+   and each proves it holds the secret before it trusts the other's key.
+2. **Discover.** The phone announces itself on your network with a rotating,
+   anonymous tag that only its paired desktops can recognise.
+3. **Connect.** The desktop dials the phone over TLS, pinned to the key it
+   stored at pairing. Messages are compact protobuf frames, defined once
+   in [`proto/`](proto/link2linux/v1) and shared by both apps.
+
+The full design, including the threat model, is in the
+[protocol specification](docs/protocol.md). Major decisions are recorded as
+[architecture decision records](docs/adr).
+
+## Install
+
+The first release is on its way. Once it's out, install the desktop app with
+one command:
+
+```sh
+curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh
+```
+
+The script picks the right package for your distribution and checks it
+against the release's `SHA256SUMS` before installing. Or download a package
+yourself from the [releases page](https://github.com/codesensei-tushar/link2linux/releases):
+
+| Download | For |
+|---|---|
+| `link2linux_amd64.deb` | Debian, Ubuntu, Linux Mint, Pop!_OS and other derivatives |
+| `link2linux.x86_64.rpm` | Fedora, openSUSE and other RPM-based distributions |
+| `link2linux-x86_64.AppImage` | Any other x86_64 distribution |
+| `link2linux.apk` | Android 8.0 and newer |
+
+ARM64 builds and Flatpak are planned.
+
+**Requirements:** a 64-bit Linux desktop and an Android phone on the same
+network. Calls need Bluetooth on the computer.
+
+## Privacy and security
+
+- Nothing leaves your network. There are no servers to send data to, and no
+  telemetry.
+- Pairing uses a one-time secret from the QR code, bound to the TLS session,
+  so a device on your network can't pose as your phone or your desktop.
+- Network announcements carry no device names or stable identifiers.
+- Content that Android marks as sensitive, such as one-time codes, stays
+  hidden on the desktop.
+
+Found a security issue? Please report it privately as described in
+[CONTRIBUTING.md](CONTRIBUTING.md#reporting-security-issues).
+
+## Roadmap
+
+- **v0.1:** QR pairing, automatic reconnection and notifications with reply
+  and dismiss sync.
+- **v0.2:** messages, clipboard, files and photos.
+- **v0.3:** calls over Bluetooth, phone status and ring-my-phone.
+- **Later:** screen mirroring, ARM64 builds and Flatpak.
+
+## Project structure
 
 | Path | What lives there |
 |---|---|
-| `apps/desktop` | Desktop app: Tauri v2 shell + React/TypeScript UI |
-| `apps/android` | Android app: Kotlin, multi-module Gradle build |
-| `crates/protocol` | Wire-format types generated from `proto/` |
-| `crates/core` | Discovery, pairing, secure transport, sessions, feature services |
-| `crates/platform` | OS integration behind traits (Linux first) |
-| `proto/link2linux/v1` | Protobuf schema shared by desktop and phone |
-| `docs/` | Architecture, protocol spec, decision records (`docs/adr`) |
+| [`apps/desktop`](apps/desktop) | Desktop app: a Tauri v2 shell with a React and TypeScript interface |
+| [`apps/android`](apps/android) | Android app: Kotlin and Jetpack Compose, multi-module Gradle build |
+| [`crates/core`](crates/core) | Discovery, pairing, secure transport, sessions and feature logic |
+| [`crates/protocol`](crates/protocol) | Wire types generated from the protobuf schema |
+| [`crates/platform`](crates/platform) | Operating-system integration behind traits, Linux first |
+| [`proto/link2linux/v1`](proto/link2linux/v1) | The protobuf schema both apps share |
+| [`docs`](docs) | Architecture, protocol specification and decision records |
+| [`website`](website) | The project website |
 
-Each feature uses the same name everywhere: `src/features/<name>` on the
-desktop, `feature/<name>` on Android, and a module in `crates/core`.
+## Contributing
 
-## Development
-
-Requirements: Rust (pinned in `rust-toolchain.toml`), Node 24 + pnpm,
-JDK 17, Android SDK (`ANDROID_HOME`), and the Tauri Linux libraries
-(`libwebkit2gtk-4.1-dev`, `libxdo-dev`, `libayatana-appindicator3-dev`,
-`librsvg2-dev`). `scripts/doctor.sh` checks all of them.
-
-```sh
-make doctor        # check the toolchain
-make ci            # all checks a PR must pass (GitHub CI is manual-only)
-make ci-changed    # only the checks for paths changed vs origin/main
-make dev           # run the desktop app with hot reload
-make test          # Rust, frontend and Android tests
-make lint          # fmt/clippy, eslint/tsc, Android lint
-make android       # build the debug APK
-```
+Contributions are welcome, from bug reports and testing on your
+distribution or phone to code and documentation.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how to build and run both apps
+locally, the checks a change must pass, and how to propose protocol changes.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+link2linux is licensed under the [Apache License 2.0](LICENSE).
