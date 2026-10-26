@@ -54,6 +54,8 @@ zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 # on the zbus above; the session with the keyring is encrypted with
 # RustCrypto.
 oo7 = { version = "0.6.0", default-features = false, features = ["tokio", "native_crypto"] }
+# Safe system calls, for prctl(PR_SET_DUMPABLE).
+rustix = { version = "1.1.5", default-features = false, features = ["process", "std"] }
 
 # Tests.
 proptest = "1.12"
