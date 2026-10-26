@@ -9,6 +9,7 @@ import dagger.hilt.components.SingletonComponent
 import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.DiscoveryStatus
 import dev.link2linux.android.core.discovery.android.BeaconWakeLock
@@ -16,6 +17,7 @@ import dev.link2linux.android.core.discovery.android.ConnectivityLocalNetworks
 import dev.link2linux.android.core.discovery.android.NsdAdvertiser
 import dev.link2linux.android.core.discovery.android.PairingMulticastLock
 import dev.link2linux.android.core.discovery.android.UdpBeaconSender
+import dev.link2linux.android.service.PreferencesConnectionSwitch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,6 +55,11 @@ internal object DiscoveryModule {
         // Android before 14 needs a new registration whenever a network changes.
         reregisterOnNetworkChange = android.os.Build.VERSION.SDK_INT < 34,
     )
+
+    @Provides
+    @Singleton
+    fun connectionSwitch(@ApplicationContext context: Context): ConnectionSwitch =
+        PreferencesConnectionSwitch(context)
 
     @Provides
     fun discoveryStatus(controller: DiscoveryController): DiscoveryStatus = controller

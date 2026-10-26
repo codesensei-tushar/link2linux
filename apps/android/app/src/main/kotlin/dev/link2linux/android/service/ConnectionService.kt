@@ -16,6 +16,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import dev.link2linux.android.MainActivity
 import dev.link2linux.android.R
 import dev.link2linux.android.core.data.DesktopListener
+import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryController
 import dev.link2linux.android.core.discovery.android.ConnectivityLocalNetworks
 import kotlinx.coroutines.CoroutineScope
@@ -45,6 +46,7 @@ class ConnectionService : Service() {
     @Inject lateinit var discovery: DiscoveryController
     @Inject lateinit var networks: ConnectivityLocalNetworks
     @Inject lateinit var listener: DesktopListener
+    @Inject lateinit var connectionSwitch: ConnectionSwitch
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -68,6 +70,8 @@ class ConnectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                // "Turn off" is the user's choice: it stays off until they turn it on in the app.
+                connectionSwitch.setEnabled(false)
                 stopSelf()
                 return START_NOT_STICKY
             }

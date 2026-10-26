@@ -2,6 +2,7 @@ package dev.link2linux.android.feature.pairing
 
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryStatus
 import dev.link2linux.android.core.model.Device
 import dev.link2linux.android.core.model.DeviceId
@@ -41,6 +42,7 @@ class PairingViewModelTest {
     private val repository = FakePairedDeviceRepository()
     private val controller = FakeController()
     private val discovery = FakeDiscovery()
+    private val connection = FakeConnection()
 
     @Before
     fun setMain() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -60,7 +62,7 @@ class PairingViewModelTest {
 
     private fun TestScope.viewModel(): PairingViewModel {
         val vm = PairingViewModel(
-            repository, controller, discovery, { 1_000_000 + currentTime },
+            repository, controller, discovery, connection, { 1_000_000 + currentTime },
             flow { while (true) { emit(Unit); delay(1_000) } },
         )
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
@@ -182,6 +184,14 @@ class PairingViewModelTest {
     }
 
     @Test
+    fun theBackgroundConnectionCanBeTurnedOffAndOn() = runTest {
+        val vm = viewModel()
+        assertEquals(true, vm.uiState.value.connectionEnabled)
+        vm.setConnectionEnabled(false)
+        assertEquals(false, vm.uiState.value.connectionEnabled)
+    }
+
+    @Test
     fun cancelLeavesScanningAndStopsTheAttempt() = runTest {
         val vm = viewModel()
         vm.startScan()
@@ -220,6 +230,13 @@ class PairingViewModelTest {
         }
         override suspend fun unpair(fingerprint: KeyFingerprint) {
             unpaired += fingerprint
+        }
+    }
+
+    private class FakeConnection : ConnectionSwitch {
+        override val enabled = MutableStateFlow(true)
+        override fun setEnabled(enabled: Boolean) {
+            this.enabled.value = enabled
         }
     }
 

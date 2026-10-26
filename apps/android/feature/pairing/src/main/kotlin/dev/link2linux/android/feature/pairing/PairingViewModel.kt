@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
+import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryStatus
 import dev.link2linux.android.core.discovery.QrOfferParser
 import dev.link2linux.android.core.discovery.QrParseResult
@@ -35,6 +36,7 @@ class PairingViewModel internal constructor(
     pairedDeviceRepository: PairedDeviceRepository,
     private val controller: PairingController,
     discovery: DiscoveryStatus,
+    private val connection: ConnectionSwitch,
     private val clock: () -> Long,
     ticks: Flow<Unit>,
 ) : ViewModel() {
@@ -44,7 +46,8 @@ class PairingViewModel internal constructor(
         pairedDeviceRepository: PairedDeviceRepository,
         controller: PairingController,
         discovery: DiscoveryStatus,
-    ) : this(pairedDeviceRepository, controller, discovery, System::currentTimeMillis, secondTicks())
+        connection: ConnectionSwitch,
+    ) : this(pairedDeviceRepository, controller, discovery, connection, System::currentTimeMillis, secondTicks())
 
     private val scanning = MutableStateFlow(false)
     private val scanError = MutableStateFlow<ScanError?>(null)
@@ -57,17 +60,20 @@ class PairingViewModel internal constructor(
         controller.state,
         scanning,
         scanError,
-        combine(discovery.registeredName, discovery.endpoints, ticks) { name, endpoints, _ -> name to endpoints },
-    ) { devices, state, scanning, error, (instanceName, endpoints) ->
+        combine(discovery.registeredName, discovery.endpoints, ticks, connection.enabled) { name, endpoints, _, on ->
+            Triple(name, endpoints, on)
+        },
+    ) { devices, state, scanning, error, (instanceName, endpoints, connected) ->
         PairingUiState(
             devices = devices,
             screen = screenFor(state, scanning, instanceName, endpoints.map(::formatEndpoint)),
             scanError = error,
+            connectionEnabled = connected,
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = PairingUiState(devices = null, screen = PairingScreenState.Home, scanError = null),
+        initialValue = PairingUiState(devices = null, screen = PairingScreenState.Home, scanError = null, connectionEnabled = true),
     )
 
     private fun screenFor(
@@ -137,6 +143,9 @@ class PairingViewModel internal constructor(
 
     fun confirmCode(matches: Boolean) = controller.confirmCode(matches)
 
+    /** The user turned the background connection on or off. */
+    fun setConnectionEnabled(enabled: Boolean) = connection.setEnabled(enabled)
+
     fun confirmReplace(replace: Boolean) = controller.confirmReplace(replace)
 
     /** Leaves scanning, or stops waiting for a computer, or ends an attempt in progress. */
@@ -190,6 +199,8 @@ data class PairingUiState(
     val devices: List<PairedDevice>?,
     val screen: PairingScreenState,
     val scanError: ScanError?,
+    /** Whether link2linux stays connected in the background. */
+    val connectionEnabled: Boolean,
 )
 
 /** What the pairing flow shows. */

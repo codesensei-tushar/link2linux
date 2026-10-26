@@ -6,11 +6,16 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import dagger.hilt.android.AndroidEntryPoint
 import dev.link2linux.android.core.designsystem.theme.L2lTheme
+import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.service.ConnectionService
 import dev.link2linux.android.ui.L2lApp
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject lateinit var connectionSwitch: ConnectionSwitch
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -24,6 +29,6 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         // The app is visible, which is when Android allows the foreground service to start.
-        ConnectionService.start(this)
+        if (connectionSwitch.enabled.value) ConnectionService.start(this)
     }
 }

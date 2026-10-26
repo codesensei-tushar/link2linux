@@ -7,6 +7,9 @@
     <string name="feature_pairing_features_header">Features</string>
     <string name="feature_pairing_computers_header">Paired computers</string>
 
+    <string name="feature_pairing_connection_title">Stay connected</string>
+    <string name="feature_pairing_connection_body">Keeps link2linux ready in the background, with a quiet notification, so your paired computers can reconnect.</string>
+
     <string name="feature_pairing_scan_action">Scan a code</string>
     <string name="feature_pairing_sas_action">Pair without camera</string>
     <string name="feature_pairing_unpair">Unpair</string>
