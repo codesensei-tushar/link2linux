@@ -2,11 +2,15 @@ name: Release
 
 # Builds every download when a version tag such as v0.1.0 is pushed, and
 # collects them in a draft GitHub release for a maintainer to publish.
+# Started by hand from the Actions tab instead, it is a build-only run: the
+# same files, signed, become a "release-files" workflow artifact and no
+# release is created, which tests the pipeline before tagging.
 # docs/releasing.md has the full checklist. The asset names are fixed: the
 # website and install.sh look files up by name.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,10 +26,14 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: The tag matches the workspace version
+      - name: The tag matches the workspace and frontend versions
+        if: github.ref_type == 'tag'
         run: |
-          grep -qx "version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml ||
-            { echo "::error::Cargo.toml [workspace.package] version is not ${GITHUB_REF_NAME#v}"; exit 1; }
+          v="${GITHUB_REF_NAME#v}"
+          grep -qx "version = \"$v\"" Cargo.toml ||
+            { echo "::error::Cargo.toml [workspace.package] version is not $v"; exit 1; }
+          grep -q "\"version\": \"$v\"" apps/desktop/package.json ||
+            { echo "::error::apps/desktop/package.json version is not $v"; exit 1; }
       - name: System libraries
         run: |
           sudo apt-get update
@@ -59,6 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: The tag matches the app's versionName
+        if: github.ref_type == 'tag'
         run: |
           grep -q "versionName = \"${GITHUB_REF_NAME#v}\"" apps/android/app/build.gradle.kts ||
             { echo "::error::apps/android/app/build.gradle.kts versionName is not ${GITHUB_REF_NAME#v}"; exit 1; }
@@ -106,6 +115,8 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # For CHANGELOG.md and the release notes template.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -113,16 +124,36 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum link2linux* | tee SHA256SUMS
+      - name: Keep the files of a build-only run
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-files
+          path: dist/
+          if-no-files-found: error
       - uses: actions/attest-build-provenance@v4
+        if: github.ref_type == 'tag'
         with:
           subject-path: dist/link2linux*
+      # The version's CHANGELOG.md section, then the install instructions,
+      # then GitHub's list of the merged pull requests.
+      - name: Release notes
+        if: github.ref_type == 'tag'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## \[/ { keep = index($0, "## [" v "]") == 1; next } keep && !/^\[[^]]*\]: /' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md ||
+            { echo "::error::CHANGELOG.md has no section for $v; see docs/releasing.md"; exit 1; }
+          sed "s/{{VERSION}}/$v/g" .github/release-notes.md >> notes.md
       # A draft, so a maintainer checks it before anyone can download it.
       # Versions before 1.0 are marked as pre-releases.
       - name: Draft the release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
           case "$GITHUB_REF_NAME" in v0.*) prerelease=--prerelease ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --draft $prerelease --generate-notes --title "link2linux ${GITHUB_REF_NAME#v}"
+            --draft $prerelease --notes-file notes.md --generate-notes \
+            --title "link2linux ${GITHUB_REF_NAME#v}"

@@ -7,6 +7,11 @@ maintainer checks the draft and publishes it. Until then nobody can see or
 download it, and the website and `install.sh` keep pointing at the previous
 release.
 
+The draft's notes are the version's section of [`CHANGELOG.md`](../CHANGELOG.md),
+then the install and verify instructions from
+[`.github/release-notes.md`](../.github/release-notes.md), then GitHub's list of
+the pull requests merged since the last release.
+
 Every release has exactly these files. The website's download buttons and
 `website/install.sh` look them up by name, so the names never change:
 
@@ -41,25 +46,45 @@ and keep an offline backup.
 2. Back up `link2linux-release.jks` and its password somewhere offline, such
    as a password manager plus an encrypted USB drive. Never commit it.
 
-3. Store it as repository secrets. The workflow reads only these four:
+3. Store it as repository secrets. The workflow reads only these four. Give
+   the keystore's full path: from any other directory `base64` finds no
+   file, and the secret is set to an empty value.
 
    ```sh
-   base64 -w0 link2linux-release.jks | gh secret set ANDROID_KEYSTORE_BASE64
+   base64 -w0 ~/link2linux-release.jks | gh secret set ANDROID_KEYSTORE_BASE64
    gh secret set ANDROID_KEYSTORE_PASSWORD   # prompts for the value
    gh secret set ANDROID_KEY_ALIAS --body link2linux
    gh secret set ANDROID_KEY_PASSWORD        # same as the keystore password unless you chose another
    ```
 
 Without these secrets the Android job stops with an error, and nothing is
-released.
+released. A build-only run (below) is the quickest way to check that they
+are right: it signs the APK the same way.
+
+## Testing the pipeline: a build-only run
+
+Before tagging, run the workflow by hand: **Actions → Release → Run
+workflow** on `main`, or `gh workflow run release.yml`. It builds and signs
+every file exactly as a release would, then keeps them, with `SHA256SUMS`, as
+the run's `release-files` artifact instead of creating a release. It skips the
+version checks, the attestations and the release notes. Download the artifact,
+install the `.deb` and the APK, and pair them.
 
 ## Each release
 
-1. **Bump the versions** in one PR, all to the same `X.Y.Z`:
-   - `Cargo.toml`: `[workspace.package] version`
-   - `apps/android/app/build.gradle.kts`: `versionName = "X.Y.Z"`, and
-     `versionCode` one higher than in the last release
-2. **Merge it** after `make ci` passes.
+1. **Prepare the release** in one PR:
+   - bump the versions, all to the same `X.Y.Z`:
+     - `Cargo.toml`: `[workspace.package] version` (the desktop app takes its
+       version from here);
+     - `apps/desktop/package.json`: `version`;
+     - `apps/android/app/build.gradle.kts`: `versionName = "X.Y.Z"`, and
+       `versionCode` one higher than in the last release (it stays `1` for
+       the first one);
+   - in `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`,
+     drop anything that did not make it, add a new empty `## [Unreleased]`
+     above it, and update the links at the bottom.
+2. **Merge it** after `make ci` passes, and do a build-only run on the merged
+   commit.
 3. **Tag the merged commit** on `main` and push the tag:
 
    ```sh
@@ -68,7 +93,8 @@ released.
    git push origin vX.Y.Z
    ```
 
-   The workflow refuses to build a tag that doesn't match both versions.
+   The workflow refuses a tag that doesn't match all three versions, or
+   that has no `CHANGELOG.md` section.
 4. **Check the draft** under Releases once the workflow is green:
    - all five files are there;
    - the notes read well;
@@ -81,5 +107,6 @@ If something is wrong, delete the draft and the tag, fix it, and tag again:
 
 ## Cost
 
-The workflow runs only when a version tag is pushed, never on pull requests.
-On this public repository, GitHub's standard runners are free.
+The workflow runs only when a version tag is pushed or someone starts it by
+hand, never on pull requests. On this public repository, GitHub's standard
+runners are free.
