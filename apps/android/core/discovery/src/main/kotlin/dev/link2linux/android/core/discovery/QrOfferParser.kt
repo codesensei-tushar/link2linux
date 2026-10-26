@@ -3,6 +3,7 @@ package dev.link2linux.android.core.discovery
 import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairingSecret
 import dev.link2linux.android.core.model.QrPairingOffer
+import dev.link2linux.android.core.model.withoutHiddenCharacters
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -118,8 +119,10 @@ object QrOfferParser {
         } catch (_: CharacterCodingException) {
             return null
         }
-        if (name.any { Character.isISOControl(it) } || name.isBlank()) return null
-        return name
+        // A desktop never sends controls. Format characters can belong in a
+        // name, as in emoji sequences, but can also disguise it: they go.
+        if (name.any { Character.isISOControl(it) }) return null
+        return withoutHiddenCharacters(name).takeUnless { it.isBlank() }
     }
 
     /** RFC 3986 decoding: `%` needs two hex digits and `+` stays a plus. */

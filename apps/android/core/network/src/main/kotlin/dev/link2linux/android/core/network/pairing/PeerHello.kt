@@ -1,5 +1,6 @@
 package dev.link2linux.android.core.network.pairing
 
+import dev.link2linux.android.core.model.withoutHiddenCharacters
 import dev.link2linux.android.core.notifications.WireText
 import dev.link2linux.protocol.v1.Hello
 
@@ -36,12 +37,6 @@ internal object PeerHello {
         return hello.toBuilder().setDeviceName(name).setAppVersion(version).build()
     }
 
-    /** [name] without control characters and bidirectional formatting, which could disguise it on screen. */
-    fun cleanName(name: String): String = name.filterNot { it.isISOControl() || it in BIDI_CONTROLS }
-
-    private val BIDI_CONTROLS: Set<Char> = setOf(
-        '؜', '‎', '‏',
-        '‪', '‫', '‬', '‭', '‮',
-        '⁦', '⁧', '⁨', '⁩',
-    )
+    /** [name] without the characters that could disguise it on screen: see [withoutHiddenCharacters]. */
+    fun cleanName(name: String): String = withoutHiddenCharacters(name)
 }
