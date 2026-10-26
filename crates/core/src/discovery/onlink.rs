@@ -40,12 +40,18 @@ pub fn local_addresses() -> io::Result<Vec<LocalAddress>> {
 }
 
 /// Whether `candidate`, an address from an mDNS record or a beacon, may be
-/// dialed: it has a port and is on-link for one of `locals`. An IPv6
-/// link-local candidate must carry the scope of the interface it was
-/// learned on.
+/// dialed: it has a port, is on-link for one of `locals`, and is none of
+/// `locals` itself, on any interface. An IPv6 link-local candidate must
+/// carry the scope of the interface it was learned on.
 #[must_use]
 pub fn is_on_link(candidate: SocketAddr, locals: &[LocalAddress]) -> bool {
     if candidate.port() == 0 {
+        return false;
+    }
+    // This machine, by any of its addresses: a second address in the same
+    // subnet, a temporary IPv6 address, or its own link-local address.
+    let ip = candidate.ip().to_canonical();
+    if locals.iter().any(|local| local.ip.to_canonical() == ip) {
         return false;
     }
     match candidate {
@@ -62,7 +68,7 @@ fn v4_on_link(ip: Ipv4Addr, locals: &[LocalAddress]) -> bool {
         return false;
     }
     locals.iter().any(|local| match local.ip {
-        IpAddr::V4(own) if own != ip && (1..=32).contains(&local.prefix_len) => {
+        IpAddr::V4(own) if (1..=32).contains(&local.prefix_len) => {
             let host_bits = 32 - u32::from(local.prefix_len);
             let mask = u32::MAX.checked_shl(host_bits).unwrap_or(0);
             let (ip, own) = (u32::from(ip), u32::from(own));
@@ -90,9 +96,7 @@ fn v6_on_link(ip: Ipv6Addr, scope_id: u32, locals: &[LocalAddress]) -> bool {
     locals.iter().any(|local| match local.ip {
         // The spec uses the /64 whatever the interface's own prefix length,
         // since a DHCPv6 address can come with a /128.
-        IpAddr::V6(own) if own != ip && !own.is_unicast_link_local() => {
-            own.octets()[..8] == ip.octets()[..8]
-        }
+        IpAddr::V6(own) if !own.is_unicast_link_local() => own.octets()[..8] == ip.octets()[..8],
         _ => false,
     })
 }
@@ -188,6 +192,35 @@ mod tests {
             at("[2001:db8::7]:27380"),
             &[v6("fe80::1", 64, 3)]
         ));
+    }
+
+    #[test]
+    fn none_of_the_desktops_own_addresses_is_on_link() {
+        // A stable and a temporary IPv6 address in one /64, two IPv4
+        // addresses in one subnet, a link-local address and another
+        // interface's address.
+        let locals = [
+            v6("2001:db8:1:2::10", 64, 3),
+            v6("2001:db8:1:2:5c1e:9a2b:44d0:7e11", 64, 3),
+            v6("fe80::1", 64, 3),
+            v4("192.168.1.20", 24),
+            v4("192.168.1.21", 24),
+            v4("10.0.0.5", 8),
+        ];
+        let link_local: Ipv6Addr = "fe80::1".parse().unwrap();
+        for own in [
+            at("[2001:db8:1:2::10]:631"),
+            at("[2001:db8:1:2:5c1e:9a2b:44d0:7e11]:631"),
+            SocketAddr::V6(SocketAddrV6::new(link_local, 631, 0, 3)),
+            at("192.168.1.20:631"),
+            at("192.168.1.21:631"),
+            at("[::ffff:192.168.1.21]:631"),
+            at("10.0.0.5:631"),
+        ] {
+            assert!(!is_on_link(own, &locals), "{own}");
+        }
+        assert!(is_on_link(at("192.168.1.22:27380"), &locals));
+        assert!(is_on_link(at("[2001:db8:1:2::11]:27380"), &locals));
     }
 
     #[test]

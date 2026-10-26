@@ -10,6 +10,11 @@
 //! [`TrackerEvent::Updated`] even when nothing changed, because an
 //! announcement is fresh evidence that the phone is reachable. Callers
 //! rate-limit the dials this triggers.
+//!
+//! Anyone on the network can announce pairing mode, and replay a phone's
+//! presence or pairing tag under any number of instance names, so the
+//! tracker keeps only the newest few records of each kind of match, and
+//! reports the ones it drops as [`TrackerEvent::Lost`].
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -18,6 +23,12 @@ use super::presence::{DiscoveryKeys, TxtRecord};
 
 /// The most records kept; the oldest unmatched ones go first.
 const MAX_RECORDS: usize = 512;
+/// The most records in pairing mode kept; the oldest go first.
+const MAX_PAIRING_MODE: usize = 32;
+/// The most records kept that match one paired phone, or the QR offer. A
+/// phone announces under one instance name at a time, and renames itself
+/// now and then; the oldest go first.
+const MAX_PER_MATCH: usize = 4;
 
 /// A phone announced over mDNS.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +43,7 @@ pub struct PhoneRecord {
 }
 
 /// Why a phone matters.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Match {
     /// A presence tag made with this paired phone's key.
     Paired {
@@ -111,15 +122,21 @@ impl PhoneTracker {
         }
     }
 
-    /// Handles a resolved or re-announced service.
-    pub fn resolved(&mut self, record: PhoneRecord) -> Option<TrackerEvent> {
+    /// Handles a resolved or re-announced service. Besides what happened
+    /// to this phone, the events report the phones dropped to make room
+    /// for it.
+    pub fn resolved(&mut self, record: PhoneRecord) -> Vec<TrackerEvent> {
         let matches = classify(&record.txt, &self.keys);
         let instance = record.instance.clone();
         self.counter += 1;
         self.records
             .insert(instance.clone(), (self.counter, record.clone()));
-        self.evict();
-        self.transition(&instance, record, matches, true)
+        let mut events: Vec<_> = self
+            .transition(&instance, record, matches, true)
+            .into_iter()
+            .collect();
+        events.extend(self.evict());
+        events
     }
 
     /// Handles a withdrawn service. The desktop does not dial on removals,
@@ -144,6 +161,7 @@ impl PhoneTracker {
             let matches = classify(&record.txt, &self.keys);
             events.extend(self.transition(&instance, record, matches, false));
         }
+        events.extend(self.evict());
         events
     }
 
@@ -191,21 +209,48 @@ impl PhoneTracker {
         }
     }
 
-    fn evict(&mut self) {
-        while self.records.len() > MAX_RECORDS {
-            let victim = self
-                .records
-                .iter()
-                .filter(|(instance, _)| !self.active.contains_key(*instance))
-                .min_by_key(|(_, (seq, _))| *seq)
-                .map(|(instance, _)| instance.clone());
-            match victim {
-                Some(instance) => {
-                    self.records.remove(&instance);
-                }
-                None => break,
+    /// Drops the oldest records past the limits, and reports the ones that
+    /// mattered as lost.
+    fn evict(&mut self) -> Vec<TrackerEvent> {
+        let mut lost = Vec::new();
+        while let Some(instance) = self.oldest_over_limit() {
+            self.records.remove(&instance);
+            if self.active.remove(&instance).is_some() {
+                lost.push(TrackerEvent::Lost { instance });
             }
         }
+        lost
+    }
+
+    /// The oldest record of a kind of match that has more records than it
+    /// may keep, or else, while there are too many records, the oldest one
+    /// that matches nothing.
+    fn oldest_over_limit(&self) -> Option<String> {
+        let mut kinds: HashMap<&Match, Vec<(u64, &String)>> = HashMap::new();
+        for (instance, matches) in &self.active {
+            let seq = self.records.get(instance).map_or(0, |(seq, _)| *seq);
+            for kind in matches {
+                kinds.entry(kind).or_default().push((seq, instance));
+            }
+        }
+        let crowded = kinds.into_iter().find_map(|(kind, records)| {
+            let max = match kind {
+                Match::PairingMode => MAX_PAIRING_MODE,
+                Match::Paired { .. } | Match::Offer => MAX_PER_MATCH,
+            };
+            (records.len() > max).then(|| records.into_iter().min())?
+        });
+        if let Some((_, instance)) = crowded {
+            return Some(instance.clone());
+        }
+        if self.records.len() <= MAX_RECORDS {
+            return None;
+        }
+        self.records
+            .iter()
+            .filter(|(instance, _)| !self.active.contains_key(*instance))
+            .min_by_key(|(_, (seq, _))| *seq)
+            .map(|(instance, _)| instance.clone())
     }
 }
 
@@ -248,7 +293,10 @@ mod tests {
     #[test]
     fn strangers_are_not_reported() {
         let mut t = PhoneTracker::new(keys("a", 1));
-        assert_eq!(t.resolved(record("l2l-1", &presence_txt(9, [1; 8]))), None);
+        assert!(
+            t.resolved(record("l2l-1", &presence_txt(9, [1; 8])))
+                .is_empty()
+        );
         assert!(t.sightings().is_empty());
     }
 
@@ -256,13 +304,13 @@ mod tests {
     fn found_then_updated_then_lost() {
         let mut t = PhoneTracker::new(keys("a", 1));
         let first = t.resolved(record("l2l-1", &presence_txt(1, [1; 8])));
-        assert!(matches!(&first, Some(TrackerEvent::Found(s))
+        assert!(matches!(first.as_slice(), [TrackerEvent::Found(s)]
             if s.matches == vec![Match::Paired { phone_id: "a".into() }]));
         let again = t.resolved(record("l2l-1", &presence_txt(1, [1; 8])));
-        assert!(matches!(again, Some(TrackerEvent::Updated(_))));
+        assert!(matches!(again.as_slice(), [TrackerEvent::Updated(_)]));
         // A new nonce and instance name: the old name is withdrawn.
         let renamed = t.resolved(record("l2l-2", &presence_txt(1, [2; 8])));
-        assert!(matches!(renamed, Some(TrackerEvent::Found(_))));
+        assert!(matches!(renamed.as_slice(), [TrackerEvent::Found(_)]));
         assert_eq!(
             t.removed("l2l-1"),
             Some(TrackerEvent::Lost {
@@ -284,15 +332,18 @@ mod tests {
         ];
         let mut t = PhoneTracker::new(keys("a", 1));
         assert!(matches!(
-            t.resolved(record("l2l-1", &txt)),
-            Some(TrackerEvent::Found(_))
+            t.resolved(record("l2l-1", &txt)).as_slice(),
+            [TrackerEvent::Found(_)]
         ));
     }
 
     #[test]
     fn new_keys_recheck_stored_records() {
         let mut t = PhoneTracker::new(DiscoveryKeys::default());
-        assert_eq!(t.resolved(record("l2l-1", &presence_txt(1, [1; 8]))), None);
+        assert!(
+            t.resolved(record("l2l-1", &presence_txt(1, [1; 8])))
+                .is_empty()
+        );
         let events = t.set_keys(keys("a", 1));
         assert!(matches!(events.as_slice(), [TrackerEvent::Found(_)]));
         // Same keys again: nothing changed.
@@ -315,11 +366,13 @@ mod tests {
         });
         let q = vec![("q", encode_value(&pairing_tag(&secret)))];
         let event = t.resolved(record("l2l-1", &q));
-        assert!(matches!(&event, Some(TrackerEvent::Found(s)) if s.matches == vec![Match::Offer]));
+        assert!(
+            matches!(event.as_slice(), [TrackerEvent::Found(s)] if s.matches == vec![Match::Offer])
+        );
         let pm = vec![("pm", "1".to_owned())];
         let event = t.resolved(record("l2l-2", &pm));
         assert!(
-            matches!(&event, Some(TrackerEvent::Found(s)) if s.matches == vec![Match::PairingMode])
+            matches!(event.as_slice(), [TrackerEvent::Found(s)] if s.matches == vec![Match::PairingMode])
         );
     }
 
@@ -336,5 +389,50 @@ mod tests {
             t.resolved(record(&format!("x-{i}"), &[]));
         }
         assert_eq!(t.sightings().len(), 1);
+    }
+
+    fn lost(events: &[TrackerEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                TrackerEvent::Lost { instance } => Some(instance.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_flood_of_pairing_mode_keeps_the_newest_few() {
+        let mut t = PhoneTracker::new(keys("a", 1));
+        t.resolved(record("mine", &presence_txt(1, [1; 8])));
+        let pm = vec![("pm", "1".to_owned())];
+        for i in 0..MAX_PAIRING_MODE {
+            let events = t.resolved(record(&format!("pm-{i}"), &pm));
+            assert!(lost(&events).is_empty());
+        }
+        // One more pushes out the oldest, which is reported as lost.
+        let events = t.resolved(record("pm-new", &pm));
+        assert_eq!(lost(&events), ["pm-0"]);
+        for i in 0..10_000 {
+            t.resolved(record(&format!("flood-{i}"), &pm));
+        }
+        let sightings = t.sightings();
+        assert_eq!(sightings.len(), MAX_PAIRING_MODE + 1);
+        assert!(sightings.iter().any(|s| s.record.instance == "mine"));
+        assert!(t.records.len() <= MAX_RECORDS);
+    }
+
+    #[test]
+    fn a_replayed_tag_keeps_the_newest_few_names() {
+        let mut t = PhoneTracker::new(keys("a", 1));
+        let txt = presence_txt(1, [1; 8]);
+        for i in 0..MAX_PER_MATCH {
+            t.resolved(record(&format!("copy-{i}"), &txt));
+        }
+        assert_eq!(lost(&t.resolved(record("copy-new", &txt))), ["copy-0"]);
+        // A re-announcement makes a record the newest again.
+        t.resolved(record("copy-1", &txt));
+        assert_eq!(lost(&t.resolved(record("copy-newer", &txt))), ["copy-2"]);
+        assert_eq!(t.sightings().len(), MAX_PER_MATCH);
     }
 }

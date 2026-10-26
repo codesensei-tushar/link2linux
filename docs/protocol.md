@@ -352,12 +352,14 @@ The desktop dials a phone when a record or beacon shows:
 
 It dials only addresses that are on-link for one of its own interfaces: in
 an IPv4 subnet of one of its interfaces, IPv6 link-local, or in an IPv6
-/64 prefix of one of its interfaces. It dials an IPv6 link-local address on
-the interface where it learned it. This keeps a forged announcement from
-steering the desktop towards arbitrary hosts. It also dials the last known
-address of a paired phone, before anything else, when it starts, when it
-resumes from sleep, when its network changes and when a session is lost
-(see [Transport](#transport)). An address the user types is dialed as
+/64 prefix of one of its interfaces, and never one of its own addresses.
+It dials an IPv6 link-local address on the interface where it learned it.
+This keeps a forged announcement from steering the desktop towards
+arbitrary hosts. It also dials the last known address of a paired phone,
+before anything else, when it starts, when it resumes from sleep, when its
+network changes and when a session is lost (see [Transport](#transport));
+off-link, only a private or loopback one (IPv4 10/8, 172.16/12,
+192.168/16 or IPv6 fc00::/7). An address the user types is dialed as
 given.
 
 ### Bluetooth LE
