@@ -5,6 +5,8 @@
 //! app can start and show what is missing. [`XdgFileStore::downloads_dir`]
 //! already works.
 
+pub mod ble;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
