@@ -49,9 +49,11 @@ enum class RemovalCause {
  *
  * The platform adapter feeds it through [onListenerConnected], [onPosted],
  * [onRemoved], [onListenerDisconnected] and [onPolicyChanged]; these return at
- * once and are applied one at a time in call order. The session wires it with
- * [attach] and [handle]. All state lives behind one lock, so a live event
- * never interleaves with the batches of a sync answer.
+ * once and are applied one at a time in call order. Each session with a
+ * desktop wires it with [attach], [handle] and [detach]; several can be
+ * attached at once, and each gets live events once its desktop has synced.
+ * All state lives behind one lock, so a live event never interleaves with
+ * the batches of a sync answer.
  *
  * @param ownPackage notifications of this package are never shared.
  */
@@ -86,6 +88,11 @@ class NotificationEngine(
 
     private class Shared(val protoKey: String, val mapped: MappedNotification)
 
+    /** An attached session, which gets live events once its desktop synced since the last reset. */
+    private class Subscriber(val transport: NotificationTransport) {
+        var synced = false
+    }
+
     private val queue = Channel<Event>(Channel.UNLIMITED)
     private val lock = Mutex()
 
@@ -112,8 +119,7 @@ class NotificationEngine(
     private val desktopDismissals = HashSet<String>() // platform keys the desktop asked to cancel
     private val remembered = RememberedRequests()
     private var collection = NotificationCollection(newEpoch())
-    private var transport: NotificationTransport? = null
-    private var subscribed = false
+    private val subscribers = mutableListOf<Subscriber>()
 
     init {
         _availability.value = currentAvailability()
@@ -157,23 +163,32 @@ class NotificationEngine(
 
     // Session side
 
-    /** A session is up: live events go to [transport], once the desktop has synced. */
-    suspend fun attach(transport: NotificationTransport) = lock.withLock {
-        this.transport = transport
-        subscribed = false
+    /** A session is up: live events go to [transport] once its desktop has synced. */
+    suspend fun attach(transport: NotificationTransport) {
+        lock.withLock {
+            val subscriber = subscribers.firstOrNull { it.transport === transport }
+            if (subscriber == null) {
+                subscribers += Subscriber(transport)
+            } else {
+                subscriber.synced = false
+            }
+        }
     }
 
-    /** The session ended. */
-    suspend fun detach() = lock.withLock {
-        transport = null
-        subscribed = false
+    /** The session behind [transport] ended. The other sessions keep their live events. */
+    suspend fun detach(transport: NotificationTransport) {
+        lock.withLock { subscribers.removeAll { it.transport === transport } }
     }
 
-    /** Carries out one request of the desktop and sends its answers to [replies]. */
-    suspend fun handle(request: NotificationRequest, replies: ReplySink) = lock.withLock {
+    /**
+     * Carries out one request from the desktop of the session behind [from]
+     * and sends its answers to [replies]. A sync subscribes [from] to live
+     * events, if it is attached.
+     */
+    suspend fun handle(request: NotificationRequest, replies: ReplySink, from: NotificationTransport) = lock.withLock {
         refuse()?.let { return@withLock replies.send(it) }
         when (request) {
-            is NotificationRequest.Sync -> handleSync(request, replies)
+            is NotificationRequest.Sync -> handleSync(request, replies, from)
             is NotificationRequest.Image -> {
                 val hash = request.message.sha256
                 val reply = if (hash.size() != 32) {
@@ -257,7 +272,7 @@ class NotificationEngine(
         collection = NotificationCollection(newEpoch())
         shared.clear()
         sharedByPlatformKey.clear()
-        subscribed = false
+        for (subscriber in subscribers) subscriber.synced = false
         images.retain(emptySet())
     }
 
@@ -346,17 +361,18 @@ class NotificationEngine(
     }
 
     private suspend fun emit(event: NotificationEvent) {
-        val t = transport
-        if (t == null || !subscribed) return
-        try {
-            t.send(event)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // The connection is going away. Stop sending, so the desktop never sees events with gaps
-            // before it syncs again.
-            subscribed = false
-            onError(e)
+        for (subscriber in subscribers) {
+            if (!subscriber.synced) continue
+            try {
+                subscriber.transport.send(event)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The connection is going away. Stop sending to it, so its desktop never sees events
+                // with gaps before it syncs again.
+                subscriber.synced = false
+                onError(e)
+            }
         }
     }
 
@@ -369,11 +385,11 @@ class NotificationEngine(
             failure(ErrorCode.ERROR_CODE_PERMISSION_REQUIRED, "notification access is not granted", NOTIFICATION_ACCESS)
     }
 
-    private suspend fun handleSync(request: NotificationRequest.Sync, replies: ReplySink) {
+    private suspend fun handleSync(request: NotificationRequest.Sync, replies: ReplySink, from: NotificationTransport) {
         val since = if (request.message.hasSince()) request.message.since else null
         val (reset, changes) = collection.changesSince(since)
         for (batch in collection.batches(reset, changes)) replies.send(NotificationReply.Batch(batch))
-        subscribed = true
+        subscribers.firstOrNull { it.transport === from }?.synced = true
     }
 
     /** Runs [block] once per idempotency key; a repeat gets the same answer back. */

@@ -26,6 +26,7 @@ import dev.link2linux.protocol.v1.Envelope
 import dev.link2linux.protocol.v1.Envelope.PayloadCase
 import dev.link2linux.protocol.v1.ErrorCode
 import dev.link2linux.protocol.v1.FeatureAvailability
+import dev.link2linux.protocol.v1.Goodbye
 import dev.link2linux.protocol.v1.GoodbyeReason
 import dev.link2linux.protocol.v1.PairingMethod
 import dev.link2linux.protocol.v1.notificationDismissRequest
@@ -105,12 +106,16 @@ class NotificationSessionTest {
 
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
-    /** Pairs the test desktop in the store if needed and connects it, listing [features] in its Hello. */
-    private suspend fun connect(features: List<String> = listOf("notifications")): DesktopPeer {
+    /** Pairs [desktop] in the store if needed and connects it, listing [features] in its Hello. */
+    private suspend fun connect(
+        features: List<String> = listOf("notifications"),
+        desktop: TestDesktop = this.desktop,
+        deviceId: String = DesktopPeer.DEVICE_ID,
+    ): DesktopPeer {
         if (devices.find(desktop.fingerprint!!) == null) {
             devices.save(
                 PairedDevice(
-                    device = Device(DeviceId(DesktopPeer.DEVICE_ID), "Test desktop", DeviceKind.DESKTOP),
+                    device = Device(DeviceId(deviceId), "Test desktop", DeviceKind.DESKTOP),
                     fingerprint = desktop.fingerprint!!,
                     pairedAtEpochMillis = 0,
                     presenceKey = PresenceKey.of(ByteArray(32) { 9 }),
@@ -121,7 +126,7 @@ class NotificationSessionTest {
         val port = withTimeout(5_000) { service.listeningPort.filterNotNull().first() }
         return io {
             DesktopPeer(desktop.connect(port), desktop).apply {
-                sendHello(PairingMethod.PAIRING_METHOD_UNSPECIFIED, features = features)
+                sendHello(PairingMethod.PAIRING_METHOD_UNSPECIFIED, deviceId, features)
                 assertTrue("notifications" in readHello().featuresList)
             }
         }
@@ -292,6 +297,27 @@ class NotificationSessionTest {
         engine.onPosted(snap("after"))
         assertEquals("after", io { replacement.read()!! }.notificationPosted.notification.key)
         assertEquals(1, service.connected.value.size)
+    }
+
+    @Test
+    fun twoConnectedDesktopsBothGetLiveEvents() = runBlocking {
+        engine.onListenerConnected(emptyList())
+        val first = connect()
+        first.readStart()
+        val second = connect(desktop = TestDesktop(), deviceId = "second-desktop")
+        second.readStart()
+        first.syncUntil(emptyList())
+        second.syncUntil(emptyList())
+
+        engine.onPosted(snap("both"))
+        assertEquals("both", io { first.read()!! }.notificationPosted.notification.key)
+        assertEquals("both", io { second.read()!! }.notificationPosted.notification.key)
+
+        // One leaving does not take the other's events with it.
+        io { first.send { goodbye = Goodbye.newBuilder().setReason(GoodbyeReason.GOODBYE_REASON_SHUTDOWN).build() } }
+        withTimeout(5_000) { service.connected.first { it.size == 1 } }
+        engine.onPosted(snap("after"))
+        assertEquals("after", io { second.read()!! }.notificationPosted.notification.key)
     }
 
     @Test

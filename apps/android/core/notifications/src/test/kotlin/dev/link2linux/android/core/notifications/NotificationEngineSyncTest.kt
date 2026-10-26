@@ -263,4 +263,50 @@ class NotificationEngineSyncTest {
         h.post(snap("c"))
         assertEquals(listOf("c"), h.transport.posted.map { it.notification.key })
     }
+
+    @Test
+    fun `each attached session gets live events once its own desktop synced`() = runTest {
+        val h = EngineHarness(this)
+        val other = FakeTransport()
+        h.connect()
+        h.attach()
+        h.attach(other)
+        h.sync()
+        h.post(snap("a"))
+        // The other desktop has no snapshot yet, so events would leave it with gaps.
+        assertEquals(listOf("a"), h.transport.posted.map { it.notification.key })
+        assertTrue(other.events.isEmpty())
+        h.sync(from = other)
+        h.post(snap("b"))
+        assertEquals(listOf("a", "b"), h.transport.posted.map { it.notification.key })
+        assertEquals(listOf("b"), other.posted.map { it.notification.key })
+    }
+
+    @Test
+    fun `a session that fails or ends leaves the others their live events`() = runTest {
+        val h = EngineHarness(this)
+        val other = FakeTransport()
+        h.connect()
+        h.attach()
+        h.attach(other)
+        h.sync()
+        h.sync(from = other)
+        other.failWith = java.io.IOException("gone")
+        h.post(snap("a"))
+        other.failWith = null
+        assertEquals(listOf("a"), h.transport.posted.map { it.notification.key })
+        assertEquals(1, h.errors.size)
+
+        h.engine.detach(h.transport)
+        h.sync(from = other)
+        h.post(snap("b"))
+        assertEquals(listOf("a"), h.transport.posted.map { it.notification.key })
+        assertEquals(listOf("b"), other.posted.map { it.notification.key })
+
+        // A sync from a session that is not attached is answered, but subscribes nothing.
+        val ended = FakeTransport()
+        with(h) { assertEquals(listOf("a", "b"), sync(from = ended).keys()) }
+        h.post(snap("c"))
+        assertTrue(ended.events.isEmpty())
+    }
 }
