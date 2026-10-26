@@ -1,7 +1,6 @@
 package dev.link2linux.android.feature.pairing
 
 import android.app.Activity
-import android.content.IntentSender
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,64 +12,44 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-
-private enum class OfferStep { ASK, WORKING, DONE, NOT_FOUND, UNAVAILABLE, SKIPPED }
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
  * After a pairing with a computer that advertises over Bluetooth: offers to
  * let Android notice when the computer is near. The user can skip it, and
  * the permission and the system's chooser appear only after tapping the
- * button.
+ * button. The offer's state lives in [CompanionOfferViewModel], one per
+ * pairing, so Android's answer reaches the screen that is there when it
+ * comes, after a rotation too. [pairedAt] tells a new pairing with the same
+ * computer from the last.
  */
 @Composable
-internal fun CompanionOffer(bluetoothAddress: String, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val setup = remember(context) { CompanionSetup(context) }
-    if (!setup.isAvailable) return
-    var step by rememberSaveable { mutableStateOf(OfferStep.ASK) }
+internal fun CompanionOffer(bluetoothAddress: String, pairedAt: Long, modifier: Modifier = Modifier) {
+    val model: CompanionOfferViewModel = hiltViewModel(key = "companion:$bluetoothAddress:$pairedAt")
+    if (!model.isAvailable) return
+    val step by model.step.collectAsStateWithLifecycle()
     if (step == OfferStep.SKIPPED) return
 
     val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            setup.startObserving(bluetoothAddress)
-            step = OfferStep.DONE
-        } else {
-            step = OfferStep.ASK
-        }
+        model.onChooserResult(result.resultCode == Activity.RESULT_OK, bluetoothAddress)
     }
-    val listener = remember(setup, bluetoothAddress) {
-        object : CompanionSetup.Listener {
-            override fun onChooser(sender: IntentSender) {
-                chooser.launch(IntentSenderRequest.Builder(sender).build())
-            }
-
-            override fun onAssociated() {
-                setup.startObserving(bluetoothAddress)
-                step = OfferStep.DONE
-            }
-
-            override fun onFailure(reason: CompanionSetup.Failure) {
-                step = if (reason == CompanionSetup.Failure.NOT_FOUND) OfferStep.NOT_FOUND else OfferStep.UNAVAILABLE
-            }
-        }
-    }
-    fun begin() {
-        step = OfferStep.WORKING
-        setup.associate(bluetoothAddress, listener)
+    // Collected only while the screen is started, so the chooser opens in front of the user.
+    val pending by model.chooser.collectAsStateWithLifecycle()
+    LaunchedEffect(pending) {
+        val sender = pending ?: return@LaunchedEffect
+        model.onChooserShown()
+        chooser.launch(IntentSenderRequest.Builder(sender).build())
     }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) begin() else step = OfferStep.ASK
+        model.onPermission(granted, bluetoothAddress)
     }
 
     Column(
@@ -98,12 +77,12 @@ internal fun CompanionOffer(bluetoothAddress: String, modifier: Modifier = Modif
         )
         if (step == OfferStep.ASK || step == OfferStep.NOT_FOUND) {
             Button(
-                onClick = { setup.permission?.let(permission::launch) ?: begin() },
+                onClick = { model.permission?.let(permission::launch) ?: model.begin(bluetoothAddress) },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.feature_pairing_companion_action)) }
         }
         if (step != OfferStep.DONE && step != OfferStep.WORKING) {
-            OutlinedButton(onClick = { step = OfferStep.SKIPPED }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = model::skip, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_companion_skip))
             }
         }

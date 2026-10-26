@@ -11,9 +11,26 @@ import android.content.Context
 import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
+import androidx.core.content.ContextCompat
 import dev.link2linux.android.core.discovery.DiscoveryConstants
 import java.util.UUID
+
+/** What [CompanionOfferViewModel] needs of [CompanionSetup]; tests use a fake. */
+internal interface CompanionAssociator {
+    /** Whether this phone can associate at all. */
+    val isAvailable: Boolean
+
+    /** The runtime permission to ask for right before associating, or null where none is needed. */
+    val permission: String?
+
+    /** Asks Android to associate with the computer at [address]; [listener] hears back on the main thread. */
+    fun associate(address: String, listener: CompanionSetup.Listener)
+
+    fun startObserving(address: String)
+}
 
 /**
  * The optional companion-device step after pairing. Associating this phone
@@ -27,17 +44,15 @@ import java.util.UUID
  * Bluetooth controller (presence detection needs Android 12 and offloaded
  * scan filters), and none of it has been run on a device yet.
  */
-internal class CompanionSetup(private val context: Context) {
+internal class CompanionSetup(private val context: Context) : CompanionAssociator {
 
     private val manager: CompanionDeviceManager? = context.getSystemService(CompanionDeviceManager::class.java)
 
-    /** Whether this phone can associate at all. */
-    val isAvailable: Boolean
+    override val isAvailable: Boolean
         get() = manager != null &&
             context.packageManager.hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)
 
-    /** The runtime permission to ask for right before associating, or null where none is needed. */
-    val permission: String?
+    override val permission: String?
         get() = if (Build.VERSION.SDK_INT >= 31) android.Manifest.permission.BLUETOOTH_CONNECT else null
 
     interface Listener {
@@ -55,9 +70,10 @@ internal class CompanionSetup(private val context: Context) {
     /**
      * Asks Android to associate with the computer advertising the link2linux
      * service from [address] ("0C:1A:2B:3C:4D:5E", a public address). The
-     * request names exactly that device and offers only it.
+     * request names exactly that device and offers only it. Android answers
+     * on the main thread.
      */
-    fun associate(address: String, listener: Listener) {
+    override fun associate(address: String, listener: Listener) {
         val manager = manager ?: return listener.onFailure(Failure.UNAVAILABLE)
         val filter = ScanFilter.Builder()
             .setServiceUuid(ParcelUuid(UUID.fromString(DiscoveryConstants.BLE_SERVICE_UUID)))
@@ -71,7 +87,7 @@ internal class CompanionSetup(private val context: Context) {
             if (Build.VERSION.SDK_INT >= 33) {
                 manager.associate(
                     request,
-                    Runnable::run,
+                    ContextCompat.getMainExecutor(context),
                     object : CompanionDeviceManager.Callback() {
                         override fun onAssociationPending(intentSender: IntentSender) = listener.onChooser(intentSender)
                         override fun onAssociationCreated(associationInfo: AssociationInfo) = listener.onAssociated()
@@ -87,7 +103,7 @@ internal class CompanionSetup(private val context: Context) {
                         override fun onDeviceFound(chooserLauncher: IntentSender) = listener.onChooser(chooserLauncher)
                         override fun onFailure(error: CharSequence?) = listener.onFailure(Failure.NOT_FOUND)
                     },
-                    null,
+                    Handler(Looper.getMainLooper()),
                 )
             }
         } catch (_: RuntimeException) {
@@ -101,7 +117,7 @@ internal class CompanionSetup(private val context: Context) {
      * association alone does nothing, which is fine.
      */
     @SuppressLint("MissingPermission")
-    fun startObserving(address: String) {
+    override fun startObserving(address: String) {
         val manager = manager ?: return
         try {
             if (Build.VERSION.SDK_INT >= 36) {
