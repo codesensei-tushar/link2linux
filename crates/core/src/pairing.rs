@@ -1,17 +1,17 @@
 //! The one-time trust step between a desktop and a phone, and the records
 //! it leaves behind.
 //!
-//! The desktop shows a QR code with its key's fingerprint and a one-time
-//! secret. The phone scans it, and inside the TLS connection each side
-//! proves that it knows the secret. A phone without a camera pairs with a
-//! six-digit [`PairingCode`] instead, derived with commit-then-reveal and
-//! confirmed by the user on both screens. Each side then stores a
-//! [`PairedDevice`] record in its [`TrustStore`], keyed by the peer's
-//! [`CertificateFingerprint`]. From then on the transport only accepts peers
-//! whose key matches a record, and the functions in [`records`] keep the
-//! records current: confirmation, key rotation and unpairing.
-//! `docs/protocol.md` ("Pairing") gives the exact rules, and [`crypto`] the
-//! exact bytes.
+//! The desktop shows a QR code ([`QrOffer`]) with its key's fingerprint and
+//! a one-time secret. The phone scans it, and inside the TLS connection each
+//! side proves that it knows the secret ([`pair_by_qr`]). A phone without a
+//! camera pairs with a six-digit [`PairingCode`] instead, derived with
+//! commit-then-reveal and confirmed by the user on both screens
+//! ([`pair_by_sas`]). Each side then stores a [`PairedDevice`] record in its
+//! [`TrustStore`], keyed by the peer's [`CertificateFingerprint`]. From then
+//! on the transport only accepts peers whose key matches a record, and the
+//! functions in [`records`] keep the records current: confirmation, key
+//! rotation and unpairing. `docs/protocol.md` ("Pairing") gives the exact
+//! rules, and [`crypto`] the exact bytes.
 //!
 //! Records are found by fingerprint, never by the device id a peer claims
 //! in its `Hello`; the id is only checked against the record
@@ -31,7 +31,7 @@ use std::time::SystemTime;
 pub use self::crypto::PairingSecret;
 pub use self::desktop::{
     PairingBinding, PairingChannel, PairingPrompt, PairingSuccess, PairingTimeouts, SasDecision,
-    pair_by_qr, refuse,
+    pair_by_qr, pair_by_sas, refuse,
 };
 pub use self::qr::{
     DEFAULT_BEACON_PORT, MAX_FAILED_PROOFS, MAX_QR_ADDRESSES, MAX_QR_NAME_LEN, OFFER_LIFETIME,

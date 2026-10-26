@@ -21,13 +21,13 @@ use std::time::{Duration, SystemTime};
 
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    Goodbye, GoodbyeReason, PairingMethod, PairingOutcome, PairingProof, PairingResult,
+    Goodbye, GoodbyeReason, PairingMethod, PairingOutcome, PairingProof, PairingResult, SasNonce,
 };
 use tokio::time::{self, Instant};
 use tracing::debug;
 use zeroize::Zeroize;
 
-use super::crypto::{self, EKM_LEN, Role};
+use super::crypto::{self, EKM_LEN, NONCE_LEN, Role};
 use super::{
     CertificateFingerprint, OfferStatus, PairedDevice, PairingCode, PairingError, QrOffer,
     TrustStore,
@@ -339,6 +339,104 @@ where
     finish(channel, stored).await
 }
 
+/// Pairs by SAS with the phone the user picked, on a connection dialed
+/// with `PAIRING_METHOD_SAS` in its `Hello`.
+///
+/// Run it on one connection per time the user picks a phone, and never
+/// redial on its own: each run in which the phone reveals its nonce uses up
+/// one of its few attempts. The phone commits first; the desktop sends its
+/// nonce only after the commitment arrived, and checks the revealed nonce
+/// against it. Both screens then show the code, and the pairing is stored
+/// once the user here confirmed it and the phone accepted.
+///
+/// # Errors
+///
+/// Fails when the messages come in another order or the commitment does
+/// not verify, when either user declines or does not decide in time, when
+/// the phone ends the pairing, on protocol violations, and on connection or
+/// store errors.
+pub async fn pair_by_sas<C, P, S>(
+    channel: &mut C,
+    binding: &PairingBinding,
+    phone: &DeviceInfo,
+    store: &Mutex<S>,
+    prompt: &mut P,
+    timeouts: &PairingTimeouts,
+) -> Result<PairingSuccess, PairingError>
+where
+    C: PairingChannel,
+    P: PairingPrompt,
+    S: TrustStore + ?Sized,
+{
+    check_start(channel, binding, phone, PairingMethod::Sas).await?;
+
+    // 1. The phone commits to its nonce.
+    let commitment = match sas_step(channel, timeouts).await? {
+        Payload::SasCommit(commit) if commit.commitment.len() == 32 => commit.commitment,
+        other => return Err(sas_out_of_order(channel, &other).await),
+    };
+
+    // 2. Only then the desktop sends its own.
+    let desktop_nonce: [u8; NONCE_LEN] = crypto::random_bytes();
+    send(
+        channel,
+        Payload::SasNonce(SasNonce {
+            nonce: desktop_nonce.to_vec(),
+        }),
+    )
+    .await?;
+
+    // 3. The phone reveals its nonce, which must match the commitment.
+    let phone_nonce: [u8; NONCE_LEN] = match sas_step(channel, timeouts).await? {
+        Payload::SasNonce(nonce) if nonce.nonce.len() == NONCE_LEN => {
+            nonce.nonce.try_into().expect("length checked")
+        }
+        other => return Err(sas_out_of_order(channel, &other).await),
+    };
+    if !crypto::verify_sas_commitment(binding.ekm(), &phone_nonce, &commitment) {
+        let error = PairingError::VerificationFailed;
+        return Err(abort(channel, PairingOutcome::VerificationFailed, error).await);
+    }
+
+    // 4. The user compares the codes while the phone's verdict comes in.
+    let code = crypto::sas_code(binding.ekm(), &desktop_nonce, &phone_nonce);
+    let replaces = conflicting_records(store, binding, phone)?;
+    {
+        let decision = prompt.confirm_code(&code, phone, &replaces);
+        tokio::pin!(decision);
+        let user_deadline = Instant::now() + timeouts.confirm;
+        let verdict_deadline = user_deadline + timeouts.step;
+        let mut confirmed = false;
+        let mut phone_accepted = false;
+        while !(confirmed && phone_accepted) {
+            tokio::select! {
+                decision = &mut decision, if !confirmed => match decision {
+                    SasDecision::Confirmed => confirmed = true,
+                    SasDecision::Declined => {
+                        return Err(abort(channel, PairingOutcome::Declined, PairingError::Declined).await);
+                    }
+                },
+                () = time::sleep_until(user_deadline), if !confirmed => {
+                    return Err(abort(channel, PairingOutcome::TimedOut, PairingError::TimedOut).await);
+                }
+                () = time::sleep_until(verdict_deadline), if confirmed => {
+                    return Err(abort(channel, PairingOutcome::TimedOut, PairingError::TimedOut).await);
+                }
+                payload = channel.recv(), if !phone_accepted => match payload? {
+                    Payload::PairingResult(result) if result.outcome() == PairingOutcome::Accepted => {
+                        phone_accepted = true;
+                    }
+                    Payload::PairingResult(result) => return Err(PairingError::Rejected(result.outcome())),
+                    other => return Err(sas_out_of_order(channel, &other).await),
+                },
+            }
+        }
+    }
+
+    let stored = store_pairing(store, binding, phone, replaces);
+    finish(channel, stored).await
+}
+
 /// Sends `outcome` as this side's `PairingResult`, for example
 /// `PAIRING_OUTCOME_UNSUPPORTED` when [`PairingBinding::from_connection`]
 /// failed. The caller then closes the connection.
@@ -372,6 +470,30 @@ async fn check_start<C: PairingChannel>(
         return Err(protocol_error(channel, detail).await);
     }
     Ok(())
+}
+
+/// Waits up to one step for the next SAS message.
+async fn sas_step<C: PairingChannel>(
+    channel: &mut C,
+    timeouts: &PairingTimeouts,
+) -> Result<Payload, PairingError> {
+    match time::timeout(timeouts.step, channel.recv()).await {
+        Ok(payload) => payload,
+        Err(_) => Err(abort(channel, PairingOutcome::TimedOut, PairingError::TimedOut).await),
+    }
+}
+
+/// Handles a payload that breaks the SAS order: a verdict from the phone
+/// ends the pairing; any other pairing message fails it.
+async fn sas_out_of_order<C: PairingChannel>(channel: &mut C, payload: &Payload) -> PairingError {
+    match payload {
+        Payload::PairingResult(result) => PairingError::Rejected(result.outcome()),
+        Payload::SasCommit(_) | Payload::SasNonce(_) | Payload::PairingProof(_) => {
+            let error = PairingError::Protocol(format!("{} out of order", payload_name(payload)));
+            abort(channel, PairingOutcome::VerificationFailed, error).await
+        }
+        other => unexpected(channel, other).await,
+    }
 }
 
 /// Handles a payload that has no place in this pairing.
@@ -528,6 +650,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use link2linux_protocol::Ping;
+    use link2linux_protocol::v1::SasCommit;
 
     use super::*;
     use crate::pairing::MemoryTrustStore;
@@ -595,6 +718,8 @@ mod tests {
     }
 
     const EKM: [u8; 32] = [3; 32];
+    const PHONE_NONCE: [u8; 32] = [4; 32];
+
     fn binding(method: PairingMethod) -> PairingBinding {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 27380));
         let desktop = CertificateFingerprint([1; 32]);
@@ -603,6 +728,18 @@ mod tests {
 
     fn phone() -> DeviceInfo {
         DeviceInfo::new("phone-1", "Pixel", DeviceKind::Phone, [])
+    }
+
+    fn commit() -> Payload {
+        Payload::SasCommit(SasCommit {
+            commitment: crypto::sas_commitment(&EKM, &PHONE_NONCE).to_vec(),
+        })
+    }
+
+    fn reveal() -> Payload {
+        Payload::SasNonce(SasNonce {
+            nonce: PHONE_NONCE.to_vec(),
+        })
     }
 
     async fn qr(channel: &mut Script, phone: &DeviceInfo) -> Result<PairingSuccess, PairingError> {
@@ -625,6 +762,13 @@ mod tests {
             &timeouts,
         )
         .await
+    }
+
+    async fn sas(channel: &mut Script) -> Result<PairingSuccess, PairingError> {
+        let store = Mutex::new(MemoryTrustStore::default());
+        let binding = binding(PairingMethod::Sas);
+        let timeouts = PairingTimeouts::default();
+        pair_by_sas(channel, &binding, &phone(), &store, &mut Silent, &timeouts).await
     }
 
     #[tokio::test(start_paused = true)]
@@ -660,5 +804,54 @@ mod tests {
             "{result:?}"
         );
         assert!(matches!(channel.sent[..], [Payload::Goodbye(_)]));
+    }
+
+    #[tokio::test]
+    async fn the_desktop_never_sends_its_nonce_before_the_commitment() {
+        let mut channel = Script::playing([reveal()]);
+        let result = sas(&mut channel).await;
+        assert!(
+            matches!(result, Err(PairingError::Protocol(_))),
+            "{result:?}"
+        );
+        assert_eq!(
+            channel.outcomes(),
+            [Some(PairingOutcome::VerificationFailed)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_commitment_fails_the_pairing() {
+        let mut channel = Script::playing([commit(), reveal(), commit()]);
+        let result = sas(&mut channel).await;
+        assert!(
+            matches!(result, Err(PairingError::Protocol(_))),
+            "{result:?}"
+        );
+        assert!(matches!(channel.sent[0], Payload::SasNonce(_)));
+        assert_eq!(
+            channel.outcomes()[1],
+            Some(PairingOutcome::VerificationFailed)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_sas_step_has_ten_seconds() {
+        let start = Instant::now();
+        let mut channel = Script::playing([commit()]);
+        let result = sas(&mut channel).await;
+        assert!(matches!(result, Err(PairingError::TimedOut)), "{result:?}");
+        assert_eq!(start.elapsed(), Duration::from_secs(10));
+        assert_eq!(channel.outcomes()[1], Some(PairingOutcome::TimedOut));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_user_has_sixty_seconds_to_compare_codes() {
+        let start = Instant::now();
+        let mut channel = Script::playing([commit(), reveal()]);
+        let result = sas(&mut channel).await;
+        assert!(matches!(result, Err(PairingError::TimedOut)), "{result:?}");
+        assert_eq!(start.elapsed(), Duration::from_secs(60));
+        assert_eq!(channel.outcomes()[1], Some(PairingOutcome::TimedOut));
     }
 }
