@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notification-image"
+description = "Enables the notification_image command without any pre-configured scope."
+commands.allow = ["notification_image"]
+
+[[permission]]
+identifier = "deny-notification-image"
+description = "Denies the notification_image command without any pre-configured scope."
+commands.deny = ["notification_image"]

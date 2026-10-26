@@ -15,7 +15,10 @@ use link2linux_runtime::notify::{Presenter, ServiceFactory};
 use link2linux_runtime::paths::{DataDir, desktop_name};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
-use super::{Backend, BackendError, Device, EventSink, PairingMethod, PairingState, PhoneTarget};
+use super::{
+    Backend, BackendError, Device, EventSink, MirroredNotification, PairingMethod, PairingState,
+    PhoneTarget,
+};
 
 /// [`Backend`] over the real runtime.
 pub struct LiveBackend {
@@ -93,5 +96,28 @@ impl Backend for LiveBackend {
 
     fn set_active(&self, active: bool) {
         self.runtime.set_active(active);
+    }
+
+    fn notifications(&self, device_id: &str) -> Result<Vec<MirroredNotification>, BackendError> {
+        self.runtime.notifications(device_id)
+    }
+
+    fn dismiss_notification(&self, device_id: &str, key: &str) -> Result<(), BackendError> {
+        self.runtime.dismiss_notification(device_id, key)
+    }
+
+    fn run_notification_action(
+        &self,
+        device_id: &str,
+        key: &str,
+        action_id: &str,
+        reply: Option<&str>,
+    ) -> Result<(), BackendError> {
+        self.runtime
+            .run_notification_action(device_id, key, action_id, reply)
+    }
+
+    fn notification_image(&self, device_id: &str, sha256: &str) -> Option<std::path::PathBuf> {
+        self.runtime.notification_image(device_id, sha256)
     }
 }

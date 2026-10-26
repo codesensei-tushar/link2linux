@@ -14,8 +14,8 @@ pub mod fake;
 pub mod live;
 
 pub use link2linux_runtime::view::{
-    BackendError, Device, DeviceStatus, DiscoveredPhone, EventSink, PairingFailure, PairingMethod,
-    PairingState, PhoneTarget,
+    BackendError, Device, DeviceStatus, DiscoveredPhone, EventSink, MirroredNotification,
+    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneTarget,
 };
 
 /// What the desktop shell needs from the pairing and device layer.
@@ -38,4 +38,27 @@ pub trait Backend: Send + Sync {
     fn unpair(&self, device_id: &str) -> Result<(), BackendError>;
     /// The window gained or lost focus, which sets how often sessions ping.
     fn set_active(&self, _active: bool) {}
+
+    /// The notifications mirrored from a phone, in no particular order.
+    fn notifications(&self, _device_id: &str) -> Result<Vec<MirroredNotification>, BackendError> {
+        Ok(Vec::new())
+    }
+    /// Dismisses a notification on the phone.
+    fn dismiss_notification(&self, _device_id: &str, _key: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+    /// Runs a notification's action on the phone.
+    fn run_notification_action(
+        &self,
+        _device_id: &str,
+        _key: &str,
+        _action_id: &str,
+        _reply: Option<&str>,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
+    /// The file of a picture the phone shared, if it has arrived.
+    fn notification_image(&self, _device_id: &str, _sha256: &str) -> Option<std::path::PathBuf> {
+        None
+    }
 }

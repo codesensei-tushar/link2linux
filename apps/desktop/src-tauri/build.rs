@@ -11,6 +11,10 @@ fn main() {
         "pair_with",
         "answer_code",
         "cancel_pairing",
+        "list_notifications",
+        "dismiss_notification",
+        "run_notification_action",
+        "notification_image",
     ]);
 
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
