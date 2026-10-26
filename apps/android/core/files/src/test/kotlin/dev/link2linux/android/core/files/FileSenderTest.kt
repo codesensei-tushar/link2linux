@@ -515,6 +515,43 @@ class FileSenderTest {
     }
 
     @Test
+    fun aQueuedTransferKeepsItsPlaceWhileItsDesktopIsConnected() = sending {
+        val keys = (1..5).map { send(FakeFile("f$it", bytes(10))) }
+        attach()
+        assertEquals(4, link.offers.size)
+        // The first four take longer than an hour; the fifth waits its turn.
+        h.now += 2 * FileEngine.KEEP_MILLIS
+        h.engine.sweep()
+        assertEquals(TransferState.Waiting, h.state(keys[4]))
+        // Once the desktop is gone, its hour starts.
+        link.close()
+        h.idle()
+        h.engine.detach(link)
+        h.idle()
+        h.now += FileEngine.KEEP_MILLIS - 1
+        h.engine.sweep()
+        assertFalse(h.state(keys[4])!!.isFinished)
+        h.now += 1
+        h.engine.sweep()
+        assertEquals(TransferState.Failed(FailureReason.EXPIRED), h.state(keys[4]))
+    }
+
+    @Test
+    fun aBusyDesktopUsesNoneOfTheHour() = sending {
+        val key = send(FakeFile("a", bytes(10)))
+        attach()
+        repeat(3) {
+            refuse(link.offers.last(), ErrorCode.ERROR_CODE_BUSY, retryAfterMillis = 1_000)
+            h.now += FileEngine.KEEP_MILLIS
+            advance(1_000)
+        }
+        assertEquals(4, link.offers.size)
+        accept(link.offers.last())
+        ackAll()
+        assertEquals(TransferState.Completed, h.state(key))
+    }
+
+    @Test
     fun atMostFourTransfersRunAtOnce() = sending {
         val keys = (1..5).map { send(FakeFile("f$it", bytes(10))) }
         attach()

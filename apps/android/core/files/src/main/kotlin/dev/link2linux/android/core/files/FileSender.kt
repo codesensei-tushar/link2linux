@@ -117,6 +117,9 @@ internal class FileSender(
     private val transfers = LinkedHashMap<TransferKey, Outgoing>() // guarded by this, in the order they were sent
     private val pumps = HashMap<FileLink, Job>() // guarded by this
 
+    /** Desktops with a session where files are ready on both sides, and how many such sessions. Guarded by this. */
+    private val readyPeers = HashMap<String, Int>()
+
     /** Bumped when a transfer may start: one was added, or one stopped. */
     private val wake = MutableStateFlow(0L)
 
@@ -150,8 +153,13 @@ internal class FileSender(
                 .collectLatest { ready ->
                     if (!ready) return@collectLatest
                     val window = Semaphore(MAX_UNANSWERED_CHUNKS)
-                    // Transfers run as children: when either side stops being ready, they stop and wait.
-                    coroutineScope { wake.collect { startWaiting(link, window, this) } }
+                    setReady(link.peer.id, true)
+                    try {
+                        // Transfers run as children: when either side stops being ready, they stop and wait.
+                        coroutineScope { wake.collect { startWaiting(link, window, this) } }
+                    } finally {
+                        setReady(link.peer.id, false)
+                    }
                 }
         }
         synchronized(this) { pumps.put(link, pump) }?.cancel()
@@ -203,13 +211,16 @@ internal class FileSender(
                         if (unanswered >= MAX_UNANSWERED) return interrupt(transfer, stuckOn = link)
                         RETRY_DELAY_MILLIS
                     }
-                    is Outcome.Later -> outcome.delayMillis
+                    is Outcome.Later -> {
+                        // The desktop is there and answers: waiting for it uses none of the hour.
+                        synchronized(this) { transfer.since = clock() }
+                        outcome.delayMillis
+                    }
                     Outcome.Failed -> {
                         if (++failures > MAX_FAILURES) return fail(transfer, FailureReason.PEER_ERROR)
                         RETRY_DELAY_MILLIS shl (failures - 1)
                     }
                 }
-                if (clock() - transfer.since >= KEEP_MILLIS) return fail(transfer, FailureReason.EXPIRED)
                 setState(transfer, TransferState.Interrupted)
                 delay(wait)
             }
@@ -421,13 +432,29 @@ internal class FileSender(
         synchronized(this) { transfers.keys.toList() }.forEach(::cancel)
     }
 
-    /** Fails the transfers that waited longer than [KEEP_MILLIS] for a session. */
+    /**
+     * Fails the transfers that waited longer than [KEEP_MILLIS] for a
+     * session. The hour runs only while their desktop has no ready session:
+     * one queued behind others while it is connected keeps its place.
+     */
     fun sweep() {
         val now = clock()
         val expired = synchronized(this) {
-            transfers.values.filter { !it.running && !it.state.isFinished && now - it.since >= KEEP_MILLIS }
+            transfers.values.filter { !it.running && !it.state.isFinished }.filter { transfer ->
+                if (transfer.peer.id in readyPeers) {
+                    transfer.since = now
+                    false
+                } else {
+                    now - transfer.since >= KEEP_MILLIS
+                }
+            }
         }
         expired.forEach { fail(it, FailureReason.EXPIRED) }
+    }
+
+    private fun setReady(peerId: String, ready: Boolean) = synchronized(this) {
+        val count = (readyPeers[peerId] ?: 0) + if (ready) 1 else -1
+        if (count > 0) readyPeers[peerId] = count else readyPeers.remove(peerId)
     }
 
     private fun progressed(transfer: Outgoing) {
