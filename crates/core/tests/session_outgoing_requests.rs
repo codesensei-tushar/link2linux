@@ -348,3 +348,12 @@ async fn the_session_says_once_when_queued_frames_are_written() {
     };
     assert!(frame.expects_reply);
 }
+
+#[tokio::test]
+async fn queued_frames_go_out_as_far_as_the_stream_takes_them_now() {
+    let (mut session, mut peer) = notifying().await;
+    let request = session.queue_request(image_request()).unwrap();
+    session.write_queued().unwrap();
+    assert_eq!(session.queued_len(), 0);
+    assert_eq!(read_request(&mut peer).await, request);
+}

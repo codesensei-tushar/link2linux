@@ -741,6 +741,17 @@ where
         self.framed.write_buffer().len()
     }
 
+    /// Writes as much of the queued frames as the stream takes right now,
+    /// without waiting for it: the rest goes out while
+    /// [`Session::next_event`] waits for frames.
+    ///
+    /// # Errors
+    ///
+    /// Fails when writing fails.
+    pub fn write_queued(&mut self) -> Result<(), SessionError> {
+        self.flush().now_or_never().unwrap_or(Ok(()))
+    }
+
     /// Asks for one [`SessionEvent::Drained`] once at most `len` bytes of
     /// frames wait to be written, so that a side that stopped queueing
     /// bulk data at some [`Session::queued_len`] knows when to go on. A
