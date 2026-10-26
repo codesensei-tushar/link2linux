@@ -15,4 +15,40 @@
     <string name="feature_pairing_cancel">Cancel</string>
     <string name="feature_pairing_done">Done</string>
     <string name="feature_pairing_try_again">Try again</string>
+
+    <string name="feature_pairing_waiting_title">Waiting for %1$s</string>
+    <string name="feature_pairing_waiting_body">Keep this screen open and stay on the same network as your computer. This ends in %1$d s.</string>
+    <string name="feature_pairing_address_hint">Still nothing? On your computer, choose to enter the phone\'s address, and type one of these:</string>
+
+    <string name="feature_pairing_sas_title">Pair without camera</string>
+    <string name="feature_pairing_sas_body">On your computer, pick this phone from the list. It is listed as %1$s. This ends in %2$d s.</string>
+    <string name="feature_pairing_sas_name_unknown">a link2linux phone</string>
+    <string name="feature_pairing_sas_attempts">Attempts left: %1$d</string>
+    <string name="feature_pairing_sas_last_failure">The last attempt did not work: %1$s</string>
+    <string name="feature_pairing_sas_address_hint">If it is not listed, type one of these addresses on the computer:</string>
+
+    <string name="feature_pairing_verifying_title">Checking %1$s</string>
+    <string name="feature_pairing_verifying_body">The two devices are making sure they are talking to each other.</string>
+
+    <string name="feature_pairing_confirm_title">Same code on both screens?</string>
+    <string name="feature_pairing_confirm_body">Compare this code with the one on %1$s. Only continue if they match exactly.</string>
+    <string name="feature_pairing_confirm_match">They match</string>
+    <string name="feature_pairing_confirm_differ">They differ</string>
+
+    <string name="feature_pairing_replace_title">Replace %1$s?</string>
+    <string name="feature_pairing_replace_body">%1$s says it is the computer you paired as %2$s, but it has a different key. Replace the old pairing only if you set up that computer again. If you are unsure, choose No.</string>
+    <string name="feature_pairing_replace_yes">Replace</string>
+    <string name="feature_pairing_replace_no">No</string>
+
+    <string name="feature_pairing_success_title">Paired with %1$s</string>
+    <string name="feature_pairing_success_body">This phone and the computer now trust each other.</string>
+
+    <string name="feature_pairing_failed_title">Pairing did not work</string>
+    <string name="feature_pairing_failed_verification">The devices could not confirm each other. Check that you scanned the code on your own computer, then try again.</string>
+    <string name="feature_pairing_failed_declined">Pairing was declined, so nothing was saved.</string>
+    <string name="feature_pairing_failed_timed_out">The computer did not connect in time. Check that both devices are on the same network, then try again.</string>
+    <string name="feature_pairing_failed_not_expected">The computer was not expecting this phone. Show a new code on the computer and scan it again.</string>
+    <string name="feature_pairing_failed_unsupported">This phone or the computer cannot pair this way.</string>
+    <string name="feature_pairing_failed_connection_lost">The connection dropped before pairing finished.</string>
+    <string name="feature_pairing_failed_internal">The phone could not wait for the computer. Check the network connection and try again.</string>
 </resources>
