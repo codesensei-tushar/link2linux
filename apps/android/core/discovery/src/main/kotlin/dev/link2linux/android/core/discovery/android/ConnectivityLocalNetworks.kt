@@ -1,5 +1,6 @@
 package dev.link2linux.android.core.discovery.android
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -30,6 +31,8 @@ class ConnectivityLocalNetworks(context: Context) : LocalNetworks {
 
     private val addresses = HashMap<Network, List<NetworkAddress>>()
 
+    // The app's manifest declares ACCESS_NETWORK_STATE; this library has none of its own.
+    @SuppressLint("MissingPermission")
     @Synchronized
     fun start() {
         if (callback != null) return
