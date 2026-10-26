@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use link2linux_protocol::v1::{FeatureAvailability, FeatureStatus};
+use link2linux_protocol::v1::{FeatureAvailability, FeatureState, FeatureStatus};
 use tracing::debug;
 
 use crate::device::Feature;
@@ -36,6 +36,32 @@ impl Availability {
 /// content of a `FeatureStatus`.
 pub type FeatureStates = BTreeMap<Feature, Availability>;
 
+/// Builds the complete `FeatureStatus` for `listed`, the features this
+/// device announced. Features without an entry in `states` are reported as
+/// ready.
+pub(crate) fn status_for(listed: &BTreeSet<Feature>, states: &FeatureStates) -> FeatureStatus {
+    let features = listed
+        .iter()
+        .map(|&feature| {
+            let availability = states.get(&feature).unwrap_or(&Availability::Ready);
+            let (wire, permission) = match availability {
+                Availability::Ready => (FeatureAvailability::Ready, ""),
+                Availability::Disabled => (FeatureAvailability::Disabled, ""),
+                Availability::PermissionRequired(permission) => {
+                    (FeatureAvailability::PermissionRequired, permission.as_str())
+                }
+                Availability::Unavailable => (FeatureAvailability::Unavailable, ""),
+            };
+            FeatureState {
+                feature: feature.name().to_owned(),
+                availability: wire.into(),
+                permission: permission.to_owned(),
+            }
+        })
+        .collect();
+    FeatureStatus { features }
+}
+
 /// Reads the peer's `FeatureStatus`, keeping the features it listed in its
 /// `Hello` and this build knows.
 pub(crate) fn states_from(status: FeatureStatus, listed: &BTreeSet<Feature>) -> FeatureStates {
@@ -66,9 +92,34 @@ pub(crate) fn states_from(status: FeatureStatus, listed: &BTreeSet<Feature>) -> 
 
 #[cfg(test)]
 mod tests {
-    use link2linux_protocol::v1::FeatureState;
-
     use super::*;
+
+    #[test]
+    fn round_trips_through_the_wire() {
+        let listed = BTreeSet::from([
+            Feature::Notifications,
+            Feature::Calls,
+            Feature::Clipboard,
+            Feature::Files,
+        ]);
+        let states = FeatureStates::from([
+            (
+                Feature::Notifications,
+                Availability::PermissionRequired("notification-access".into()),
+            ),
+            (Feature::Calls, Availability::Unavailable),
+            (Feature::Files, Availability::Disabled),
+            // Not listed, so not reported.
+            (Feature::Screen, Availability::Disabled),
+        ]);
+        let status = status_for(&listed, &states);
+        assert_eq!(status.features.len(), 4);
+
+        let mut expected = states;
+        expected.remove(&Feature::Screen);
+        expected.insert(Feature::Clipboard, Availability::Ready);
+        assert_eq!(states_from(status, &listed), expected);
+    }
 
     #[test]
     fn unknown_names_and_values_are_tolerated() {

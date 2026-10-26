@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use link2linux_core::{DeviceInfo, DeviceKind, Feature, Session, SessionConfig};
+use link2linux_protocol::v1::{FeatureAvailability, FeatureState, FeatureStatus, PresenceUpdate};
 use link2linux_protocol::{Envelope, EnvelopeCodec, Hello, PROTOCOL_VERSION, Payload};
 use tokio::io::{DuplexStream, duplex};
 use tokio_util::codec::Framed;
@@ -88,7 +89,9 @@ pub async fn connected(config: SessionConfig) -> (Session<DuplexStream>, RawPeer
 }
 
 /// Completes the desktop's handshake with a scripted phone that sends
-/// `hello`.
+/// `hello`. The phone reads the desktop's `FeatureStatus` (seq 2) and
+/// `PresenceUpdate` (seq 3), and sends neither of its own, so the next
+/// frame from the desktop has seq 4 and the next one from the phone seq 2.
 pub async fn connected_to(hello: Hello, config: SessionConfig) -> (Session<DuplexStream>, RawPeer) {
     let (io, mut peer) = pipe();
     let script = async move {
@@ -96,10 +99,47 @@ pub async fn connected_to(hello: Hello, config: SessionConfig) -> (Session<Duple
         peer.send(&envelope(1, Payload::Hello(hello)))
             .await
             .unwrap();
+        read_announcement(&mut peer).await;
         peer
     };
     let (session, peer) = tokio::join!(Session::handshake(io, desktop(), config), script);
     (session.unwrap(), peer)
+}
+
+/// Reads what a session sends right after the `Hello`s: `FeatureStatus`
+/// with seq 2, then `PresenceUpdate` with seq 3.
+pub async fn read_announcement(peer: &mut RawPeer) -> (FeatureStatus, PresenceUpdate) {
+    let status = peer.next().await.unwrap().unwrap();
+    let presence = peer.next().await.unwrap().unwrap();
+    match (status, presence) {
+        (
+            Envelope {
+                seq: 2,
+                payload: Some(Payload::FeatureStatus(status)),
+                ..
+            },
+            Envelope {
+                seq: 3,
+                payload: Some(Payload::PresenceUpdate(presence)),
+                ..
+            },
+        ) => (status, presence),
+        frames => panic!("expected FeatureStatus and PresenceUpdate, got {frames:?}"),
+    }
+}
+
+/// A `FeatureStatus` that reports every feature in `features` as ready.
+pub fn all_ready(features: &[&str]) -> Payload {
+    Payload::FeatureStatus(FeatureStatus {
+        features: features
+            .iter()
+            .map(|&feature| FeatureState {
+                feature: feature.into(),
+                availability: FeatureAvailability::Ready.into(),
+                ..FeatureState::default()
+            })
+            .collect(),
+    })
 }
 
 /// Short timers, so paused-time tests stay readable.

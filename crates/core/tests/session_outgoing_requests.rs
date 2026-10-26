@@ -38,15 +38,24 @@ fn batch(more: bool) -> Payload {
     })
 }
 
-/// A session with notifications active, and timers that stay out of the
-/// way of the request timeout.
+/// A session with notifications active and ready on both sides, and timers
+/// that stay out of the way of the request timeout. The phone's
+/// `FeatureStatus` has seq 2, so its next frame has seq 3.
 async fn notifying() -> (Session<DuplexStream>, RawPeer) {
     let config = SessionConfig {
         ping_interval: Duration::from_secs(600),
         idle_timeout: Duration::from_secs(1800),
         ..SessionConfig::default()
     };
-    connected_to(notifying_phone_hello(), config).await
+    let (mut session, mut peer) = connected_to(notifying_phone_hello(), config).await;
+    let status = all_ready(&["notifications", "clipboard", "files", "messages"]);
+    peer.send(&envelope(2, status)).await.unwrap();
+    let event = session.next_event().await.unwrap();
+    assert!(
+        matches!(event, Some(SessionEvent::FeatureStatus(_))),
+        "{event:?}"
+    );
+    (session, peer)
 }
 
 /// Reads the next request from the session, checking that it expects an
@@ -74,12 +83,12 @@ async fn next_event_reports_timeouts_and_ignores_late_answers() {
     let event = session.next_event().await.unwrap();
     assert_eq!(event, Some(SessionEvent::RequestTimedOut { request }));
 
-    peer.send(&answer(2, request, Payload::Ack(Ack {})))
+    peer.send(&answer(3, request, Payload::Ack(Ack {})))
         .await
         .unwrap();
-    let ping = envelope(3, Payload::Ping(Ping { nonce: 3 }));
+    let ping = envelope(4, Payload::Ping(Ping { nonce: 3 }));
     let reply = answer_to(&mut session, peer, ping).await;
-    assert_eq!(reply, envelope(3, Payload::Pong(Pong { nonce: 3 })));
+    assert_eq!(reply, envelope(5, Payload::Pong(Pong { nonce: 3 })));
 }
 
 #[tokio::test]
@@ -87,20 +96,20 @@ async fn pipelined_requests_get_their_own_answers() {
     let (mut session, mut peer) = notifying().await;
     let first = session.start_request(dismiss()).await.unwrap();
     let second = session.start_request(image_request()).await.unwrap();
-    assert_eq!((read_request(&mut peer).await, first), (2, 2));
-    assert_eq!((read_request(&mut peer).await, second), (3, 3));
+    assert_eq!((read_request(&mut peer).await, first), (4, 4));
+    assert_eq!((read_request(&mut peer).await, second), (5, 5));
 
     // The peer answers the second request first.
     let image = Payload::ImageData(ImageData::default());
-    peer.send(&answer(2, second, image.clone())).await.unwrap();
-    peer.send(&answer(3, first, Payload::Ack(Ack {})))
+    peer.send(&answer(3, second, image.clone())).await.unwrap();
+    peer.send(&answer(4, first, Payload::Ack(Ack {})))
         .await
         .unwrap();
 
     let reply = next_answer(&mut session).await;
     assert_eq!(
         (reply.request, reply.seq, reply.payload),
-        (second, 2, image)
+        (second, 3, image)
     );
     let reply = next_answer(&mut session).await;
     assert_eq!(
@@ -116,15 +125,15 @@ async fn requests_with_several_answers() {
     let sync = Payload::NotificationSyncRequest(NotificationSyncRequest::default());
     let request = session.start_request(sync).await.unwrap();
     read_request(&mut peer).await;
-    peer.send(&answer(2, request, batch(true))).await.unwrap();
-    peer.send(&answer(3, request, batch(false))).await.unwrap();
-    // The request is done after the last batch, so this one is ignored.
+    peer.send(&answer(3, request, batch(true))).await.unwrap();
     peer.send(&answer(4, request, batch(false))).await.unwrap();
+    // The request is done after the last batch, so this one is ignored.
+    peer.send(&answer(5, request, batch(false))).await.unwrap();
 
     let first = next_answer(&mut session).await;
-    assert_eq!((first.seq, first.last), (2, false));
+    assert_eq!((first.seq, first.last), (3, false));
     let second = next_answer(&mut session).await;
-    assert_eq!((second.seq, second.last), (3, true));
+    assert_eq!((second.seq, second.last), (4, true));
     drop(peer);
     assert_eq!(session.next_event().await.unwrap(), None);
 }
@@ -135,7 +144,7 @@ async fn an_answer_that_does_not_fit_is_a_protocol_error() {
     let request = session.start_request(dismiss()).await.unwrap();
     read_request(&mut peer).await;
     let image = Payload::ImageData(ImageData::default());
-    peer.send(&answer(2, request, image)).await.unwrap();
+    peer.send(&answer(3, request, image)).await.unwrap();
     let err = session.next_event().await.unwrap_err();
     assert!(matches!(err, SessionError::Protocol(_)), "{err:?}");
 }
@@ -158,15 +167,15 @@ async fn send_request_returns_the_answer() {
     let (mut session, mut peer) = notifying().await;
     let script = async {
         let request = read_request(&mut peer).await;
-        peer.send(&answer(2, request, Payload::Ack(Ack {})))
+        peer.send(&answer(3, request, Payload::Ack(Ack {})))
             .await
             .unwrap();
         request
     };
     let (reply, request) = tokio::join!(session.send_request(dismiss()), script);
-    assert_eq!(request, 2);
+    assert_eq!(request, 4);
     let reply = reply.unwrap();
-    assert_eq!((reply.request, reply.seq), (2, 2));
+    assert_eq!((reply.request, reply.seq), (4, 3));
     assert_eq!(reply.payload, Payload::Ack(Ack {}));
     assert!(reply.last);
 }
@@ -182,7 +191,7 @@ async fn send_request_reports_refusals() {
     let script = async {
         let request = read_request(&mut peer).await;
         let refusal = Payload::ErrorReply(error.clone());
-        peer.send(&answer(2, request, refusal)).await.unwrap();
+        peer.send(&answer(3, request, refusal)).await.unwrap();
     };
     let (reply, ()) = tokio::join!(session.send_request(dismiss()), script);
     let err = reply.unwrap_err();
@@ -215,10 +224,10 @@ async fn next_reply_holds_other_events_back() {
     let first = session.start_request(dismiss()).await.unwrap();
     let second = session.start_request(image_request()).await.unwrap();
     let image = Payload::ImageData(ImageData::default());
-    peer.send(&answer(2, second, image.clone())).await.unwrap();
-    let ping = envelope(3, Payload::Ping(Ping { nonce: 8 }));
+    peer.send(&answer(3, second, image.clone())).await.unwrap();
+    let ping = envelope(4, Payload::Ping(Ping { nonce: 8 }));
     peer.send(&ping).await.unwrap();
-    peer.send(&answer(4, first, Payload::Ack(Ack {})))
+    peer.send(&answer(5, first, Payload::Ack(Ack {})))
         .await
         .unwrap();
 
@@ -230,7 +239,7 @@ async fn next_reply_holds_other_events_back() {
     read_request(&mut peer).await;
     read_request(&mut peer).await;
     let pong = peer.next().await.unwrap().unwrap();
-    assert_eq!(pong, envelope(4, Payload::Pong(Pong { nonce: 8 })));
+    assert_eq!(pong, envelope(6, Payload::Pong(Pong { nonce: 8 })));
 }
 
 #[tokio::test]
@@ -239,17 +248,17 @@ async fn next_reply_collects_several_answers() {
     let sync = Payload::NotificationSyncRequest(NotificationSyncRequest::default());
     let script = async {
         let request = read_request(&mut peer).await;
-        peer.send(&answer(2, request, batch(true))).await.unwrap();
-        peer.send(&answer(3, request, batch(false))).await.unwrap();
+        peer.send(&answer(3, request, batch(true))).await.unwrap();
+        peer.send(&answer(4, request, batch(false))).await.unwrap();
     };
     let (first, ()) = tokio::join!(session.send_request(sync), script);
     let first = first.unwrap();
     assert!(!first.last);
     let second = session.next_reply(first.request).await.unwrap();
-    assert_eq!((second.seq, second.last), (3, true));
+    assert_eq!((second.seq, second.last), (4, true));
 
     let err = session.next_reply(first.request).await.unwrap_err();
-    assert!(matches!(err, RequestError::UnknownRequest(2)), "{err:?}");
+    assert!(matches!(err, RequestError::UnknownRequest(4)), "{err:?}");
 }
 
 #[tokio::test]
@@ -261,7 +270,7 @@ async fn the_session_ending_fails_waiting_requests() {
             reason: GoodbyeReason::Shutdown.into(),
             ..Goodbye::default()
         };
-        peer.send(&envelope(2, Payload::Goodbye(goodbye)))
+        peer.send(&envelope(3, Payload::Goodbye(goodbye)))
             .await
             .unwrap();
     };

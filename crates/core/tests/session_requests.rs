@@ -49,8 +49,8 @@ async fn answers_unknown_requests_with_unsupported() {
     let ping = envelope(3, Payload::Ping(Ping { nonce: 1 }));
     let replies = answers_to(&mut session, peer, ping, 2).await;
     assert_refused(&replies[0], 2, ErrorCode::Unsupported);
-    assert_eq!(replies[0].seq, 2);
-    assert_eq!(replies[1], envelope(3, Payload::Pong(Pong { nonce: 1 })));
+    assert_eq!(replies[0].seq, 4);
+    assert_eq!(replies[1], envelope(5, Payload::Pong(Pong { nonce: 1 })));
 }
 
 #[tokio::test]
@@ -67,9 +67,9 @@ async fn hands_requests_over_and_sends_the_answers() {
         })
     );
 
-    assert_eq!(session.ack(2).await.unwrap(), 2);
+    assert_eq!(session.ack(2).await.unwrap(), 4);
     let frame = peer.next().await.unwrap().unwrap();
-    assert_eq!(frame, answer(2, 2, Payload::Ack(Ack {})));
+    assert_eq!(frame, answer(4, 2, Payload::Ack(Ack {})));
 }
 
 #[tokio::test]
@@ -87,7 +87,7 @@ async fn ignores_events_of_inactive_features() {
     peer.send(&envelope(2, posted)).await.unwrap();
     let ping = envelope(3, Payload::Ping(Ping { nonce: 4 }));
     let reply = answer_to(&mut session, peer, ping).await;
-    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 4 })));
+    assert_eq!(reply, envelope(4, Payload::Pong(Pong { nonce: 4 })));
 }
 
 #[tokio::test]
@@ -96,7 +96,7 @@ async fn answers_a_message_that_is_not_a_request_but_expects_a_reply() {
     let ping = request(2, Payload::Ping(Ping { nonce: 5 }));
     let replies = answers_to(&mut session, peer, ping, 2).await;
     assert_refused(&replies[0], 2, ErrorCode::Unsupported);
-    assert_eq!(replies[1], envelope(3, Payload::Pong(Pong { nonce: 5 })));
+    assert_eq!(replies[1], envelope(5, Payload::Pong(Pong { nonce: 5 })));
 }
 
 #[tokio::test]
@@ -109,7 +109,7 @@ async fn ignores_answers_nobody_waits_for() {
     peer.send(&envelope(3, Payload::Ack(Ack {}))).await.unwrap();
     let ping = envelope(4, Payload::Ping(Ping { nonce: 6 }));
     let reply = answer_to(&mut session, peer, ping).await;
-    assert_eq!(reply, envelope(2, Payload::Pong(Pong { nonce: 6 })));
+    assert_eq!(reply, envelope(4, Payload::Pong(Pong { nonce: 6 })));
 }
 
 #[tokio::test]
