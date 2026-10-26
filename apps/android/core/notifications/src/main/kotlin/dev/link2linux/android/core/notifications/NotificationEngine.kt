@@ -10,8 +10,11 @@ import dev.link2linux.protocol.v1.notificationRemoved
 import java.security.SecureRandom
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -90,6 +93,18 @@ class NotificationEngine(
 
     /** For `FeatureStatus`. A change away from READY ends the live events; the desktop syncs again when READY. */
     val availability: StateFlow<NotificationAvailability> = _availability
+
+    private val _availabilityChanges = MutableSharedFlow<NotificationAvailability>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
+    /**
+     * Every change of [availability], none merged. A listener restart shows up as
+     * PERMISSION_REQUIRED then READY, which is how the session learns that the
+     * desktop has to sync again after the engine picked a new epoch.
+     */
+    val availabilityChanges: SharedFlow<NotificationAvailability> = _availabilityChanges
 
     private val candidates = LinkedHashMap<String, Candidate>()
     private val shared = HashMap<String, Shared>() // by protocol key
@@ -225,7 +240,10 @@ class NotificationEngine(
     private suspend fun refreshAvailability(transition: Boolean) {
         val before = _availability.value
         val now = currentAvailability()
-        _availability.value = now
+        if (now != before) {
+            _availability.value = now
+            _availabilityChanges.tryEmit(now)
+        }
         if (!transition) return
         if (now != NotificationAvailability.READY) {
             if (before == NotificationAvailability.READY) resetCollection()

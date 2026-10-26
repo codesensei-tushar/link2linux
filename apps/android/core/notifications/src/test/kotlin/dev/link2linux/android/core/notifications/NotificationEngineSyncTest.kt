@@ -4,6 +4,10 @@ import dev.link2linux.android.core.notifications.EngineHarness.Companion.snap
 import dev.link2linux.protocol.v1.ErrorCode
 import dev.link2linux.protocol.v1.NotificationContent
 import dev.link2linux.protocol.v1.NotificationRemovalReason
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,6 +15,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class NotificationEngineSyncTest {
     @Test
     fun `a sync after connecting answers with a snapshot of what is shared`() = runTest {
@@ -226,6 +231,20 @@ class NotificationEngineSyncTest {
         h.policy.accessGranted = true
         h.connect()
         with(h) { assertTrue(sync().keys().isEmpty()) }
+    }
+
+    @Test
+    fun `a listener restart shows up as two availability changes`() = runTest {
+        val h = EngineHarness(this)
+        h.connect(snap("a"))
+        val seen = mutableListOf<NotificationAvailability>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) { h.engine.availabilityChanges.toList(seen) }
+        h.policy.accessGranted = false
+        h.engine.onListenerDisconnected()
+        h.policy.accessGranted = true
+        h.connect(snap("a"))
+        job.cancel()
+        assertEquals(listOf(NotificationAvailability.PERMISSION_REQUIRED, NotificationAvailability.READY), seen)
     }
 
     @Test
