@@ -206,6 +206,12 @@ impl<K: Ord> SyncRun<K> {
         self.snapshot.is_some()
     }
 
+    /// The keys the snapshot listed so far, once the run is one.
+    #[must_use]
+    pub fn listed(&self) -> Option<&BTreeSet<K>> {
+        self.snapshot.as_ref()
+    }
+
     /// Ends the run after its last batch. For a snapshot, returns the keys
     /// of the items to keep; every other mirrored item is gone.
     #[must_use]

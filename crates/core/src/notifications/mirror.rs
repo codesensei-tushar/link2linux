@@ -63,7 +63,8 @@ pub enum MirrorError {
 pub const MAX_KEY_BYTES: usize = 256;
 /// The most notifications kept for one phone. Android lets each app show
 /// 50 at a time, so a real phone stays far below this. Past it, new keys
-/// are dropped; ones already kept still update.
+/// are dropped; ones already kept still update. A snapshot counts only
+/// what it lists, since all else goes at its end.
 pub const MAX_ITEMS: usize = 1000;
 
 const NAME_BYTES: usize = 256;
@@ -144,7 +145,8 @@ impl Mirror {
             .into_iter()
             .map(within_limits)
             .collect::<Result<Vec<_>, _>>()?;
-        run.batch(batch.reset, notifications.iter().map(|n| n.key.clone()));
+        // The keys go into the run as they are kept.
+        run.batch(batch.reset, std::iter::empty());
         let mut changes = Vec::new();
         for key in batch.removed_keys {
             if self.items.remove(&key).is_some() {
@@ -222,13 +224,22 @@ impl Mirror {
 }
 
 impl Mirror {
-    /// Keeps `notification`, unless it is new and the mirror is full.
+    /// Keeps `notification`, unless it is new and the mirror is full. In a
+    /// snapshot, the mirror holds only what the snapshot listed: one it
+    /// did not keep goes at its end, even if the mirror held it before.
     fn keep(&mut self, notification: &PhoneNotification) -> bool {
-        if self.items.len() >= MAX_ITEMS && !self.items.contains_key(&notification.key) {
+        let key = &notification.key;
+        let fits = match self.run.as_ref().and_then(SyncRun::listed) {
+            Some(listed) => listed.contains(key) || listed.len() < MAX_ITEMS,
+            None => self.items.contains_key(key) || self.items.len() < MAX_ITEMS,
+        };
+        if !fits {
             return false;
         }
-        self.items
-            .insert(notification.key.clone(), notification.clone());
+        if let Some(run) = &mut self.run {
+            run.batch(false, [key.clone()]);
+        }
+        self.items.insert(key.clone(), notification.clone());
         true
     }
 }
@@ -544,5 +555,45 @@ mod tests {
         mirror.session_ended();
         assert_eq!(mirror.cursor(), SyncCursor::new(2, 8));
         assert_eq!(mirror.sync_request().since, cursor(2, 8));
+    }
+
+    #[test]
+    fn a_snapshot_while_full_replaces_what_the_mirror_held() {
+        let mut mirror = Mirror::default();
+        mirror.sync_request();
+        let old = (0..MAX_ITEMS as u64)
+            .map(|i| note(&format!("old{i}"), i + 1))
+            .collect();
+        mirror
+            .apply_batch(batch(true, old, &[], false, cursor(1, 2000)))
+            .unwrap();
+        assert_eq!(mirror.items().count(), MAX_ITEMS);
+
+        // The phone's listener restarted: a snapshot of three new
+        // notifications, none of the old ones.
+        mirror.sync_request();
+        let fresh = vec![note("new1", 1), note("new2", 2), note("new3", 3)];
+        mirror
+            .apply_batch(batch(true, fresh, &[], false, cursor(2, 3)))
+            .unwrap();
+        assert_eq!(keys(&mirror), ["new1", "new2", "new3"]);
+
+        // A snapshot that lists more than fit keeps the first that do, in
+        // two batches, and nothing past them.
+        mirror.sync_request();
+        let first = (0..MAX_ITEMS as u64 - 1)
+            .map(|i| note(&format!("more{i:04}"), i + 1))
+            .collect();
+        let second = vec![note("new1", 2000), note("last", 2001), note("over", 2002)];
+        mirror
+            .apply_batch(batch(true, first, &[], true, None))
+            .unwrap();
+        mirror
+            .apply_batch(batch(false, second, &[], false, cursor(3, 2002)))
+            .unwrap();
+        assert_eq!(mirror.items().count(), MAX_ITEMS);
+        assert_eq!(mirror.get("new1").unwrap().revision, 2000);
+        assert!(mirror.get("last").is_none() && mirror.get("over").is_none());
+        assert!(mirror.get("new2").is_none());
     }
 }
