@@ -1,4 +1,4 @@
-//! The QR code the desktop shows to pair.
+//! The QR code the desktop shows to pair, and the offer behind it.
 //!
 //! The code holds a URI with the desktop's fingerprint, a one-time
 //! [`PairingSecret`], its name, the addresses the phone sends beacons to,
@@ -8,15 +8,25 @@
 //! link2linux://pair?v=1&f=<fp_D>&s=<secret>&n=<name>&a=<addresses>&b=<address>
 //! ```
 //!
+//! A [`QrOffer`] is valid for [`OFFER_LIFETIME`] or until one pairing
+//! succeeds. A failed proof does not end it: the peer that failed is blocked
+//! for the rest of the offer, by key and by address, so a forged
+//! announcement cannot use the code up. Only after [`MAX_FAILED_PROOFS`]
+//! failures in all, as a backstop, does the desktop withdraw the offer and
+//! show a new code.
+//!
 //! The pairing tag and pairing beacons are public checks of a guess at the
 //! secret, which is why it is 16 random bytes and never typed or derived
 //! from a code.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
+use tokio::time::Instant;
 
 use super::crypto::PairingSecret;
 use crate::identity::{CertificateFingerprint, decode_hex};
@@ -32,6 +42,11 @@ pub const DEFAULT_BEACON_PORT: u16 = 27381;
 pub const MAX_QR_ADDRESSES: usize = 4;
 /// Longest device name a code carries, in bytes before encoding.
 pub const MAX_QR_NAME_LEN: usize = 64;
+/// How long an offer stays valid.
+pub const OFFER_LIFETIME: Duration = Duration::from_secs(5 * 60);
+/// Failed proofs after which the desktop withdraws an offer.
+pub const MAX_FAILED_PROOFS: u32 = 32;
+
 /// Characters left as they are in the name: RFC 3986 unreserved.
 const NAME_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -186,6 +201,161 @@ impl QrPayload {
     }
 }
 
+/// Whether an offer can still be used to pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferStatus {
+    /// The code can be scanned and used.
+    Active,
+    /// [`OFFER_LIFETIME`] has passed.
+    Expired,
+    /// A phone paired with it.
+    Used,
+    /// Too many proofs failed; the desktop shows a new code.
+    Withdrawn,
+}
+
+/// A QR code on the desktop's screen, and what happened to it so far.
+///
+/// Share it between the connections that may use it behind a mutex; the
+/// pairing functions lock it only briefly and never across a wait.
+#[derive(Debug)]
+pub struct QrOffer {
+    payload: QrPayload,
+    uri: String,
+    expires_at: Instant,
+    failed_proofs: u32,
+    max_failed_proofs: u32,
+    blocked_keys: BTreeSet<CertificateFingerprint>,
+    blocked_addresses: BTreeSet<IpAddr>,
+    used: bool,
+}
+
+impl QrOffer {
+    /// A new offer with a fresh secret, valid from now.
+    #[must_use]
+    pub fn new(
+        desktop: CertificateFingerprint,
+        name: impl Into<String>,
+        addresses: Vec<SocketAddr>,
+        bluetooth_address: Option<[u8; 6]>,
+    ) -> Self {
+        let payload = QrPayload {
+            desktop,
+            secret: PairingSecret::generate(),
+            name: name.into(),
+            addresses,
+            bluetooth_address,
+        };
+        Self::from_payload(payload, Instant::now())
+    }
+
+    /// An offer for a given payload, created at `now`.
+    #[must_use]
+    pub fn from_payload(payload: QrPayload, now: Instant) -> Self {
+        Self {
+            uri: payload.to_uri(),
+            payload,
+            expires_at: now + OFFER_LIFETIME,
+            failed_proofs: 0,
+            max_failed_proofs: MAX_FAILED_PROOFS,
+            blocked_keys: BTreeSet::new(),
+            blocked_addresses: BTreeSet::new(),
+            used: false,
+        }
+    }
+
+    /// Changes how many failed proofs withdraw the offer.
+    #[must_use]
+    pub fn with_max_failed_proofs(mut self, max: u32) -> Self {
+        self.max_failed_proofs = max;
+        self
+    }
+
+    /// The URI to encode in the QR code (byte mode, error correction M).
+    #[must_use]
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    /// What the code carries.
+    #[must_use]
+    pub fn payload(&self) -> &QrPayload {
+        &self.payload
+    }
+
+    /// The one-time secret. Discovery keys pairing beacons with it.
+    #[must_use]
+    pub fn secret(&self) -> &PairingSecret {
+        &self.payload.secret
+    }
+
+    /// The pairing tag `q` a phone announces after scanning this code.
+    #[must_use]
+    pub fn pairing_tag(&self) -> [u8; 8] {
+        crate::discovery::presence::pairing_tag(self.payload.secret.as_bytes())
+    }
+
+    /// When the offer expires.
+    #[must_use]
+    pub fn expires_at(&self) -> Instant {
+        self.expires_at
+    }
+
+    /// Proofs that failed so far.
+    #[must_use]
+    pub fn failed_proofs(&self) -> u32 {
+        self.failed_proofs
+    }
+
+    /// Whether the offer can be used at `now`.
+    #[must_use]
+    pub fn status(&self, now: Instant) -> OfferStatus {
+        if self.used {
+            OfferStatus::Used
+        } else if self.failed_proofs >= self.max_failed_proofs {
+            OfferStatus::Withdrawn
+        } else if now >= self.expires_at {
+            OfferStatus::Expired
+        } else {
+            OfferStatus::Active
+        }
+    }
+
+    /// Whether to dial `address` for this offer: false once a peer at that
+    /// address failed a proof.
+    #[must_use]
+    pub fn may_dial(&self, address: IpAddr) -> bool {
+        !self.blocked_addresses.contains(&address)
+    }
+
+    /// Whether a peer with this key, at this address, failed a proof
+    /// before.
+    #[must_use]
+    pub fn is_blocked(&self, key: &CertificateFingerprint, address: IpAddr) -> bool {
+        self.blocked_keys.contains(key) || self.blocked_addresses.contains(&address)
+    }
+
+    /// Counts a failed proof and blocks the peer for the rest of the offer.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the QR pairing driver comes next")
+    )]
+    pub(crate) fn record_failed_proof(&mut self, key: CertificateFingerprint, address: IpAddr) {
+        self.failed_proofs = self.failed_proofs.saturating_add(1);
+        self.blocked_keys.insert(key);
+        self.blocked_addresses.insert(address);
+    }
+
+    /// Marks the offer as used by a successful pairing.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the QR pairing driver comes next")
+    )]
+    pub(crate) fn mark_used(&mut self) {
+        self.used = true;
+    }
+}
+
 /// The longest prefix of `text` of at most `max` bytes that ends on a
 /// character boundary.
 fn truncate(text: &str, max: usize) -> &str {
@@ -300,5 +470,38 @@ mod tests {
 
         payload.addresses.truncate(1);
         assert!(!payload.to_uri().contains("&a="));
+    }
+
+    #[test]
+    fn offers_expire_get_used_and_block_failing_peers() {
+        let start = Instant::now();
+        let mut offer = QrOffer::from_payload(payload(), start);
+        assert_eq!(offer.status(start), OfferStatus::Active);
+        assert_eq!(offer.status(start + OFFER_LIFETIME), OfferStatus::Expired);
+
+        let key = CertificateFingerprint([9; 32]);
+        let address: IpAddr = Ipv4Addr::new(10, 0, 0, 9).into();
+        offer.record_failed_proof(key, address);
+        assert!(offer.is_blocked(&key, Ipv4Addr::LOCALHOST.into()));
+        assert!(offer.is_blocked(&CertificateFingerprint([0; 32]), address));
+        assert!(!offer.may_dial(address));
+        assert_eq!(offer.status(start), OfferStatus::Active);
+
+        for _ in 1..MAX_FAILED_PROOFS {
+            offer.record_failed_proof(key, address);
+        }
+        assert_eq!(offer.status(start), OfferStatus::Withdrawn);
+
+        let mut used = QrOffer::from_payload(payload(), start);
+        used.mark_used();
+        assert_eq!(used.status(start), OfferStatus::Used);
+    }
+
+    #[test]
+    fn secrets_stay_out_of_debug_output() {
+        let offer = QrOffer::new(CertificateFingerprint([0; 32]), "Desk", Vec::new(), None);
+        assert!(format!("{offer:?}").contains("PairingSecret(..)"));
+        assert_eq!(offer.uri().len(), offer.payload().to_uri().len());
+        assert!(offer.uri().ends_with("&n=Desk"));
     }
 }
