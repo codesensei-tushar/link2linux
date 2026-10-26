@@ -89,10 +89,6 @@ install the `.deb` and the APK, and pair them.
    - in `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`,
      drop anything that did not make it, add a new empty `## [Unreleased]`
      above it, and update the links at the bottom.
-   - in `website/index.html`, replace the previous tag in the four download
-     links and in the release status line with `vX.Y.Z`. The page's script
-     switches the links to the newest release by itself, but the links have
-     to work without it: each one downloads its file directly.
 2. **Merge it** after `make ci` passes, and do a build-only run on the merged
    commit.
 3. **Tag the merged commit** on `main` and push the tag:
@@ -111,6 +107,12 @@ install the `.deb` and the APK, and pair them.
    - the APK installs on a phone;
    - the `.deb` installs with `sudo apt install ./link2linux_amd64.deb`.
 5. **Publish it.** The download buttons and `install.sh` pick it up at once.
+6. **Point the website at it** in a small PR: in `website/index.html`,
+   replace the previous version in the four download links, the release
+   status line, the hero note and the FAQ with `X.Y.Z`. The page's script
+   switches the links to the newest release by itself, but the links have to
+   work without it: each one downloads its file directly. Do this only after
+   publishing, since a draft's files can't be downloaded yet.
 
 If something is wrong, delete the draft and the tag, fix it, and tag again:
 `git push origin :refs/tags/vX.Y.Z`.
