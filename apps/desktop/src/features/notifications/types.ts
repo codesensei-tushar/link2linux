@@ -28,7 +28,7 @@ export type NotificationImportance = "unspecified" | "min" | "low" | "default" |
 
 /** Whether the text fields hold the real content. */
 export type NotificationContent =
-  "full" | "redactedBySystem" | "redactedAppLocked" | "hiddenByUser";
+  "full" | "redactedBySystem" | "redactedAppLocked" | "hiddenByUser" | "oneTimeCode" | "withheld";
 
 export type NotificationVisibility = "unspecified" | "public" | "private" | "secret";
 

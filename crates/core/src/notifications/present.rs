@@ -25,6 +25,12 @@ pub const WITHHELD_BY_SYSTEM: &str = "Content hidden by Android. Check your phon
 pub const WITHHELD_APP_LOCKED: &str = "Hidden because the app is locked on your phone.";
 /// Shown instead of the content of an app the user chose not to share.
 pub const HIDDEN_BY_USER: &str = "You chose not to share this app's content.";
+/// Shown instead of a notification the phone kept to itself because it
+/// looks like it holds a one-time code.
+pub const ONE_TIME_CODE: &str = "One-time code hidden. Check your phone.";
+/// Shown instead of content a newer phone withheld for a reason this
+/// desktop does not know.
+pub const WITHHELD: &str = "Content hidden on your phone.";
 /// The action key a desktop reports when the user clicks the banner itself.
 pub const OPEN_KEY: &str = "default";
 /// The longest reply sent to the phone, in bytes.
@@ -48,16 +54,34 @@ pub enum Answer {
 }
 
 /// The text shown instead of withheld content, if the content is withheld.
+/// A value this desktop does not know counts as withheld, never as content.
 #[must_use]
 pub fn withheld_text(notification: &PhoneNotification) -> Option<&'static str> {
-    match notification.content() {
-        NotificationContent::RedactedBySystem => Some(WITHHELD_BY_SYSTEM),
-        NotificationContent::RedactedAppLocked => Some(WITHHELD_APP_LOCKED),
-        NotificationContent::HiddenByUser | NotificationContent::OneTimeCode => {
-            Some(HIDDEN_BY_USER)
-        }
-        NotificationContent::Unspecified | NotificationContent::Full => None,
+    // Not `content()`, which reads an unknown value as unspecified, and so
+    // as full content.
+    match NotificationContent::try_from(notification.content) {
+        Ok(NotificationContent::Unspecified | NotificationContent::Full) => None,
+        Ok(NotificationContent::RedactedBySystem) => Some(WITHHELD_BY_SYSTEM),
+        Ok(NotificationContent::RedactedAppLocked) => Some(WITHHELD_APP_LOCKED),
+        Ok(NotificationContent::HiddenByUser) => Some(HIDDEN_BY_USER),
+        Ok(NotificationContent::OneTimeCode) => Some(ONE_TIME_CODE),
+        Err(_) => Some(WITHHELD),
     }
+}
+
+/// Whether only the app, the time and the category of `notification` may
+/// be shown: content the user hid, a one-time code, or content withheld
+/// for a reason this desktop does not know. Android's own redaction keeps
+/// the title, so it is not one of these.
+#[must_use]
+pub fn app_only(notification: &PhoneNotification) -> bool {
+    !matches!(
+        NotificationContent::try_from(notification.content),
+        Ok(NotificationContent::Unspecified
+            | NotificationContent::Full
+            | NotificationContent::RedactedBySystem
+            | NotificationContent::RedactedAppLocked)
+    )
 }
 
 /// Whether a posted notification gets a banner. Notifications from a sync
@@ -87,9 +111,10 @@ pub fn to_desktop(
     } else {
         notification.app_name.clone()
     };
+    let app_only = app_only(notification);
     let summary = [&notification.conversation_title, &notification.title]
         .into_iter()
-        .find(|s| !s.is_empty())
+        .find(|s| !s.is_empty() && !app_only)
         .cloned()
         .unwrap_or_else(|| app_name.clone());
     let withheld = withheld_text(notification);
@@ -136,7 +161,7 @@ pub fn to_desktop(
             _ => None,
         }
         .map(str::to_owned),
-        image_path: image,
+        image_path: image.filter(|_| !app_only),
         inline_reply,
         quiet,
     }
@@ -354,6 +379,7 @@ mod tests {
             (NotificationContent::RedactedBySystem, WITHHELD_BY_SYSTEM),
             (NotificationContent::RedactedAppLocked, WITHHELD_APP_LOCKED),
             (NotificationContent::HiddenByUser, HIDDEN_BY_USER),
+            (NotificationContent::OneTimeCode, ONE_TIME_CODE),
         ] {
             let mut notification = chat();
             notification.content = content.into();
@@ -361,6 +387,37 @@ mod tests {
             assert_eq!(banner.body, text);
             assert!(banner.actions.is_empty() && banner.inline_reply.is_none());
         }
+    }
+
+    #[test]
+    fn a_one_time_code_shows_only_the_app() {
+        let mut notification = chat();
+        notification.content = NotificationContent::OneTimeCode.into();
+        let banner = to_desktop(&notification, false, caps(true), Some("/c/ana.png".into()));
+        assert_eq!(
+            (banner.summary.as_str(), banner.body.as_str()),
+            ("Chat", ONE_TIME_CODE)
+        );
+        assert_eq!(banner.image_path, None);
+        assert_eq!(banner.category.as_deref(), Some("im.received"));
+    }
+
+    #[test]
+    fn content_of_a_kind_this_desktop_does_not_know_stays_hidden() {
+        let mut notification = chat();
+        notification.content = 99;
+        assert!(app_only(&notification));
+        let banner = to_desktop(&notification, false, caps(true), Some("/c/ana.png".into()));
+        assert_eq!(banner.body, WITHHELD);
+        assert_eq!(banner.summary, "Chat");
+        assert!(banner.actions.is_empty() && banner.inline_reply.is_none());
+        assert_eq!(banner.image_path, None);
+
+        // Android's own redaction keeps the title.
+        notification.content = NotificationContent::RedactedBySystem.into();
+        assert!(!app_only(&notification));
+        notification.content = NotificationContent::Unspecified.into();
+        assert_eq!(withheld_text(&notification), None);
     }
 
     #[test]

@@ -50,6 +50,8 @@ const withheldExplanation = {
   redactedBySystem: "Content hidden by Android. Check your phone",
   redactedAppLocked: "Hidden because the app is locked on your phone",
   hiddenByUser: "You chose not to share this app's content",
+  oneTimeCode: "One-time code hidden. Check your phone",
+  withheld: "Content hidden on your phone",
 } as const;
 
 function Conversation({ notification }: { notification: MirroredNotification }) {

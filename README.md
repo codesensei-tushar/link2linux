@@ -121,8 +121,10 @@ Bluetooth on the computer.
 - Pairing uses a one-time secret from the QR code, bound to the TLS session,
   so a device on your network can't pose as your phone or your desktop.
 - Network announcements carry no device names or stable identifiers.
-- Content that Android marks as sensitive, such as one-time codes, stays
-  hidden on the desktop.
+- One-time codes stay on your phone, on every Android version: the desktop
+  shows that a code arrived, but not the code. This is on by default and can
+  be turned off on the phone. Other content that Android marks as sensitive
+  stays hidden too.
 
 Found a security issue? Please report it privately as described in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-security-issues).

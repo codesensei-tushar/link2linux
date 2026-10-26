@@ -295,6 +295,8 @@ describe("NotificationsPage withheld content", () => {
     ["redactedBySystem", "Content hidden by Android. Check your phone"],
     ["redactedAppLocked", "Hidden because the app is locked on your phone"],
     ["hiddenByUser", "You chose not to share this app's content"],
+    ["oneTimeCode", "One-time code hidden. Check your phone"],
+    ["withheld", "Content hidden on your phone"],
   ] as const)("explains %s instead of showing empty text", async (content, explanation) => {
     renderPage([
       testNotification({
@@ -325,6 +327,26 @@ describe("NotificationsPage withheld content", () => {
     });
 
     expect(screen.getByRole("status")).toHaveTextContent(/^New notification from Chat$/);
+  });
+
+  it("shows that a one-time code arrived, without its actions, and dismisses it", async () => {
+    const user = userEvent.setup();
+    const api = renderPage([
+      testNotification({
+        key: "o",
+        appName: "Bank",
+        title: "",
+        text: "",
+        content: "oneTimeCode",
+        actions: [archiveAction],
+      }),
+    ]);
+
+    const item = await screen.findByRole("article", { name: "Bank: content hidden" });
+    expect(item).toHaveTextContent("One-time code hidden. Check your phone");
+    expect(within(item).queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    await user.click(within(item).getByRole("button", { name: "Dismiss Bank" }));
+    expect(api.dismissNotification).toHaveBeenCalledWith("phone-1", "o");
   });
 
   it("still lets the user dismiss withheld content", async () => {
