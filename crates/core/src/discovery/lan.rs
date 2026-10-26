@@ -19,6 +19,12 @@ use super::{BeaconSighting, Discovery, DiscoveryError, DiscoveryEvent};
 const SKEW_LOG_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Pause after a failed receive, so a persistent error does not spin.
 const ERROR_PAUSE: Duration = Duration::from_millis(100);
+/// The first wait before browsing mDNS again after a browse stopped, and
+/// the longest; each stop in a row doubles it.
+const BROWSE_RETRY_FIRST: Duration = Duration::from_secs(1);
+const BROWSE_RETRY_MAX: Duration = Duration::from_secs(60);
+/// A browse that ran this long before it stopped starts the waits over.
+const BROWSE_STABLE: Duration = Duration::from_secs(10 * 60);
 
 /// What [`LanDiscovery`] listens to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +59,9 @@ pub struct LanDiscovery {
 struct Running {
     listener: Option<BeaconListener>,
     browser: Option<MdnsBrowser>,
+    /// When to browse mDNS again, after the browse stopped.
+    browse_again: Option<tokio::time::Instant>,
+    restarts: BrowseRestarts,
     keys: watch::Receiver<DiscoveryKeys>,
     keys_closed: bool,
     tracker: PhoneTracker,
@@ -113,6 +122,8 @@ impl Discovery for LanDiscovery {
         self.running = Some(Running {
             listener,
             browser,
+            browse_again: None,
+            restarts: BrowseRestarts::new(Instant::now()),
             keys,
             keys_closed: false,
             tracker,
@@ -129,7 +140,7 @@ impl Discovery for LanDiscovery {
             if let Some(event) = r.pending.pop_front() {
                 return Some(event);
             }
-            if r.listener.is_none() && r.browser.is_none() {
+            if r.listener.is_none() && r.browser.is_none() && r.browse_again.is_none() {
                 return None;
             }
             tokio::select! {
@@ -144,16 +155,36 @@ impl Discovery for LanDiscovery {
                 }
                 event = browse(r.browser.as_ref()) => match event {
                     Some(BrowserEvent::Resolved(record)) => {
-                        r.pending.extend(r.tracker.resolved(record).map(map_tracker));
+                        r.pending.extend(r.tracker.resolved(record).into_iter().map(map_tracker));
                     }
                     Some(BrowserEvent::Removed(instance)) => {
                         r.pending.extend(r.tracker.removed(&instance).map(map_tracker));
                     }
                     None => {
-                        tracing::warn!("mDNS browsing stopped");
-                        r.browser = None;
+                        // mdns-sd ends a browse when its event queue fills,
+                        // which a flood of announcements can cause.
+                        if let Some(browser) = r.browser.take() {
+                            browser.shutdown();
+                        }
+                        let wait = r.restarts.stopped(Instant::now());
+                        tracing::warn!(?wait, "mDNS browsing stopped; starting it again");
+                        r.browse_again = Some(tokio::time::Instant::now() + wait);
                     }
                 },
+                () = sleep_until(r.browse_again) => {
+                    r.browse_again = None;
+                    match MdnsBrowser::start() {
+                        Ok(browser) => {
+                            r.browser = Some(browser);
+                            r.restarts.started(Instant::now());
+                        }
+                        Err(e) => {
+                            let wait = r.restarts.stopped(Instant::now());
+                            tracing::warn!(%e, ?wait, "cannot browse mDNS again yet");
+                            r.browse_again = Some(tokio::time::Instant::now() + wait);
+                        }
+                    }
+                }
                 received = receive(r.listener.as_ref()) => match received {
                     Ok(datagram) => {
                         let event = r.handle_datagram(&datagram);
@@ -231,6 +262,40 @@ impl Running {
     }
 }
 
+/// The waits between mDNS browses, when a browse keeps stopping.
+#[derive(Debug)]
+struct BrowseRestarts {
+    next: Duration,
+    started: Instant,
+}
+
+impl BrowseRestarts {
+    fn new(now: Instant) -> Self {
+        Self {
+            next: BROWSE_RETRY_FIRST,
+            started: now,
+        }
+    }
+
+    /// A browse started at `now`.
+    fn started(&mut self, now: Instant) {
+        self.started = now;
+    }
+
+    /// The browse stopped, or could not start, at `now`: how long to wait
+    /// before the next one.
+    fn stopped(&mut self, now: Instant) -> Duration {
+        if now.saturating_duration_since(self.started) >= BROWSE_STABLE {
+            self.next = BROWSE_RETRY_FIRST;
+        }
+        // Until a browse starts again, failures count from here.
+        self.started = now;
+        let wait = self.next;
+        self.next = (self.next * 2).min(BROWSE_RETRY_MAX);
+        wait
+    }
+}
+
 fn with_port(source: SocketAddr, port: u16) -> SocketAddr {
     match source {
         SocketAddr::V4(v4) => SocketAddr::new(IpAddr::V4(*v4.ip()), port),
@@ -251,6 +316,14 @@ fn map_tracker(event: TrackerEvent) -> DiscoveryEvent {
 async fn browse(browser: Option<&MdnsBrowser>) -> Option<BrowserEvent> {
     match browser {
         Some(browser) => browser.next().await,
+        None => pending().await,
+    }
+}
+
+/// Sleeps until `deadline`, or forever without one.
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => pending().await,
     }
 }
@@ -377,6 +450,55 @@ mod tests {
         discovery.stop().await.unwrap();
         assert_eq!(discovery.next_event().await, None);
         assert!(discovery.beacon_addrs().is_empty());
+    }
+
+    #[test]
+    fn browsing_again_waits_longer_each_time_until_a_browse_lasts() {
+        let start = Instant::now();
+        let mut restarts = BrowseRestarts::new(start);
+        let waits: Vec<u64> = (0..8).map(|_| restarts.stopped(start).as_secs()).collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
+        // A browse that ran for a while starts the waits over.
+        let later = start + BROWSE_STABLE;
+        restarts.started(later);
+        assert_eq!(restarts.stopped(later + BROWSE_STABLE), BROWSE_RETRY_FIRST);
+        assert_eq!(
+            restarts.stopped(later + BROWSE_STABLE),
+            2 * BROWSE_RETRY_FIRST
+        );
+    }
+
+    /// The browse stops as it does when mdns-sd's event queue fills, and a
+    /// new one starts.
+    #[tokio::test]
+    async fn browsing_starts_again_after_it_stops() {
+        let (_tx, rx) = watch::channel(keys());
+        let mut discovery = LanDiscovery::new(LanConfig {
+            beacon_port: 0,
+            mdns: true,
+        });
+        discovery.start(rx).await.unwrap();
+        let running = discovery.running.as_ref().unwrap();
+        let Some(browser) = running.browser.as_ref() else {
+            // No interface here can do mDNS.
+            return;
+        };
+        browser.stop_browse();
+        let restarted = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    _ = discovery.next_event() => {}
+                    () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+                let running = discovery.running.as_ref().unwrap();
+                if running.browser.is_some() && running.browse_again.is_none() {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(restarted.is_ok(), "browsing started again");
+        discovery.stop().await.unwrap();
     }
 
     #[test]

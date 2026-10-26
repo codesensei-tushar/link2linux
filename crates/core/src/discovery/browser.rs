@@ -78,6 +78,13 @@ impl MdnsBrowser {
         }
     }
 
+    /// Ends the browse but keeps the responder thread, as mdns-sd does
+    /// when the browse's event queue is full.
+    #[cfg(test)]
+    pub(super) fn stop_browse(&self) {
+        let _ = self.daemon.stop_browse(SERVICE_TYPE);
+    }
+
     /// Stops browsing and the responder thread.
     pub fn shutdown(&self) {
         // The daemon may already be down; nothing more to do then.

@@ -289,17 +289,32 @@ impl Reconnector {
 /// The addresses one attempt races, in order, with the time after the
 /// start of the attempt at which to start each connection. The last known
 /// address goes first, then the phone's mDNS addresses, then the source of
-/// a beacon; duplicates are dropped.
+/// a beacon; duplicates are dropped. See [`ranked_plan`] for another order.
 #[must_use]
 pub fn dial_plan(
     last_known: Option<SocketAddr>,
     from_mdns: &[SocketAddr],
     from_beacon: &[SocketAddr],
 ) -> Vec<(SocketAddr, Duration)> {
+    ranked_plan(
+        last_known
+            .iter()
+            .chain(from_mdns)
+            .chain(from_beacon)
+            .copied(),
+    )
+}
+
+/// Like [`dial_plan`], for candidates the caller ranked: the first
+/// [`MAX_CANDIDATES`] of `candidates`, best first, without duplicates.
+#[must_use]
+pub fn ranked_plan(
+    candidates: impl IntoIterator<Item = SocketAddr>,
+) -> Vec<(SocketAddr, Duration)> {
     let mut seen = Vec::new();
-    for addr in last_known.iter().chain(from_mdns).chain(from_beacon) {
-        if !seen.contains(addr) && seen.len() < MAX_CANDIDATES {
-            seen.push(*addr);
+    for addr in candidates {
+        if !seen.contains(&addr) && seen.len() < MAX_CANDIDATES {
+            seen.push(addr);
         }
     }
     seen.into_iter()
@@ -587,5 +602,6 @@ mod tests {
             .map(|i| format!("10.0.0.{i}:1").parse().unwrap())
             .collect();
         assert_eq!(dial_plan(None, &many, &[]).len(), MAX_CANDIDATES);
+        assert_eq!(ranked_plan(many).len(), MAX_CANDIDATES);
     }
 }

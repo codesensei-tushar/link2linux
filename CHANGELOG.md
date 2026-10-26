@@ -18,6 +18,13 @@ code. None of them was known to be exploited.
   recognised. Someone answering a QR code's announcement can no longer end
   it. Pairing by code no longer replaces a phone with the same id without
   asking.
+- Connections: both apps check a message's size and repeated fields
+  before decoding it, and keep messages small until the other side is
+  paired, so one message can no longer make either app use hundreds of
+  megabytes. The computer stops reading from a peer that does not read its
+  answers, keeps looking for phones after a flood of fake announcements,
+  and never dials its own addresses or a public address it last saw a
+  phone at.
 - Phone: its listener closes off Wi-Fi, Ethernet and hotspot networks, and
   connections that have not yet proven who they are have time and number
   limits. A removed computer is cut off before it is told. One paired
