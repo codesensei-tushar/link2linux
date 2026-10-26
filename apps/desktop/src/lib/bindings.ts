@@ -24,11 +24,33 @@ export const commands = {
 	answerCode: (matches: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("answer_code", { matches })),
 	/**  Stops pairing, or dismisses a finished attempt. */
 	cancelPairing: () => __TAURI_INVOKE<void>("cancel_pairing"),
+	/**
+	 *  The notifications currently mirrored from a phone, in no particular
+	 *  order. Later changes arrive as `NotificationChanged` events: subscribe
+	 *  first, then call this.
+	 */
+	listNotifications: (deviceId: string) => typedError<MirroredNotification[], CommandError>(__TAURI_INVOKE("list_notifications", { deviceId })),
+	/**
+	 *  Dismisses a notification on the phone. It is queued and sent once the
+	 *  phone is connected.
+	 */
+	dismissNotification: (deviceId: string, key: string) => typedError<null, CommandError>(__TAURI_INVOKE("dismiss_notification", { deviceId, key })),
+	/**
+	 *  Runs one of a notification's actions on the phone, with the text of a
+	 *  reply for actions that take one.
+	 */
+	runNotificationAction: (deviceId: string, key: string, actionId: string, replyText: string | null) => typedError<null, CommandError>(__TAURI_INVOKE("run_notification_action", { deviceId, key, actionId, replyText })),
+	/**
+	 *  A picture a phone shared with a notification, as a `data:` URL the page
+	 *  can put in an `<img>`, or nothing while it has not arrived.
+	 */
+	notificationImage: (deviceId: string, sha256: string) => typedError<string | null, CommandError>(__TAURI_INVOKE("notification_image", { deviceId, sha256 })),
 };
 
 /** Events */
 export const events = {
 	devicesChanged: makeEvent<DevicesChanged, DevicesChanged>("devices-changed"),
+	notificationChanged: makeEvent<NotificationChanged, NotificationChanged>("notification-changed"),
 	pairingChanged: makeEvent<PairingChanged, PairingChanged>("pairing-changed"),
 };
 
@@ -55,6 +77,14 @@ export type CommandError = {
 };
 
 export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound";
+
+export type ConversationMessageInfo = {
+	/**  Empty for messages the phone's user sent. */
+	sender: string,
+	text: string,
+	sentUnixMs: number,
+	outgoing: boolean,
+};
 
 /**  A phone paired with this computer. */
 export type Device = {
@@ -87,6 +117,89 @@ export type DiscoveredPhone = {
 	name: string,
 	address: string,
 };
+
+/**
+ *  A reference to an image the phone shared, by the SHA-256 of its bytes
+ *  in lowercase hexadecimal.
+ */
+export type ImageRef = {
+	sha256: string,
+};
+
+/**  A notification as the phone shares it and the desktop mirrors it. */
+export type MirroredNotification = {
+	/**  Opaque and stable for the notification's lifetime. */
+	key: string,
+	appName: string,
+	appIcon: ImageRef | null,
+	whenUnixMs: number,
+	title: string,
+	text: string,
+	subText: string,
+	category: NotificationCategoryView,
+	importance: NotificationImportanceView,
+	ongoing: boolean,
+	/**  Dismissal on the phone is possible. */
+	dismissible: boolean,
+	/**  Notifications with the same group are shown stacked. Empty for none. */
+	group: string,
+	actions: NotificationActionInfo[],
+	/**  Conversations only: latest messages, oldest first. */
+	messages: ConversationMessageInfo[],
+	conversationTitle: string,
+	isGroupConversation: boolean,
+	progress: NotificationProgressInfo | null,
+	largeIcon: ImageRef | null,
+	picture: ImageRef | null,
+	content: NotificationContentView,
+	visibility: NotificationVisibilityView,
+};
+
+export type NotificationActionInfo = {
+	/**  Identifies the action within its notification. Opaque. */
+	id: string,
+	label: string,
+	kind: NotificationActionKindView,
+	/**  The action takes free-form reply text. */
+	acceptsReply: boolean,
+	/**  Ready-made replies the app offers. */
+	replyChoices: string[],
+	/**  Android runs this action only on an unlocked phone. */
+	requiresUnlock: boolean,
+};
+
+export type NotificationActionKindView = "unspecified" | "reply" | "markRead" | "delete" | "archive" | "mute" | "answerCall" | "declineCall" | "hangUp";
+
+export type NotificationCategoryView = "unspecified" | "message" | "email" | "call" | "missedCall" | "event" | "reminder" | "alarm" | "progress" | "media" | "social" | "promotion" | "navigation" | "system";
+
+/**  A phone's mirrored notifications changed. */
+export type NotificationChanged = {
+	deviceId: string,
+	event: NotificationEvent,
+};
+
+/**  Whether the text fields hold the real content. */
+export type NotificationContentView = "full" | "redactedBySystem" | "redactedAppLocked" | "hiddenByUser";
+
+/**  A change to a phone's mirrored list, as pushed to the UI. */
+export type NotificationEvent = 
+/**  New, or an update that replaces the earlier version in place. */
+{ type: "posted"; notification: MirroredNotification; 
+/**
+ *  The phone asks to alert the user. False for sync and quiet
+ *  updates.
+ */
+alert: boolean } | { type: "removed"; key: string };
+
+export type NotificationImportanceView = "unspecified" | "min" | "low" | "default" | "high";
+
+export type NotificationProgressInfo = {
+	current: number,
+	max: number,
+	indeterminate: boolean,
+};
+
+export type NotificationVisibilityView = "unspecified" | "public" | "private" | "secret";
 
 /**  The pairing step changed. */
 export type PairingChanged = PairingState;
