@@ -40,6 +40,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -332,6 +333,44 @@ class FileSessionTest {
         assertTrue(answers.all { it.payloadCase == PayloadCase.ACK })
         assertArrayEquals(data, store.saved["burst.bin"])
         // The session is still up.
+        peer.assertNothingSent()
+    }
+
+    @Test
+    fun aBurstOfRequestsBeyondSixtyFourIsAllAnswered() = runBlocking {
+        val peer = connect()
+        peer.readStart()
+        val id = ByteString.copyFrom(ByteArray(16) { 6 })
+        val data = ByteArray(1000) { it.toByte() }
+        peer.request {
+            fileOffer = fileOffer {
+                transferId = id
+                files += fileInfo {
+                    name = "burst.bin"
+                    size = data.size.toLong()
+                }
+            }
+        }
+        // The first write holds the worker while the rest of the burst piles up behind it, as cancels may.
+        val gate = CountDownLatch(1)
+        store.gate = gate
+        val count = 100
+        val seqs = io {
+            List(count) {
+                peer.send {
+                    expectsReply = true
+                    fileChunk = fileChunk {
+                        transferId = id
+                        this.data = ByteString.copyFrom(data, 0, 10)
+                    }
+                }
+            }
+        }
+        // Give the reader time to queue the burst behind the held worker.
+        delay(1_000)
+        gate.countDown()
+        val answers = io { List(count) { peer.read()!! } }
+        assertEquals(seqs, answers.map { it.replyTo })
         peer.assertNothingSent()
     }
 

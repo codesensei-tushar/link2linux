@@ -152,8 +152,11 @@ class FileSessionHooks(
     }
 
     private companion object {
-        /** The desktop's requests that may wait for the worker: 8 chunks, and offers and cancels besides. */
-        const val MAX_WAITING = 64
+        /**
+         * The desktop's requests that may wait for the worker: 8 chunks, and offers and cancels besides.
+         * Pipelined requests have no other bound, so this matches the session's posted-answer cap.
+         */
+        const val MAX_WAITING = Session.MAX_POSTED
     }
 
     /** One session, as the engine's link to its desktop. */

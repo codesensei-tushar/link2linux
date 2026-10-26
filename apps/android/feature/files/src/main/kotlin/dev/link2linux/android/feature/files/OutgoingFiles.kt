@@ -8,11 +8,13 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import dev.link2linux.android.core.files.OutgoingFile
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 
 /** A document the user shared or picked, read through the ContentResolver whenever a transfer needs it. */
@@ -50,18 +52,35 @@ internal object OutgoingFiles {
      * its provider does not tell is copied to the cache first, so a change
      * can still be noticed. Blocks: call it off the main thread.
      *
+     * Stops with a [CancellationException] once [checkActive] throws one,
+     * between documents and while a copy runs, and deletes the copies made.
+     *
      * Only `content:` URIs of other apps are read. A share is an intent any
      * app can send, and a `file:` URI or one of this app's own providers
      * would let it have the app send its private files.
      */
-    fun resolve(context: Context, uris: List<Uri>): Resolved {
+    fun resolve(context: Context, uris: List<Uri>, checkActive: () -> Unit = {}): Resolved {
         val files = ArrayList<OutgoingFile>(uris.size)
         var unreadable = 0
-        for (uri in uris) {
-            val file = if (isForeignContent(context, uri)) runCatching { describe(context, uri) }.getOrNull() else null
-            if (file == null) unreadable++ else files += file
+        try {
+            for (uri in uris) {
+                checkActive()
+                val file = if (isForeignContent(context, uri)) describeOrNull(context, uri, checkActive) else null
+                if (file == null) unreadable++ else files += file
+            }
+        } catch (e: CancellationException) {
+            files.forEach { if (it is CachedFile) it.file.delete() }
+            throw e
         }
         return Resolved(files, unreadable)
+    }
+
+    private fun describeOrNull(context: Context, uri: Uri, checkActive: () -> Unit): OutgoingFile? = try {
+        describe(context, uri, checkActive)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
     }
 
     private fun isForeignContent(context: Context, uri: Uri): Boolean {
@@ -71,7 +90,7 @@ internal object OutgoingFiles {
         return provider.packageName != context.packageName
     }
 
-    private fun describe(context: Context, uri: Uri): OutgoingFile {
+    private fun describe(context: Context, uri: Uri, checkActive: () -> Unit): OutgoingFile {
         val resolver = context.contentResolver
         var name: String? = null
         var size: Long? = null
@@ -88,7 +107,7 @@ internal object OutgoingFiles {
         return if (known != null) {
             ContentFile(resolver, uri, displayName, known, mimeType, modified)
         } else {
-            CachedFile(copyToCache(context, resolver, uri), displayName, mimeType, modified)
+            CachedFile(copyToCache(context, resolver, uri, checkActive), displayName, mimeType, modified)
         }
     }
 
@@ -109,30 +128,19 @@ internal object OutgoingFiles {
     /**
      * Copies a document whose size its provider does not tell. A copy may
      * not grow past [MAX_COPY_BYTES], nor leave less than [SPARE_CACHE_BYTES]
-     * free: such a document is not sent.
+     * free: such a document is not sent. [checkActive] is called for every
+     * piece copied.
      */
-    private fun copyToCache(context: Context, resolver: ContentResolver, uri: Uri): File {
+    private fun copyToCache(context: Context, resolver: ContentResolver, uri: Uri, checkActive: () -> Unit): File {
         val directory = File(context.cacheDir, CACHE_DIRECTORY).apply { mkdirs() }
         val copy = File(directory, UUID.randomUUID().toString())
         try {
             val input = resolver.openInputStream(uri) ?: throw FileNotFoundException("The provider gave no stream")
             input.use { source ->
                 copy.outputStream().use { target ->
-                    val buffer = ByteArray(COPY_BUFFER_BYTES)
-                    var copied = 0L
-                    while (true) {
-                        val n = source.read(buffer)
-                        if (n < 0) break
-                        copied += n
-                        if (copied > MAX_COPY_BYTES) throw IOException("The document is too large to copy")
-                        if (copied % SPACE_CHECK_BYTES < n) {
-                            // Usable space without clearing other apps' caches: the copy must not cause that.
-                            @SuppressLint("UsableSpace")
-                            val free = directory.usableSpace
-                            if (free < SPARE_CACHE_BYTES) throw IOException("No room to copy the document")
-                        }
-                        target.write(buffer, 0, n)
-                    }
+                    // Usable space without clearing other apps' caches: the copy must not cause that.
+                    @SuppressLint("UsableSpace")
+                    copyBounded(source, target, free = { directory.usableSpace }, checkActive = checkActive)
                 }
             }
         } catch (e: Exception) {
@@ -140,6 +148,24 @@ internal object OutgoingFiles {
             throw e
         }
         return copy
+    }
+
+    /**
+     * Copies [source] to [target] while [checkActive] does not throw, within
+     * [MAX_COPY_BYTES], and while [free] stays at [SPARE_CACHE_BYTES] or more.
+     */
+    internal fun copyBounded(source: InputStream, target: OutputStream, free: () -> Long, checkActive: () -> Unit) {
+        val buffer = ByteArray(COPY_BUFFER_BYTES)
+        var copied = 0L
+        while (true) {
+            checkActive()
+            val n = source.read(buffer)
+            if (n < 0) break
+            copied += n
+            if (copied > MAX_COPY_BYTES) throw IOException("The document is too large to copy")
+            if (copied % SPACE_CHECK_BYTES < n && free() < SPARE_CACHE_BYTES) throw IOException("No room to copy the document")
+            target.write(buffer, 0, n)
+        }
     }
 
     /** Deletes the copies an earlier run left in the cache. */

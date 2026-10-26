@@ -34,7 +34,7 @@ class FileSenderTest {
         suspend fun send(vararg files: FakeFile, to: FilePeer = DESKTOP): TransferKey =
             h.engine.send(to, files.toList()).single().also { h.idle() }
 
-        suspend fun attach(link: FakeLink = this.link) {
+        suspend fun attach(link: FileLink = this.link) {
             h.engine.attach(link)
             h.idle()
         }
@@ -324,6 +324,45 @@ class FileSenderTest {
     }
 
     @Test
+    fun aTransferStuckOnTheOnlySessionExpiresAfterItsHour() = sending {
+        val key = send(FakeFile("a", bytes(10)))
+        attach()
+        repeat(FileSender.MAX_UNANSWERED) {
+            link.offers.last().timeOut()
+            h.idle()
+            advance(FileSender.RETRY_DELAY_MILLIS)
+        }
+        assertEquals(TransferState.Interrupted, h.state(key))
+        // The session stays up and ready, but it is where the transfer got stuck: its hour keeps running.
+        h.now += FileEngine.KEEP_MILLIS - 1
+        h.engine.sweep()
+        assertEquals(TransferState.Interrupted, h.state(key))
+        h.now += 1
+        h.engine.sweep()
+        assertEquals(TransferState.Failed(FailureReason.EXPIRED), h.state(key))
+    }
+
+    @Test
+    fun aTransferStuckOnOneSessionIsRetriedOnAnotherReadyOne() = sending {
+        val key = send(FakeFile("a", bytes(10)))
+        attach()
+        repeat(FileSender.MAX_UNANSWERED) {
+            link.offers.last().timeOut()
+            h.idle()
+            advance(FileSender.RETRY_DELAY_MILLIS)
+        }
+        assertEquals(TransferState.Interrupted, h.state(key))
+        h.now += 2 * FileEngine.KEEP_MILLIS
+        // Another session of the same desktop is ready: it takes the transfer, and its hour is not up.
+        val next = FakeLink()
+        attach(next)
+        accept(next.offers.single())
+        h.engine.sweep()
+        ackAll(next)
+        assertEquals(TransferState.Completed, h.state(key))
+    }
+
+    @Test
     fun anAnswerBreaksARowOfUnansweredRequests() = sending {
         val data = bytes(2 * chunk)
         val key = send(FakeFile("a", data))
@@ -587,6 +626,43 @@ class FileSenderTest {
         h.now += 1
         h.engine.sweep()
         assertEquals(TransferState.Failed(FailureReason.EXPIRED), h.state(keys[4]))
+    }
+
+    @Test
+    fun aChunkCancelledWhileItIsBeingWrittenKeepsItsPlace() = sending {
+        // A session whose writer has the chunk's frame out before its sender notices a cancel.
+        val written = mutableListOf<FakeLink.Sent>()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val slow = object : FileLink {
+            override val peer = DESKTOP
+            override val peerReady = kotlinx.coroutines.flow.MutableStateFlow(true)
+            var gated = true
+
+            override suspend fun send(request: FileRequest): PendingAnswer {
+                val entry = FakeLink.Sent(request)
+                written += entry
+                if (request is FileRequest.Chunk && gated) {
+                    gated = false
+                    gate.await()
+                }
+                return PendingAnswer { entry.await() }
+            }
+        }
+        val first = send(FakeFile("a", bytes(chunk)))
+        attach(slow)
+        accept(written.single { it.request is FileRequest.Offer })
+        assertEquals(1, written.count { it.request is FileRequest.Chunk })
+        h.engine.cancel(first)
+        h.idle()
+        gate.complete(Unit)
+        h.idle()
+        // Its chunk went out and the desktop has not answered it: it still counts against the window of 8.
+        send(FakeFile("b", bytes(10 * chunk)))
+        h.idle()
+        accept(written.last { it.request is FileRequest.Offer })
+        val chunks = written.filter { it.request is FileRequest.Chunk && !it.answered }
+        assertEquals(FileEngine.MAX_UNANSWERED_CHUNKS, chunks.size)
+        h.close()
     }
 
     @Test

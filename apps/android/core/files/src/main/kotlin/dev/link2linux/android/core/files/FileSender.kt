@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.io.InputStream
 import java.security.SecureRandom
@@ -122,8 +124,8 @@ internal class FileSender(
     private val pumps = HashMap<FileLink, Job>() // guarded by this
     private val windows = HashMap<FileLink, Window>() // guarded by this
 
-    /** Desktops with a session where files are ready on both sides, and how many such sessions. Guarded by this. */
-    private val readyPeers = HashMap<String, Int>()
+    /** Desktops with a session where files are ready on both sides, and those sessions. Guarded by this. */
+    private val readyLinks = HashMap<String, MutableList<FileLink>>()
 
     /** Bumped when a transfer may start: one was added, or one stopped. */
     private val wake = MutableStateFlow(0L)
@@ -158,12 +160,12 @@ internal class FileSender(
                 .distinctUntilChanged()
                 .collectLatest { ready ->
                     if (!ready) return@collectLatest
-                    setReady(link.peer.id, true)
+                    setReady(link, true)
                     try {
                         // Transfers run as children: when either side stops being ready, they stop and wait.
                         coroutineScope { wake.collect { startWaiting(link, window, this) } }
                     } finally {
-                        setReady(link.peer.id, false)
+                        setReady(link, false)
                     }
                 }
         }
@@ -408,8 +410,9 @@ internal class FileSender(
                     if (last) sha256 = ByteString.copyFrom(digest.digest())
                 }
                 window.places.acquire()
+                // Once the chunk is queued it goes out even if the transfer stops, so it keeps its place until answered.
                 val pending = try {
-                    link.send(FileRequest.Chunk(chunk))
+                    withContext(NonCancellable) { link.send(FileRequest.Chunk(chunk)) }
                 } catch (e: Throwable) {
                     window.places.release()
                     throw e
@@ -474,14 +477,16 @@ internal class FileSender(
 
     /**
      * Fails the transfers that waited longer than [KEEP_MILLIS] for a
-     * session. The hour runs only while their desktop has no ready session:
-     * one queued behind others while it is connected keeps its place.
+     * session. The hour runs only while their desktop has no ready session
+     * that would start them: one queued behind others while it is connected
+     * keeps its place, but one that stopped on the only session there is
+     * (stuck, or answered by a wedged desktop) does not.
      */
     fun sweep() {
         val now = clock()
         val expired = synchronized(this) {
             transfers.values.filter { !it.running && !it.state.isFinished }.filter { transfer ->
-                if (transfer.peer.id in readyPeers) {
+                if (readyLinks[transfer.peer.id].orEmpty().any { it !== transfer.stuckOn }) {
                     transfer.since = now
                     false
                 } else {
@@ -492,9 +497,10 @@ internal class FileSender(
         expired.forEach { fail(it, FailureReason.EXPIRED) }
     }
 
-    private fun setReady(peerId: String, ready: Boolean) = synchronized(this) {
-        val count = (readyPeers[peerId] ?: 0) + if (ready) 1 else -1
-        if (count > 0) readyPeers[peerId] = count else readyPeers.remove(peerId)
+    private fun setReady(link: FileLink, ready: Boolean) = synchronized(this) {
+        val links = readyLinks.getOrPut(link.peer.id) { ArrayList() }
+        if (ready) links += link else links.remove(link)
+        if (links.isEmpty()) readyLinks.remove(link.peer.id)
     }
 
     private fun progressed(transfer: Outgoing) {

@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,6 +38,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.AndroidEntryPoint
 import dev.link2linux.android.core.designsystem.theme.L2lTheme
+import kotlinx.coroutines.delay
 
 /**
  * "Send to computer" in the share sheet, for shares that carry files
@@ -143,6 +145,14 @@ private fun ConfirmShare(
     val context = LocalContext.current
     // The list puts connected desktops first.
     var chosen by rememberSaveable { mutableStateOf(desktops.first().peer.id) }
+    // The chosen desktop may be unpaired while this shows: the first one is chosen then.
+    val selected = desktops.firstOrNull { it.peer.id == chosen } ?: desktops.first()
+    // Another app can start this at the moment the user taps there; a tap right as it appears is not an answer.
+    var armed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(CONFIRM_ARM_MILLIS)
+        armed = true
+    }
     AlertDialog(
         onDismissRequest = onCancel,
         title = { Text(pluralStringResource(R.plurals.files_share_confirm, prepared.count, prepared.count)) },
@@ -179,9 +189,9 @@ private fun ConfirmShare(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .selectable(selected = choice.peer.id == chosen, onClick = { chosen = choice.peer.id }),
+                                .selectable(selected = choice.peer.id == selected.peer.id, onClick = { chosen = choice.peer.id }),
                         ) {
-                            RadioButton(selected = choice.peer.id == chosen, onClick = null)
+                            RadioButton(selected = choice.peer.id == selected.peer.id, onClick = null)
                             Column(modifier = Modifier.padding(start = 8.dp)) {
                                 Text(choice.peer.name)
                                 Text(
@@ -195,7 +205,7 @@ private fun ConfirmShare(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSend(desktops.first { it.peer.id == chosen }) }) { Text(stringResource(R.string.files_send_now)) }
+            TextButton(onClick = { onSend(selected) }, enabled = armed) { Text(stringResource(R.string.files_send_now)) }
         },
         dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.files_cancel)) } },
     )
@@ -210,6 +220,9 @@ private fun shortened(name: String): String {
 
 private const val SHOWN_NAMES = 3
 private const val SHOWN_NAME_CHARS = 40
+
+/** How long after the confirmation shows its Send button ignores taps. */
+private const val CONFIRM_ARM_MILLIS = 500L
 
 @Composable
 private fun Notice(@StringRes message: Int, onDone: () -> Unit) {
