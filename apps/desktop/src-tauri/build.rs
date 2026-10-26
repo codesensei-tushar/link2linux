@@ -19,6 +19,13 @@ fn main() {
         "notification_image",
         "get_clipboard_status",
         "send_clipboard",
+        "list_transfers",
+        "pick_files_to_send",
+        "send_dropped_files",
+        "cancel_transfer",
+        "forget_transfer",
+        "open_received_file",
+        "show_received_file",
         "get_settings",
         "set_settings",
     ]);

@@ -13,6 +13,7 @@
 pub mod app;
 pub mod clipboard;
 pub mod devices;
+pub mod files;
 pub mod notifications;
 pub mod pairing;
 pub mod settings;
@@ -39,6 +40,10 @@ pub enum CommandErrorCode {
     NotFound,
     NotSaved,
     NotStarted,
+    FolderNotSendable,
+    FileUnreadable,
+    TooManyFiles,
+    FilesOff,
 }
 
 impl From<BackendError> for CommandError {
@@ -49,6 +54,10 @@ impl From<BackendError> for CommandError {
             BackendError::NotFound => CommandErrorCode::NotFound,
             BackendError::NotSaved => CommandErrorCode::NotSaved,
             BackendError::NotStarted => CommandErrorCode::NotStarted,
+            BackendError::FolderNotSendable => CommandErrorCode::FolderNotSendable,
+            BackendError::FileUnreadable => CommandErrorCode::FileUnreadable,
+            BackendError::TooManyFiles => CommandErrorCode::TooManyFiles,
+            BackendError::FilesOff => CommandErrorCode::FilesOff,
         };
         Self {
             code,

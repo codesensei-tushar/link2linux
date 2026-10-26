@@ -1162,3 +1162,26 @@ async fn two_services_exchange_files_both_ways_at_once() {
         to_phone
     );
 }
+
+#[test]
+fn files_are_checked_before_they_are_sent() {
+    use link2linux_core::files::check_sendable;
+
+    let sources = tempfile::tempdir().unwrap();
+    let file = source(sources.path(), "a.txt", b"a");
+    assert!(check_sendable(std::slice::from_ref(&file)).is_ok());
+    let folder = sources.path().to_owned();
+    assert!(matches!(
+        check_sendable(&[file.clone(), folder]),
+        Err(SendError::Directory(_))
+    ));
+    assert!(matches!(
+        check_sendable(&[sources.path().join("missing")]),
+        Err(SendError::Unreadable { .. })
+    ));
+    assert!(matches!(check_sendable(&[]), Err(SendError::NoFiles)));
+    assert!(matches!(
+        check_sendable(&vec![file; 501]),
+        Err(SendError::TooMany)
+    ));
+}

@@ -18,9 +18,11 @@ pub use link2linux_runtime::notify::CachedImage;
 pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, ClipboardMode, ClipboardStatus, Device, DeviceStatus, DiscoveredPhone, EventSink,
-    MirroredNotification, NotificationEvent, PairingFailure, PairingMethod, PairingState,
-    PhoneTarget, QrImage, StartupError,
+    FileTransfer, FileTransferEvent, MirroredNotification, NotificationEvent, PairingFailure,
+    PairingMethod, PairingState, PhoneTarget, QrImage, StartupError,
 };
+
+use std::path::PathBuf;
 
 /// What the desktop shell needs from the pairing and device layer.
 pub trait Backend: Send + Sync {
@@ -80,6 +82,42 @@ pub trait Backend: Send + Sync {
     /// arrives as a new clipboard status.
     fn send_clipboard(&self) -> Result<(), BackendError> {
         Ok(())
+    }
+    /// The file transfers with a phone, oldest first.
+    fn transfers(&self, _device_id: &str) -> Result<Vec<FileTransfer>, BackendError> {
+        Ok(Vec::new())
+    }
+    /// Sends the files at `paths`, which the user chose, to a phone as one
+    /// transfer. It looks at every file first, so it blocks.
+    fn send_files(&self, _device_id: &str, _paths: Vec<PathBuf>) -> Result<(), BackendError> {
+        Err(BackendError::NotStarted)
+    }
+    /// Cancels a transfer that has not finished, in either direction.
+    fn cancel_transfer(&self, _device_id: &str, _transfer_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Removes a finished transfer from the list.
+    fn forget_transfer(&self, _device_id: &str, _transfer_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Opens file `index` of a transfer from a phone, once it has arrived,
+    /// with the desktop's default application.
+    fn open_received_file(
+        &self,
+        _device_id: &str,
+        _transfer_id: &str,
+        _index: usize,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Shows file `index` of a transfer from a phone in its folder.
+    fn show_received_file(
+        &self,
+        _device_id: &str,
+        _transfer_id: &str,
+        _index: usize,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
     }
 
     /// The desktop app's settings.

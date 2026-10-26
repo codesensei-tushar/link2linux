@@ -63,6 +63,33 @@ export const commands = {
 	 *  of it arrives as a `ClipboardChanged` event.
 	 */
 	sendClipboard: () => typedError<null, CommandError>(__TAURI_INVOKE("send_clipboard")),
+	/**
+	 *  The file transfers with a phone, oldest first. Later changes arrive as
+	 *  `TransferChanged` events: subscribe first, then call this.
+	 */
+	listTransfers: (deviceId: string) => typedError<FileTransfer[], CommandError>(__TAURI_INVOKE("list_transfers", { deviceId })),
+	/**
+	 *  Asks the user for files with the desktop's file chooser and sends them
+	 *  to the phone as one transfer. Resolves with whether the user chose any.
+	 */
+	pickFilesToSend: (deviceId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("pick_files_to_send", { deviceId })),
+	/**
+	 *  Sends the files of the latest drop on the window to a phone, as one
+	 *  transfer. `drop_id` comes from the `FilesDropped` event; an earlier drop
+	 *  is gone.
+	 */
+	sendDroppedFiles: (dropId: number, deviceId: string) => typedError<null, CommandError>(__TAURI_INVOKE("send_dropped_files", { dropId, deviceId })),
+	/**  Cancels a transfer that has not finished, in either direction. */
+	cancelTransfer: (deviceId: string, transferId: string) => typedError<null, CommandError>(__TAURI_INVOKE("cancel_transfer", { deviceId, transferId })),
+	/**  Removes a finished transfer from the list. Received files stay. */
+	forgetTransfer: (deviceId: string, transferId: string) => typedError<null, CommandError>(__TAURI_INVOKE("forget_transfer", { deviceId, transferId })),
+	/**
+	 *  Opens a file that arrived from a phone with the desktop's default
+	 *  application.
+	 */
+	openReceivedFile: (deviceId: string, transferId: string, fileIndex: number) => typedError<null, CommandError>(__TAURI_INVOKE("open_received_file", { deviceId, transferId, fileIndex })),
+	/**  Shows a file that arrived from a phone in its folder. */
+	showReceivedFile: (deviceId: string, transferId: string, fileIndex: number) => typedError<null, CommandError>(__TAURI_INVOKE("show_received_file", { deviceId, transferId, fileIndex })),
 	/**  The desktop app's settings. */
 	getSettings: () => __TAURI_INVOKE<Settings>("get_settings"),
 	/**
@@ -76,8 +103,11 @@ export const commands = {
 export const events = {
 	clipboardChanged: makeEvent<ClipboardChanged, ClipboardChanged>("clipboard-changed"),
 	devicesChanged: makeEvent<DevicesChanged, DevicesChanged>("devices-changed"),
+	fileDrag: makeEvent<FileDrag, FileDrag>("file-drag"),
+	filesDropped: makeEvent<FilesDropped, FilesDropped>("files-dropped"),
 	notificationChanged: makeEvent<NotificationChanged, NotificationChanged>("notification-changed"),
 	pairingChanged: makeEvent<PairingChanged, PairingChanged>("pairing-changed"),
+	transferChanged: makeEvent<TransferChanged, TransferChanged>("transfer-changed"),
 };
 
 /* Types */
@@ -205,7 +235,7 @@ export type CommandError = {
 	message: string,
 };
 
-export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted";
+export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted" | "folderNotSendable" | "fileUnreadable" | "tooManyFiles" | "filesOff";
 
 export type ConversationMessageInfo = {
 	/**  Empty for messages the phone's user sent. */
@@ -245,6 +275,47 @@ export type DiscoveredPhone = {
 	id: string,
 	name: string,
 	address: string,
+};
+
+/**  Files are dragged over the window (`over`), or not anymore. */
+export type FileDrag = {
+	over: boolean,
+};
+
+/**  A transfer with a phone. */
+export type FileTransfer = {
+	/**  32 hexadecimal digits. */
+	id: string,
+	direction: TransferDirection,
+	status: TransferStatus,
+	files: TransferFileInfo[],
+	/**  Bytes of all files. */
+	size: number,
+	/**  Bytes the receiver has. */
+	done: number,
+	/**  When it started on this computer. */
+	startedUnixMs: number,
+};
+
+/**  A change to a phone's transfers, as pushed to the UI. */
+export type FileTransferEvent = 
+/**
+ *  A transfer started, or its status or a file changed: the whole
+ *  transfer, which replaces the earlier one.
+ */
+{ type: "changed"; transfer: FileTransfer } | 
+/**  Bytes moved. */
+{ type: "progress"; id: string; done: number } | 
+/**  A finished transfer left the list. */
+{ type: "removed"; id: string };
+
+/**
+ *  Files were dropped on the window. `send_dropped_files` with `drop_id`
+ *  sends them; `names` are the dropped items, for the page to show.
+ */
+export type FilesDropped = {
+	dropId: number,
+	names: string[],
 };
 
 /**  Text from a phone that waits for the window to gain focus. */
@@ -470,6 +541,69 @@ export type StartupError = {
 	/**  The error itself, for a bug report. */
 	detail: string,
 };
+
+/**  A file transfer with a phone changed. */
+export type TransferChanged = {
+	deviceId: string,
+	event: FileTransferEvent,
+};
+
+/**  Which way the files go. */
+export type TransferDirection = 
+/**  From the phone to this computer. */
+"incoming" | 
+/**  From this computer to the phone. */
+"outgoing";
+
+/**  Why a transfer failed. */
+export type TransferFailure = 
+/**  Files are turned off on the phone. */
+"disabled" | 
+/**  The phone needs a permission before it can save files. */
+"permissionRequired" | 
+/**  The receiving device has no room for the files. */
+"noSpace" | 
+/**  The phone refused the transfer or a part of it. */
+"refused" | 
+/**  A file to send could not be read. */
+"unreadable" | 
+/**  A file changed while it was being sent. */
+"changed" | 
+/**  A received file was damaged on the way. */
+"damaged" | 
+/**  The phone sent bytes that do not fit the transfer. */
+"invalid" | 
+/**  A received file could not be saved. */
+"writeFailed" | 
+/**  The phone stopped answering. */
+"unanswered" | 
+/**  The phone stayed away for more than an hour. */
+"expired";
+
+/**  One file of a transfer. */
+export type TransferFileInfo = {
+	/**
+	 *  The file's name: as sent, or as saved here, with the number it got
+	 *  when the name was taken.
+	 */
+	name: string,
+	size: number,
+	/**  The MIME type, or empty when not known. */
+	mimeType: string,
+	/**  A received file that arrived, which the user can open. */
+	saved: boolean,
+};
+
+/**  Where a transfer stands. */
+export type TransferStatus = 
+/**  Not started: the phone is away, not ready, or busy. */
+{ kind: "waiting" } | 
+/**  Bytes are moving. */
+{ kind: "running" } | 
+/**  The connection dropped; it goes on when the phone is back. */
+{ kind: "interrupted" } | { kind: "completed" } | { kind: "cancelled"; 
+/**  Cancelled on the phone rather than here. */
+byPhone: boolean } | { kind: "failed"; reason: TransferFailure };
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

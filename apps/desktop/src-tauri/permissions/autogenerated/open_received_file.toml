@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-received-file"
+description = "Enables the open_received_file command without any pre-configured scope."
+commands.allow = ["open_received_file"]
+
+[[permission]]
+identifier = "deny-open-received-file"
+description = "Denies the open_received_file command without any pre-configured scope."
+commands.deny = ["open_received_file"]

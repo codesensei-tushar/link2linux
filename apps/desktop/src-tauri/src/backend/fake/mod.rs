@@ -7,10 +7,12 @@
 //! send. Choose a [`Script`] with the `L2L_FAKE_SCRIPT` environment variable
 //! (`success`, `wrong-code`, `expired`, `not-found`, `declined`, `demo`).
 
+pub mod files;
 pub mod machine;
 pub mod script;
 pub mod support;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,7 +22,12 @@ use link2linux_runtime::view::{
     ClipboardProblem, ClipboardProblemKind, ClipboardStatus, DeviceStatus,
 };
 
-use super::{Backend, BackendError, Device, EventSink, PairingMethod, PairingState, PhoneTarget};
+use super::{
+    Backend, BackendError, Device, EventSink, FileTransfer, PairingMethod, PairingState,
+    PhoneTarget,
+};
+
+use files::FakeFiles;
 
 pub use machine::Machine;
 pub use script::{Changed, Now, Script};
@@ -109,6 +116,7 @@ impl Shared {
 /// The scripted backend the app uses until the real one is wired in.
 pub struct FakeBackend {
     shared: Arc<Shared>,
+    files: FakeFiles,
     timer: Option<JoinHandle<()>>,
     clipboard: Mutex<FakeClipboard>,
 }
@@ -182,6 +190,7 @@ impl FakeBackend {
             start: Instant::now(),
         };
         let machine = Machine::new(script, desktop_name(), clock.now());
+        let files = FakeFiles::new(script, sink.clone(), clock.now().unix_ms);
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 machine,
@@ -200,6 +209,7 @@ impl FakeBackend {
             .ok();
         Self {
             shared,
+            files,
             timer,
             clipboard: Mutex::default(),
         }
@@ -299,6 +309,41 @@ impl Backend for FakeBackend {
         };
         self.shared.sink.clipboard_changed(&status);
         Ok(())
+    }
+
+    fn transfers(&self, device_id: &str) -> Result<Vec<FileTransfer>, BackendError> {
+        Ok(self.files.transfers(device_id))
+    }
+
+    fn send_files(&self, device_id: &str, paths: Vec<PathBuf>) -> Result<(), BackendError> {
+        self.files
+            .send(device_id, &paths, self.shared.clock.now().unix_ms)
+    }
+
+    fn cancel_transfer(&self, device_id: &str, transfer_id: &str) -> Result<(), BackendError> {
+        self.files.cancel(device_id, transfer_id)
+    }
+
+    fn forget_transfer(&self, device_id: &str, transfer_id: &str) -> Result<(), BackendError> {
+        self.files.forget(device_id, transfer_id)
+    }
+
+    fn open_received_file(
+        &self,
+        device_id: &str,
+        transfer_id: &str,
+        index: usize,
+    ) -> Result<(), BackendError> {
+        self.files.received(device_id, transfer_id, index)
+    }
+
+    fn show_received_file(
+        &self,
+        device_id: &str,
+        transfer_id: &str,
+        index: usize,
+    ) -> Result<(), BackendError> {
+        self.files.received(device_id, transfer_id, index)
     }
 }
 

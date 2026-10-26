@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-received-file"
+description = "Enables the show_received_file command without any pre-configured scope."
+commands.allow = ["show_received_file"]
+
+[[permission]]
+identifier = "deny-show-received-file"
+description = "Denies the show_received_file command without any pre-configured scope."
+commands.deny = ["show_received_file"]

@@ -9,7 +9,9 @@ use specta::Type;
 use tauri::AppHandle;
 use tauri_specta::Event;
 
-use crate::backend::{ClipboardStatus, Device, EventSink, NotificationEvent, PairingState};
+use crate::backend::{
+    ClipboardStatus, Device, EventSink, FileTransferEvent, NotificationEvent, PairingState,
+};
 
 /// The pairing step changed.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
@@ -30,6 +32,29 @@ pub struct NotificationChanged {
 /// The shared clipboard's state changed.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub struct ClipboardChanged(pub ClipboardStatus);
+
+/// A file transfer with a phone changed.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferChanged {
+    pub device_id: String,
+    pub event: FileTransferEvent,
+}
+
+/// Files are dragged over the window (`over`), or not anymore.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+pub struct FileDrag {
+    pub over: bool,
+}
+
+/// Files were dropped on the window. `send_dropped_files` with `drop_id`
+/// sends them; `names` are the dropped items, for the page to show.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesDropped {
+    pub drop_id: u32,
+    pub names: Vec<String>,
+}
 
 /// Forwards backend changes to the window as Tauri events.
 pub struct TauriSink {
@@ -62,5 +87,13 @@ impl EventSink for TauriSink {
 
     fn clipboard_changed(&self, status: &ClipboardStatus) {
         let _ = ClipboardChanged(status.clone()).emit(&self.app);
+    }
+
+    fn transfer_changed(&self, device_id: &str, event: &FileTransferEvent) {
+        let _ = TransferChanged {
+            device_id: device_id.to_owned(),
+            event: event.clone(),
+        }
+        .emit(&self.app);
     }
 }

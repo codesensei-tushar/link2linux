@@ -42,7 +42,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use outgoing::SendError;
+pub use outgoing::{SendError, check_sendable};
 pub use service::{FileService, ServiceError};
 
 /// The most bytes of a file one chunk carries.

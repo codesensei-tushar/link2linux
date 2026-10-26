@@ -10,6 +10,9 @@ import {
   type ClipboardStatus,
   type CommandError,
   type Device,
+  type FilesDropped,
+  type FileTransfer,
+  type FileTransferEvent,
   type PairingMethod,
   type PairingState,
   type PhoneTarget,
@@ -30,12 +33,19 @@ export type {
   Device,
   DeviceStatus,
   DiscoveredPhone,
+  FilesDropped,
+  FileTransfer,
+  FileTransferEvent,
   PairingFailure,
   PairingMethod,
   PairingState,
   PhoneTarget,
   Settings,
   StartupError,
+  TransferDirection,
+  TransferFailure,
+  TransferFileInfo,
+  TransferStatus,
 } from "./bindings";
 
 /** Stops listening to an event stream. */
@@ -81,6 +91,26 @@ export interface DesktopApi {
   onClipboardChanged(listener: (status: ClipboardStatus) => void): Promise<Unsubscribe>;
   /** Sends what the clipboard holds to every phone. What came of it arrives as a new status. */
   sendClipboard(): Promise<void>;
+  /** The file transfers with a phone, oldest first. */
+  listTransfers(deviceId: string): Promise<FileTransfer[]>;
+  /** Follows changes to a phone's transfers. Returns the unsubscribe function. */
+  subscribeTransfers(deviceId: string, onEvent: (event: FileTransferEvent) => void): () => void;
+  /** Asks for files with the desktop's file chooser and sends them; resolves with whether any were chosen. */
+  pickFilesToSend(deviceId: string): Promise<boolean>;
+  /** Sends the files of a drop on the window, named by its `dropId`, to a phone. */
+  sendDroppedFiles(dropId: number, deviceId: string): Promise<void>;
+  /** Cancels a transfer that has not finished, in either direction. */
+  cancelTransfer(deviceId: string, transferId: string): Promise<void>;
+  /** Removes a finished transfer from the list. Received files stay. */
+  forgetTransfer(deviceId: string, transferId: string): Promise<void>;
+  /** Opens a file that arrived from a phone with the desktop's default application. */
+  openReceivedFile(deviceId: string, transferId: string, fileIndex: number): Promise<void>;
+  /** Shows a file that arrived from a phone in its folder. */
+  showReceivedFile(deviceId: string, transferId: string, fileIndex: number): Promise<void>;
+  /** Files are dragged over the window (`true`), or not anymore. */
+  onFileDrag(listener: (over: boolean) => void): Promise<Unsubscribe>;
+  /** Files were dropped on the window. */
+  onFilesDropped(listener: (drop: FilesDropped) => void): Promise<Unsubscribe>;
 
   unpairDevice(deviceId: string): Promise<void>;
   getPairingState(): Promise<PairingState>;
@@ -146,6 +176,39 @@ export const tauriApi: DesktopApi = {
       listener(event.payload);
     }),
   sendClipboard: () => expectOk(commands.sendClipboard()),
+  listTransfers: (deviceId) => expectData(commands.listTransfers(deviceId)),
+  subscribeTransfers: (deviceId, onEvent) => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void events.transferChanged
+      .listen((event) => {
+        if (active && event.payload.deviceId === deviceId) onEvent(event.payload.event);
+      })
+      .then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  },
+  pickFilesToSend: (deviceId) => expectData(commands.pickFilesToSend(deviceId)),
+  sendDroppedFiles: (dropId, deviceId) => expectOk(commands.sendDroppedFiles(dropId, deviceId)),
+  cancelTransfer: (deviceId, transferId) => expectOk(commands.cancelTransfer(deviceId, transferId)),
+  forgetTransfer: (deviceId, transferId) => expectOk(commands.forgetTransfer(deviceId, transferId)),
+  openReceivedFile: (deviceId, transferId, fileIndex) =>
+    expectOk(commands.openReceivedFile(deviceId, transferId, fileIndex)),
+  showReceivedFile: (deviceId, transferId, fileIndex) =>
+    expectOk(commands.showReceivedFile(deviceId, transferId, fileIndex)),
+  onFileDrag: (listener) =>
+    events.fileDrag.listen((event) => {
+      listener(event.payload.over);
+    }),
+  onFilesDropped: (listener) =>
+    events.filesDropped.listen((event) => {
+      listener(event.payload);
+    }),
   unpairDevice: (deviceId) => expectOk(commands.unpairDevice(deviceId)),
   getPairingState: () => commands.getPairingState(),
   startPairing: (method) => expectOk(commands.startPairing(method)),

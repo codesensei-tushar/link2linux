@@ -90,6 +90,25 @@ impl Source {
     }
 }
 
+/// Checks that the files at `paths` can go in one transfer, as
+/// [`FileService::send`](super::FileService::send) will, so the user hears
+/// at once why not. It looks at every file, so it blocks.
+///
+/// # Errors
+///
+/// As [`FileService::send`](super::FileService::send).
+pub fn check_sendable(paths: &[PathBuf]) -> Result<(), SendError> {
+    if paths.is_empty() {
+        return Err(SendError::NoFiles);
+    }
+    if paths.len() > MAX_FILES {
+        return Err(SendError::TooMany);
+    }
+    paths
+        .iter()
+        .try_for_each(|path| Source::new(path.clone()).map(drop))
+}
+
 /// What the answer to a chunk confirms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Mark {

@@ -2,7 +2,16 @@ import { act } from "@testing-library/react";
 import { vi, type Mock } from "vitest";
 
 import type { MirroredNotification, NotificationEvent } from "@/features/notifications/types";
-import type { AppInfo, ClipboardStatus, DesktopApi, Device, PairingState } from "@/lib/api";
+import type {
+  AppInfo,
+  ClipboardStatus,
+  DesktopApi,
+  Device,
+  FilesDropped,
+  FileTransfer,
+  FileTransferEvent,
+  PairingState,
+} from "@/lib/api";
 
 export const testAppInfo: AppInfo = {
   name: "link2linux",
@@ -67,6 +76,19 @@ export function testNotification(
   };
 }
 
+export function testTransfer(overrides: Partial<FileTransfer> = {}): FileTransfer {
+  return {
+    id: "t1",
+    direction: "incoming",
+    status: { kind: "running" },
+    files: [{ name: "photo.jpg", size: 2_000_000, mimeType: "image/jpeg", saved: false }],
+    size: 2_000_000,
+    done: 500_000,
+    startedUnixMs: Date.now(),
+    ...overrides,
+  };
+}
+
 export interface FakeApi extends DesktopApi {
   appInfo: Mock<DesktopApi["appInfo"]>;
   startupError: Mock<DesktopApi["startupError"]>;
@@ -85,6 +107,20 @@ export interface FakeApi extends DesktopApi {
   emitNotification: (event: NotificationEvent) => void;
   /** How many notification subscriptions are active. */
   notificationSubscribers: () => number;
+  listTransfers: Mock<DesktopApi["listTransfers"]>;
+  subscribeTransfers: Mock<DesktopApi["subscribeTransfers"]>;
+  pickFilesToSend: Mock<DesktopApi["pickFilesToSend"]>;
+  sendDroppedFiles: Mock<DesktopApi["sendDroppedFiles"]>;
+  cancelTransfer: Mock<DesktopApi["cancelTransfer"]>;
+  forgetTransfer: Mock<DesktopApi["forgetTransfer"]>;
+  openReceivedFile: Mock<DesktopApi["openReceivedFile"]>;
+  showReceivedFile: Mock<DesktopApi["showReceivedFile"]>;
+  /** Delivers an event to every active transfer subscriber. */
+  emitTransfer: (event: FileTransferEvent) => void;
+  /** Says files are dragged over the window, or not anymore. */
+  emitFileDrag: (over: boolean) => void;
+  /** Says files were dropped on the window. */
+  emitFilesDropped: (drop: FilesDropped) => void;
   unpairDevice: Mock<DesktopApi["unpairDevice"]>;
   getPairingState: Mock<DesktopApi["getPairingState"]>;
   startPairing: Mock<DesktopApi["startPairing"]>;
@@ -107,6 +143,9 @@ export function createFakeApi(): FakeApi {
   const deviceListeners = new Set<(devices: Device[]) => void>();
   const subscribers = new Set<(event: NotificationEvent) => void>();
   const clipboardListeners = new Set<(status: ClipboardStatus) => void>();
+  const transferSubscribers = new Set<(event: FileTransferEvent) => void>();
+  const dragListeners = new Set<(over: boolean) => void>();
+  const dropListeners = new Set<(drop: FilesDropped) => void>();
   const ok = () => vi.fn<Methods["startPairing"]>().mockResolvedValue(undefined);
 
   return {
@@ -145,6 +184,46 @@ export function createFakeApi(): FakeApi {
       for (const subscriber of [...subscribers]) subscriber(event);
     },
     notificationSubscribers: () => subscribers.size,
+    listTransfers: vi.fn<DesktopApi["listTransfers"]>().mockResolvedValue([]),
+    subscribeTransfers: vi.fn<DesktopApi["subscribeTransfers"]>((_deviceId, onEvent) => {
+      transferSubscribers.add(onEvent);
+      return () => {
+        transferSubscribers.delete(onEvent);
+      };
+    }),
+    pickFilesToSend: vi.fn<DesktopApi["pickFilesToSend"]>().mockResolvedValue(true),
+    sendDroppedFiles: vi.fn<DesktopApi["sendDroppedFiles"]>().mockResolvedValue(undefined),
+    cancelTransfer: vi.fn<DesktopApi["cancelTransfer"]>().mockResolvedValue(undefined),
+    forgetTransfer: vi.fn<DesktopApi["forgetTransfer"]>().mockResolvedValue(undefined),
+    openReceivedFile: vi.fn<DesktopApi["openReceivedFile"]>().mockResolvedValue(undefined),
+    showReceivedFile: vi.fn<DesktopApi["showReceivedFile"]>().mockResolvedValue(undefined),
+    emitTransfer: (event) => {
+      act(() => {
+        for (const subscriber of [...transferSubscribers]) subscriber(event);
+      });
+    },
+    onFileDrag: (listener) => {
+      dragListeners.add(listener);
+      return Promise.resolve(() => dragListeners.delete(listener));
+    },
+    onFilesDropped: (listener) => {
+      dropListeners.add(listener);
+      return Promise.resolve(() => dropListeners.delete(listener));
+    },
+    emitFileDrag: (over) => {
+      act(() => {
+        dragListeners.forEach((listener) => {
+          listener(over);
+        });
+      });
+    },
+    emitFilesDropped: (drop) => {
+      act(() => {
+        dropListeners.forEach((listener) => {
+          listener(drop);
+        });
+      });
+    },
     unpairDevice: vi.fn<DesktopApi["unpairDevice"]>().mockResolvedValue(undefined),
     getPairingState: vi
       .fn<DesktopApi["getPairingState"]>()
@@ -181,6 +260,11 @@ export function createFakeApi(): FakeApi {
         });
       });
     },
-    listenerCount: () => pairingListeners.size + deviceListeners.size + clipboardListeners.size,
+    listenerCount: () =>
+      pairingListeners.size +
+      deviceListeners.size +
+      clipboardListeners.size +
+      dragListeners.size +
+      dropListeners.size,
   };
 }
