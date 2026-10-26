@@ -197,7 +197,7 @@ fn start() -> Rig {
         identity: Identity::generate().unwrap(),
         drivers: Arc::new(ServiceFactory::new(
             presenter.clone(),
-            data.path().join("images"),
+            Some(data.path().join("images")),
         )),
         presenter,
         events: events.clone(),

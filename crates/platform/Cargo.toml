@@ -18,6 +18,7 @@ zeroize.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util.workspace = true
 oo7.workspace = true
+rustix.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 zbus.workspace = true
 

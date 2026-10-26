@@ -194,7 +194,11 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                     (Pending::Image(sha256), Ok(Payload::ImageData(image))) => {
                         if image.sha256 == sha256 {
                             match self.images.store(&image) {
-                                Ok(_) => self.refresh_banners_with(session, &sha256).await?,
+                                // Only an image with a file can go in a banner.
+                                Ok(()) if self.images.get(&sha256).is_some() => {
+                                    self.refresh_banners_with(session, &sha256).await?;
+                                }
+                                Ok(()) => {}
                                 Err(e) => tracing::warn!(%e, "dropped a notification image"),
                             }
                         }
@@ -434,8 +438,9 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
         }
     }
 
-    /// The local file of the notification's image, when cached; otherwise
-    /// asks the phone for it, and the banner is updated when it arrives.
+    /// The local file of the notification's image, when cached as a file;
+    /// otherwise asks the phone for it, unless it is kept in memory, and the
+    /// banner is updated when it arrives.
     async fn image_for<S>(
         &mut self,
         session: &mut Session<S>,
@@ -449,6 +454,10 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
         };
         if let Some(path) = self.images.get(sha256) {
             return Ok(Some(path));
+        }
+        if self.images.contains(sha256) {
+            // Kept in memory only: the banner goes without it.
+            return Ok(None);
         }
         let asked = self
             .pending

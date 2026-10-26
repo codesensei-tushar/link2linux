@@ -19,7 +19,7 @@ pub mod mirror;
 pub mod present;
 pub mod service;
 
-pub use images::{ImageCache, ImageError};
+pub use images::{CachedImage, ImageCache, ImageError};
 pub use mirror::{Change, Mirror, MirrorError};
 pub use present::{Answer, answer, to_desktop, wants_banner};
 pub use service::{NotificationService, NotificationSettings, ServiceError};

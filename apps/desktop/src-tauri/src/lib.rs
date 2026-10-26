@@ -50,6 +50,11 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
 
 /// Starts the desktop app. Blocks until the last window closes.
 pub fn run() {
+    // This process holds the phone's notifications and the private key:
+    // keep other programs of the user from reading its memory.
+    if let Err(error) = link2linux_platform::linux::deny_memory_access() {
+        tracing::warn!(%error, "could not protect the app's memory");
+    }
     let builder = specta_builder();
 
     tauri::Builder::default()

@@ -131,6 +131,16 @@ Bluetooth on the computer.
 - Desktop pop-ups only name the app unless you turn on their text in
   Settings, and never show it while the screen is locked. The full
   notification stays in the link2linux window.
+- Pictures that come with notifications stay off the disk: in your login
+  session's runtime folder, which is cleared when you log out, or only in
+  the app's memory.
+- Other programs can't attach a debugger to the desktop app or read its
+  memory. The window's web view runs in separate processes that this doesn't
+  cover.
+- Linux doesn't keep apps apart the way Android does. Any program you run
+  outside a sandbox can read your files and ask your keyring for its
+  secrets. Running apps you don't trust in a sandbox (Flatpak or Snap) is
+  what keeps them away from your data.
 
 Found a security issue? Please report it privately as described in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-security-issues).

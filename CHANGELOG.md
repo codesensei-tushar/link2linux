@@ -39,6 +39,14 @@ from Unreleased to a version.
   The new Settings page can turn the text back on. Even then, pop-ups never
   show it while the screen is locked, and notifications the phone's app marked
   secret get no pop-up at all on a locked screen.
+- **Pictures stay off the disk.** Pictures that come with notifications are
+  kept in your login session's runtime folder, which is cleared at logout, or
+  only in memory without one. The pictures 0.1.0 saved in its data folder are
+  deleted, and a phone's pictures are deleted when you unpair it.
+- **The desktop app's memory is closed to other programs.** Other programs you
+  run can no longer attach a debugger to the app or read its memory, and it
+  writes no core dumps. The window's web view runs in separate processes that
+  this doesn't cover.
 
 ## [0.1.0] - 2026-10-26
 
