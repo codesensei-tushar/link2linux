@@ -451,3 +451,8 @@ impl Machine {
         }
     }
 }
+
+#[cfg(test)]
+mod sas_tests;
+#[cfg(test)]
+mod tests;
