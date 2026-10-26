@@ -26,8 +26,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::candidates::Evidence;
 use crate::clipboard::{
-    self, ClipboardMode, ClipboardPort, ClipboardStatus, HeldClipboard, NoClipboard, Outgoing,
-    SharedClipboard,
+    self, ClipboardMode, ClipboardPhoneState, ClipboardPort, ClipboardStatus, HeldClipboard,
+    NoClipboard, Outgoing, SharedClipboard,
 };
 use crate::device::{self, Established, Inbox};
 use crate::features::Features;
@@ -401,6 +401,7 @@ impl Core {
         self.drivers.forget(id);
         lock(&self.evidence).forget(id);
         lock(&self.clipboard_page).board.forget(id);
+        self.clipboard_hub.forget_phone(id);
         self.publish_keys();
         self.emit_devices();
         self.clipboard_changed();
@@ -470,8 +471,7 @@ impl Core {
             Some(ClipboardAccess::FocusOnly) => ClipboardMode::WhenFocused,
             None => ClipboardMode::Unavailable,
         };
-        let mut records = lock(&self.store).list();
-        records.sort_by_key(|record| (record.paired_at, record.id.clone()));
+        let records = self.paired_in_order();
         let held = self.clipboard_hub.held().map(|held| HeldClipboard {
             phone_name: records
                 .iter()
@@ -481,11 +481,38 @@ impl Core {
             bytes: clipboard::bytes(held.clip.len()),
             sensitive: held.clip.is_sensitive(),
         });
-        let phones = records
+        let paired = records
             .into_iter()
             .map(|record| (record.id, record.name))
             .collect();
+        let phones = clipboard::phones(paired, &self.clipboard_hub.phones());
         page.board.snapshot(mode, phones, held)
+    }
+
+    fn paired_in_order(&self) -> Vec<PairedDevice> {
+        let mut records = lock(&self.store).list();
+        records.sort_by_key(|record| (record.paired_at, record.id.clone()));
+        records
+    }
+
+    /// Whether `id` is a paired phone.
+    pub fn is_paired(&self, id: &str) -> bool {
+        lock(&self.store)
+            .list()
+            .iter()
+            .any(|record| record.id == id)
+    }
+
+    /// Whether any paired phone takes the clipboard now.
+    pub fn clipboard_any_ready(&self) -> bool {
+        let paired = self
+            .paired_in_order()
+            .into_iter()
+            .map(|record| (record.id, record.name))
+            .collect();
+        clipboard::phones(paired, &self.clipboard_hub.phones())
+            .iter()
+            .any(|phone| phone.state == ClipboardPhoneState::Ready)
     }
 
     /// Reports the clipboard page to the shell. The page's lock stays held

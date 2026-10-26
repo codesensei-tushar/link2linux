@@ -191,14 +191,28 @@ impl Presenter for PrivatePopups {
     fn show_own<'a>(
         &'a self,
         notification: &'a DesktopNotification,
+        when_locked: &'a DesktopNotification,
         replaces: Option<NotificationId>,
     ) -> BoxFuture<'a, Result<NotificationId, PlatformError>> {
-        // Nothing in it comes from the phone, so it shows as it is, also
-        // on a locked screen.
-        let popup = with_open(notification.clone());
         Box::pin(async move {
             let replaces = replaces.filter(|id| *id != NOT_SHOWN);
-            self.inner.show(&popup, replaces).await
+            if let Some(old) = replaces {
+                self.on_screen().remove(&old);
+            }
+            let when_locked = with_open(when_locked.clone());
+            if self.locked.load(Ordering::Relaxed) {
+                return self.inner.show(&when_locked, replaces).await;
+            }
+            let id = self
+                .inner
+                .show(&with_open(notification.clone()), replaces)
+                .await?;
+            self.on_screen().insert(id, Some(when_locked.clone()));
+            // The screen may have locked while this was shown.
+            if self.locked.load(Ordering::Relaxed) && self.on_screen().remove(&id).is_some() {
+                self.hide_text(id, Some(when_locked)).await;
+            }
+            Ok(id)
         })
     }
 
@@ -559,25 +573,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_apps_own_popups_show_as_they_are_and_open_the_window() {
+    async fn the_apps_own_popups_name_the_phone_only_on_an_unlocked_screen() {
         let rig = rig(false);
         let own = DesktopNotification {
             app_name: "link2linux".into(),
-            summary: "Clipboard from Pixel".into(),
+            summary: "Clipboard from Alice's Pixel".into(),
             body: "Click to put it on this computer's clipboard.".into(),
             ..DesktopNotification::default()
         };
-        // Locked, and without the text of notifications: still as it is.
-        let id = rig.popups.show_own(&own, None).await.unwrap();
-        let shown = rig.desktop.shown.lock().unwrap().clone();
-        assert_eq!(shown.len(), 1);
-        assert_eq!(shown[0].0.summary, own.summary);
-        assert_eq!(shown[0].0.body, own.body);
-        assert_eq!(shown[0].0.actions[0].key, OPEN_KEY);
-        // Unlocking leaves it alone.
+        let locked = DesktopNotification {
+            summary: "Clipboard from your phone".into(),
+            ..own.clone()
+        };
+        let summaries = || -> Vec<String> {
+            let shown = rig.desktop.shown.lock().unwrap();
+            shown
+                .iter()
+                .map(|(popup, _)| popup.summary.clone())
+                .collect()
+        };
+
+        // Locked: the generic form, even without notification text.
+        let id = rig.popups.show_own(&own, &locked, None).await.unwrap();
+        assert_eq!(summaries(), ["Clipboard from your phone"]);
+        assert_eq!(
+            rig.desktop.shown.lock().unwrap()[0].0.actions[0].key,
+            OPEN_KEY
+        );
+
+        // Unlocked: the phone's name, until the screen locks.
         rig.popups.set_locked(false).await;
+        let id = rig.popups.show_own(&own, &locked, Some(id)).await.unwrap();
         rig.popups.set_locked(true).await;
-        assert_eq!(rig.desktop.shown.lock().unwrap().len(), 1);
+        assert_eq!(
+            summaries(),
+            [
+                "Clipboard from your phone",
+                "Clipboard from Alice's Pixel",
+                "Clipboard from your phone"
+            ]
+        );
 
         rig.respond
             .send(NotificationResponse::Action {

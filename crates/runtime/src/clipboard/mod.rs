@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use link2linux_core::clipboard::{Clip, ClipboardEvent, ClipboardService, Origin};
 use link2linux_platform::{
-    Clipboard, ClipboardAccess, ClipboardText, DesktopNotification, PlatformError,
+    Clipboard, ClipboardAccess, ClipboardText, DesktopNotification, NotificationId, PlatformError,
 };
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, watch};
@@ -31,7 +31,7 @@ use crate::shared::{Core, now_unix_ms};
 
 mod status;
 
-pub(crate) use status::{Board, bytes};
+pub(crate) use status::{Board, bytes, phones};
 pub use status::{
     ClipboardActivity, ClipboardDirection, ClipboardMode, ClipboardPhone, ClipboardPhoneState,
     ClipboardProblem, ClipboardProblemKind, ClipboardStatus, HeldClipboard, MAX_ACTIVITY,
@@ -173,28 +173,38 @@ pub(crate) async fn watch(core: Arc<Core>) {
             core.clipboard_changed();
             return;
         }
+        // A phone's text that goes on the clipboard while this reads makes
+        // what it read old news.
+        let since = core.clipboard_hub.generation();
         match Clipboard::read(&clipboard).await {
-            Ok(Some(text)) => {
-                if let Some(clip) = core.clipboard_hub.copied(text, Instant::now()) {
+            Ok(text) => {
+                if let Some(clip) = core.clipboard_hub.copied(text, Instant::now(), since) {
                     share(&core, &clip, Origin::Automatic);
                 }
             }
-            Ok(None) => {}
             Err(error) => tracing::debug!(%error, "could not read the clipboard"),
         }
     }
 }
 
 /// The window gained or lost focus. On a desktop that lets the app use its
-/// clipboard only while the window has focus, gaining it puts the text that
-/// waits on the clipboard, or else shares a copy made while the window was
-/// in the background.
+/// clipboard only while the window has focus, gaining it shares a copy made
+/// while the window was in the background, or else puts the text that
+/// waits on the clipboard.
 pub(crate) fn window_focus(core: &Arc<Core>, focused: bool) {
     core.clipboard_hub.set_focused(focused);
+    if focused {
+        use_focus(core);
+    }
+}
+
+/// Uses the clipboard as the window's focus allows, on a desktop that lets
+/// the app use it only then.
+fn use_focus(core: &Arc<Core>) {
     let Some(clipboard) = core.clipboard.clone() else {
         return;
     };
-    if !focused || Clipboard::access(&clipboard) != ClipboardAccess::FocusOnly {
+    if Clipboard::access(&clipboard) != ClipboardAccess::FocusOnly {
         return;
     }
     let task = core.clone();
@@ -220,15 +230,8 @@ pub(crate) fn send_now(core: &Arc<Core>) {
             // The hub reported why.
             return;
         };
-        let nobody = {
-            let mut page = lock(&task.clipboard_page);
-            let nobody = !page.board.any_ready();
-            if nobody {
-                page.board.no_phone(now_unix_ms());
-            }
-            nobody
-        };
-        if nobody {
+        if !task.clipboard_any_ready() {
+            lock(&task.clipboard_page).board.no_phone(now_unix_ms());
             task.emit_clipboard();
         }
         // A phone that connects within a minute still gets it.
@@ -253,7 +256,11 @@ pub(crate) async fn follow(core: Arc<Core>, mut events: broadcast::Receiver<Clip
                 Err(RecvError::Closed) => return,
             },
         };
-        if let Some(event) = &event {
+        // A phone forgotten meanwhile, such as one whose last push failed
+        // as it was unpaired, is not shown again.
+        if let Some(event) = &event
+            && device_of(event).is_none_or(|id| core.is_paired(id))
+        {
             let name_of = |id: &str| core.phone_name(id);
             lock(&core.clipboard_page)
                 .board
@@ -271,13 +278,17 @@ async fn offer(core: &Core, event: Option<&ClipboardEvent>) {
     let banner = lock(&core.clipboard_page).banner;
     match held {
         Some(held) if matches!(event, Some(ClipboardEvent::Received { held: true, .. })) => {
-            let popup = DesktopNotification {
+            let when_locked = DesktopNotification {
                 app_name: "link2linux".into(),
-                summary: format!("Clipboard from {}", core.phone_name(&held.device_id)),
+                summary: "Clipboard from your phone".into(),
                 body: "Click to put it on this computer's clipboard.".into(),
                 ..DesktopNotification::default()
             };
-            match core.presenter.show_own(&popup, banner).await {
+            let popup = DesktopNotification {
+                summary: format!("Clipboard from {}", core.phone_name(&held.device_id)),
+                ..when_locked.clone()
+            };
+            match core.presenter.show_own(&popup, &when_locked, banner).await {
                 Ok(id) => lock(&core.clipboard_page).banner = Some(id),
                 Err(error) => tracing::warn!(%error, "could not offer the phone's clipboard"),
             }
@@ -291,5 +302,54 @@ async fn offer(core: &Core, event: Option<&ClipboardEvent>) {
             }
         }
         Some(_) => {}
+    }
+}
+
+/// The user clicked pop-up `id`. If it offers text that waits for the
+/// window, the text goes on the clipboard: now if the window has focus,
+/// else once the click brings the window up.
+pub(crate) fn popup_clicked(core: &Arc<Core>, id: NotificationId) {
+    if lock(&core.clipboard_page).banner != Some(id) || !core.clipboard_hub.request_held() {
+        return;
+    }
+    if core.clipboard_hub.is_focused() {
+        use_focus(core);
+    }
+}
+
+/// The phone an event is about, if any.
+fn device_of(event: &ClipboardEvent) -> Option<&str> {
+    match event {
+        ClipboardEvent::Sent { device_id, .. }
+        | ClipboardEvent::Received { device_id, .. }
+        | ClipboardEvent::Released { device_id }
+        | ClipboardEvent::Failed { device_id, .. }
+        | ClipboardEvent::Phone { device_id, .. } => Some(device_id),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use link2linux_core::clipboard::{NotShared, PhoneClipboard, PushFailure};
+
+    use super::*;
+
+    #[test]
+    fn events_about_a_phone_name_it() {
+        let failed = ClipboardEvent::Failed {
+            device_id: "phone-1".into(),
+            reason: PushFailure::Failed,
+        };
+        assert_eq!(device_of(&failed), Some("phone-1"));
+        let phone = ClipboardEvent::Phone {
+            device_id: "phone-2".into(),
+            state: PhoneClipboard::Disconnected,
+        };
+        assert_eq!(device_of(&phone), Some("phone-2"));
+        assert_eq!(
+            device_of(&ClipboardEvent::NotShared(NotShared::Secret)),
+            None
+        );
     }
 }

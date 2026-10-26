@@ -8,7 +8,7 @@ use link2linux_protocol::v1::{ClipboardPush, ErrorCode, ErrorReply};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::Instant;
 
-use super::hub::{ClipboardHub, Held};
+use super::hub::ClipboardHub;
 use super::{Clip, ClipboardEvent, Digest, MAX_TEXT_BYTES, Origin, PhoneClipboard, PushFailure};
 use crate::Feature;
 use crate::session::{Availability, Session, SessionError, SessionEvent};
@@ -35,13 +35,11 @@ pub struct ClipboardService<C> {
     in_flight: Option<(u64, Arc<Clip>)>,
     /// The newest copy made while a push waits, sent once it is answered.
     queued: Option<(Arc<Clip>, Origin)>,
-    /// The text last pushed to the phone, and the text it last pushed
-    /// here. Neither goes to it again by itself.
-    last_pushed: Option<Digest>,
-    last_received: Option<Digest>,
-    /// The text the phone is known to have: a recent copy is not pushed
-    /// again when the next session starts.
-    delivered: Option<Digest>,
+    /// The text the phone holds as far as the desktop knows: the text it
+    /// pushed here or was pushed from here, whichever came last, and
+    /// nothing once a push to it failed. It does not go to the phone again
+    /// by itself, nor as a recent copy when a session starts.
+    holds: Option<Digest>,
     /// The phone's state as last reported.
     state: Option<PhoneClipboard>,
 }
@@ -56,9 +54,7 @@ impl<C: Clipboard> ClipboardService<C> {
             clipboard,
             in_flight: None,
             queued: None,
-            last_pushed: None,
-            last_received: None,
-            delivered: None,
+            holds: None,
             state: None,
         }
     }
@@ -84,10 +80,7 @@ impl<C: Clipboard> ClipboardService<C> {
     pub fn session_ended(&mut self) {
         if let Some((_, clip)) = self.in_flight.take() {
             tracing::debug!(bytes = clip.len(), "a clipboard push got no answer");
-            self.hub.emit(ClipboardEvent::Failed {
-                device_id: self.device_id.clone(),
-                reason: PushFailure::Failed,
-            });
+            self.failed(&clip, PushFailure::Failed);
         }
         self.queued = None;
         self.set_state(PhoneClipboard::Disconnected);
@@ -205,10 +198,9 @@ impl<C: Clipboard> ClipboardService<C> {
             .is_some_and(|(seq, _)| *seq == request)
     }
 
-    /// Whether the phone pushed this text here, or got it from here last.
+    /// Whether the phone holds this text, as far as the desktop knows.
     fn has(&self, clip: &Clip) -> bool {
-        let digest = Some(clip.digest());
-        digest == self.last_pushed || digest == self.last_received
+        self.holds == Some(clip.digest())
     }
 
     async fn push<S>(
@@ -225,7 +217,7 @@ impl<C: Clipboard> ClipboardService<C> {
         };
         let seq = session.start_request(Payload::ClipboardPush(push)).await?;
         tracing::debug!(seq, bytes = clip.len(), "pushed the clipboard");
-        self.last_pushed = Some(clip.digest());
+        self.holds = Some(clip.digest());
         self.in_flight = Some((seq, clip));
         Ok(())
     }
@@ -250,11 +242,9 @@ impl<C: Clipboard> ClipboardService<C> {
         let Some(clip) = self.hub.recent(Instant::now()) else {
             return Ok(());
         };
-        let digest = Some(clip.digest());
-        if digest == self.delivered || digest == self.last_received {
+        if self.has(&clip) {
             return Ok(());
         }
-        // It did not reach the phone, so it goes even if it was pushed.
         self.share(session, clip, Origin::Explicit).await
     }
 
@@ -263,11 +253,9 @@ impl<C: Clipboard> ClipboardService<C> {
         let Some((seq, clip)) = self.in_flight.take() else {
             return;
         };
-        let device_id = self.device_id.clone();
         let Some(refused) = refused else {
-            self.delivered = Some(clip.digest());
             self.hub.emit(ClipboardEvent::Sent {
-                device_id,
+                device_id: self.device_id.clone(),
                 bytes: clip.len(),
                 sensitive: clip.is_sensitive(),
             });
@@ -284,7 +272,19 @@ impl<C: Clipboard> ClipboardService<C> {
             ErrorCode::Unavailable | ErrorCode::Busy => PushFailure::Unavailable,
             _ => PushFailure::Failed,
         };
-        self.hub.emit(ClipboardEvent::Failed { device_id, reason });
+        self.failed(&clip, reason);
+    }
+
+    /// A push of `clip` did not reach the phone: what it holds is unknown,
+    /// unless it pushed something here since.
+    fn failed(&mut self, clip: &Clip, reason: PushFailure) {
+        if self.has(clip) {
+            self.holds = None;
+        }
+        self.hub.emit(ClipboardEvent::Failed {
+            device_id: self.device_id.clone(),
+            reason,
+        });
     }
 
     /// Takes the phone's push: puts the text on the clipboard, or holds it
@@ -333,13 +333,9 @@ impl<C: Clipboard> ClipboardService<C> {
             )
             .await;
         }
-        self.last_received = Some(clip.digest());
-        self.delivered = Some(clip.digest());
+        self.holds = Some(clip.digest());
         if held {
-            self.hub.hold(Held {
-                clip,
-                device_id: self.device_id.clone(),
-            });
+            self.hub.hold(clip, self.device_id.clone());
         } else {
             self.hub.discard_held();
         }
@@ -356,12 +352,12 @@ impl<C: Clipboard> ClipboardService<C> {
 
     /// Puts `clip` on the clipboard. Returns whether it worked.
     async fn write(&self, clip: &Clip) -> bool {
-        self.hub.mark(clip.digest());
+        let marked = self.hub.mark(clip.digest());
         match self.clipboard.write(clip.text()).await {
             Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%error, "could not set the clipboard");
-                self.hub.unmark(clip.digest());
+                self.hub.restore(marked);
                 false
             }
         }
@@ -380,6 +376,7 @@ impl<C: Clipboard> ClipboardService<C> {
     fn set_state(&mut self, state: PhoneClipboard) {
         if self.state != Some(state) {
             self.state = Some(state);
+            self.hub.set_phone(&self.device_id, state);
             self.hub.emit(ClipboardEvent::Phone {
                 device_id: self.device_id.clone(),
                 state,
