@@ -23,6 +23,7 @@ use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
     PairingMethod, PairingOutcome, PairingProof, PairingResult, SasNonce,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{self, Instant};
 use tracing::debug;
 use zeroize::Zeroize;
@@ -33,12 +34,16 @@ use super::{
     TrustStore,
 };
 use crate::device::{DeviceInfo, DeviceKind};
+use crate::session::{Session, SessionEvent};
 use crate::transport::Connection;
 
 /// The envelopes of a pairing connection after the `Hello` exchange.
 ///
-/// The session layer implements it: it numbers and checks sequence numbers,
-/// answers liveness messages itself, and hands every other payload over.
+/// [`Session`] implements it for a session whose `Hello` set the pairing
+/// method: it numbers and checks sequence numbers, answers liveness
+/// messages itself, and hands the pairing messages over. Once a pairing
+/// function succeeds, [`Session::finish_pairing`] starts the session
+/// proper.
 pub trait PairingChannel: Send {
     /// Sends one payload to the phone.
     fn send(&mut self, payload: Payload) -> impl Future<Output = Result<(), PairingError>> + Send;
@@ -49,6 +54,34 @@ pub trait PairingChannel: Send {
     /// Must be cancel safe: dropping the future before it completes must not
     /// lose a payload.
     fn recv(&mut self) -> impl Future<Output = Result<Payload, PairingError>> + Send;
+}
+
+impl<S> PairingChannel for Session<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    async fn send(&mut self, payload: Payload) -> Result<(), PairingError> {
+        Session::send(self, payload)
+            .await
+            .map(drop)
+            .map_err(|error| PairingError::Connection(error.to_string()))
+    }
+
+    async fn recv(&mut self) -> Result<Payload, PairingError> {
+        loop {
+            match self.next_event().await {
+                Ok(Some(SessionEvent::Message { payload, .. })) => return Ok(payload),
+                Ok(Some(SessionEvent::Goodbye(goodbye))) => {
+                    debug!(reason = ?goodbye.reason, "the phone ended the pairing connection");
+                    return Err(PairingError::Closed);
+                }
+                // Liveness and the like are the session's business.
+                Ok(Some(_)) => {}
+                Ok(None) => return Err(PairingError::Closed),
+                Err(error) => return Err(PairingError::Connection(error.to_string())),
+            }
+        }
+    }
 }
 
 /// The user's answer to the SAS code.
