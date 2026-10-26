@@ -1,5 +1,6 @@
 package dev.link2linux.android.feature.pairing
 
+import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
 import dev.link2linux.android.core.discovery.ConnectionSwitch
@@ -43,6 +44,7 @@ class PairingViewModelTest {
     private val controller = FakeController()
     private val discovery = FakeDiscovery()
     private val connection = FakeConnection()
+    private val connections = FakeConnections()
 
     @Before
     fun setMain() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -62,7 +64,7 @@ class PairingViewModelTest {
 
     private fun TestScope.viewModel(): PairingViewModel {
         val vm = PairingViewModel(
-            repository, controller, discovery, connection, { 1_000_000 + currentTime },
+            repository, controller, discovery, connection, connections, { 1_000_000 + currentTime },
             flow { while (true) { emit(Unit); delay(1_000) } },
         )
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.uiState.collect {} }
@@ -184,6 +186,19 @@ class PairingViewModelTest {
     }
 
     @Test
+    fun connectedComputersAreListedWhileTheyHaveASession() = runTest {
+        repository.save(desk)
+        val vm = viewModel()
+        assertEquals(emptyList<PairedDevice>(), vm.uiState.value.connected)
+
+        connections.connected.value = setOf(desk.fingerprint)
+        assertEquals(listOf(desk), vm.uiState.value.connected)
+
+        connections.connected.value = emptySet()
+        assertEquals(emptyList<PairedDevice>(), vm.uiState.value.connected)
+    }
+
+    @Test
     fun theBackgroundConnectionCanBeTurnedOffAndOn() = runTest {
         val vm = viewModel()
         assertEquals(true, vm.uiState.value.connectionEnabled)
@@ -231,6 +246,11 @@ class PairingViewModelTest {
         override suspend fun unpair(fingerprint: KeyFingerprint) {
             unpaired += fingerprint
         }
+    }
+
+    private class FakeConnections : DesktopConnections {
+        override val listeningPort = MutableStateFlow<Int?>(null)
+        override val connected = MutableStateFlow<Set<KeyFingerprint>>(emptySet())
     }
 
     private class FakeConnection : ConnectionSwitch {

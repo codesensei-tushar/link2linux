@@ -37,10 +37,6 @@ internal abstract class NetworkModule {
         @Singleton
         fun providesIdentityKeySource(): IdentityKeySource = AndroidKeyStoreIdentity()
 
-        /** Feature modules replace this binding once they handle session messages. */
-        @Provides
-        fun providesSessionHooks(): SessionHooks = SessionHooks.None
-
         @Provides
         @Singleton
         fun providesPairingService(

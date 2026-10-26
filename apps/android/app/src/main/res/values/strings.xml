@@ -6,5 +6,6 @@
     <string name="service_channel_description">Shown while link2linux waits for your computer.</string>
     <string name="service_notification_title">link2linux is ready</string>
     <string name="service_notification_text">Waiting to connect to your computer.</string>
+    <string name="service_notification_connected">Connected to %1$s</string>
     <string name="service_notification_stop">Turn off</string>
 </resources>

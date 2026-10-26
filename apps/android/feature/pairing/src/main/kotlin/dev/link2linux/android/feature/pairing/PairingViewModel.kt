@@ -3,11 +3,13 @@ package dev.link2linux.android.feature.pairing
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
 import dev.link2linux.android.core.discovery.ConnectionSwitch
 import dev.link2linux.android.core.discovery.DiscoveryStatus
 import dev.link2linux.android.core.discovery.QrOfferParser
+import dev.link2linux.android.core.data.connectedIn
 import dev.link2linux.android.core.discovery.QrParseResult
 import dev.link2linux.android.core.model.KeyFingerprint
 import dev.link2linux.android.core.model.PairedDevice
@@ -37,6 +39,7 @@ class PairingViewModel internal constructor(
     private val controller: PairingController,
     discovery: DiscoveryStatus,
     private val connection: ConnectionSwitch,
+    connections: DesktopConnections,
     private val clock: () -> Long,
     ticks: Flow<Unit>,
 ) : ViewModel() {
@@ -47,7 +50,8 @@ class PairingViewModel internal constructor(
         controller: PairingController,
         discovery: DiscoveryStatus,
         connection: ConnectionSwitch,
-    ) : this(pairedDeviceRepository, controller, discovery, connection, System::currentTimeMillis, secondTicks())
+        connections: DesktopConnections,
+    ) : this(pairedDeviceRepository, controller, discovery, connection, connections, System::currentTimeMillis, secondTicks())
 
     private val scanning = MutableStateFlow(false)
     private val scanError = MutableStateFlow<ScanError?>(null)
@@ -60,20 +64,32 @@ class PairingViewModel internal constructor(
         controller.state,
         scanning,
         scanError,
-        combine(discovery.registeredName, discovery.endpoints, ticks, connection.enabled) { name, endpoints, _, on ->
-            Triple(name, endpoints, on)
-        },
-    ) { devices, state, scanning, error, (instanceName, endpoints, connected) ->
+        combine(
+            discovery.registeredName,
+            discovery.endpoints,
+            ticks,
+            connection.enabled,
+            connections.connected,
+        ) { name, endpoints, _, on, connected -> Background(name, endpoints, on, connected) },
+    ) { devices, state, scanning, error, (instanceName, endpoints, switchOn, connected) ->
         PairingUiState(
             devices = devices,
             screen = screenFor(state, scanning, instanceName, endpoints.map(::formatEndpoint)),
             scanError = error,
-            connectionEnabled = connected,
+            connectionEnabled = switchOn,
+            connected = devices.orEmpty().connectedIn(connected),
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = PairingUiState(devices = null, screen = PairingScreenState.Home, scanError = null, connectionEnabled = true),
+        initialValue = PairingUiState(devices = null, screen = PairingScreenState.Home, scanError = null, connectionEnabled = true, connected = emptyList()),
+    )
+
+    private data class Background(
+        val instanceName: String?,
+        val endpoints: List<InetSocketAddress>,
+        val switchOn: Boolean,
+        val connected: Set<KeyFingerprint>,
     )
 
     private fun screenFor(
@@ -201,6 +217,8 @@ data class PairingUiState(
     val scanError: ScanError?,
     /** Whether link2linux stays connected in the background. */
     val connectionEnabled: Boolean,
+    /** The paired computers that are connected right now. */
+    val connected: List<PairedDevice>,
 )
 
 /** What the pairing flow shows. */
