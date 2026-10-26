@@ -2197,6 +2197,8 @@ dependencies = [
  "link2linux-core",
  "link2linux-platform",
  "link2linux-protocol",
+ "qrcode",
+ "rqrr",
  "rustls",
  "serde",
  "specta",
