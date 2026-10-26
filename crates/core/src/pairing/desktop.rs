@@ -30,8 +30,8 @@ use zeroize::Zeroize;
 
 use super::crypto::{self, EKM_LEN, NONCE_LEN, Role};
 use super::{
-    CertificateFingerprint, OfferStatus, PairedDevice, PairingCode, PairingError, QrOffer,
-    TrustStore,
+    CertificateFingerprint, OfferStatus, PairedDevice, PairingCode, PairingError, PairingSecret,
+    QrOffer, TrustStore,
 };
 use crate::device::{DeviceInfo, DeviceKind};
 use crate::session::{Session, SessionEvent};
@@ -259,9 +259,13 @@ pub struct PairingSuccess {
 /// Pairs with the phone that scanned `offer`, on a connection dialed with
 /// `PAIRING_METHOD_QR_CODE` in its `Hello`.
 ///
-/// The desktop sends its proof at once and checks the phone's. A failed
-/// proof blocks that phone's key and address for the rest of the offer; the
-/// offer itself stays up until it expires, is used, or has seen
+/// The desktop sends its proof at once and checks the phone's. Whatever
+/// ends the pairing before the phone's proof verified, a wrong proof, a
+/// timeout, a dropped connection or a protocol error, counts as a failed
+/// proof: it blocks that peer's key and address for the rest of the offer
+/// ([`QrOffer::is_blocked`] then tells the caller that the failure says
+/// nothing about the phone that scanned the code). The offer itself stays
+/// up until it expires, is used, or has seen
 /// [`MAX_FAILED_PROOFS`](super::MAX_FAILED_PROOFS) failures. When several
 /// connections run on the same offer, the first whose proof verifies wins
 /// and the others get `PAIRING_OUTCOME_NOT_EXPECTED`.
@@ -286,7 +290,6 @@ where
     P: PairingPrompt,
     S: TrustStore + ?Sized,
 {
-    check_start(binding, phone, PairingMethod::QrCode)?;
     let checked = {
         let offer = lock(offer)?;
         match offer.status(Instant::now()) {
@@ -302,7 +305,54 @@ where
         Err(error) => return Err(abort(channel, PairingOutcome::NotExpected, error).await),
     };
 
-    let mac = crypto::pairing_proof(&secret, Role::Desktop, binding.ekm());
+    let mut proof_verified = false;
+    let result = async {
+        check_start(binding, phone, PairingMethod::QrCode)?;
+        exchange_proofs(channel, binding, &secret, timeouts, &mut proof_verified).await?;
+
+        let replaces = conflicting_records(store, binding, phone)?;
+        ask_to_replace(channel, prompt, phone, &replaces, timeouts).await?;
+
+        let stored = {
+            let mut offer = lock(offer)?;
+            match offer.status(Instant::now()) {
+                OfferStatus::Active => {
+                    let stored = store_pairing(store, binding, phone, replaces);
+                    if stored.is_ok() {
+                        offer.mark_used();
+                    }
+                    stored
+                }
+                status => Err(PairingError::OfferUnavailable(status)),
+            }
+        };
+        finish(channel, stored).await
+    }
+    .await;
+    if let Err(error) = &result {
+        // Until its proof verified, the peer has shown nothing; a phone that
+        // refused this desktop's proof may have scanned another code.
+        let refused = matches!(
+            error,
+            PairingError::Rejected(PairingOutcome::VerificationFailed)
+        );
+        if !proof_verified || refused {
+            lock(offer)?.record_failed_proof(binding.phone, binding.peer_addr.ip());
+        }
+    }
+    result
+}
+
+/// Sends the desktop's proof, then waits for the phone's and for its
+/// verdict. `proof_verified` tells how far it got.
+async fn exchange_proofs<C: PairingChannel>(
+    channel: &mut C,
+    binding: &PairingBinding,
+    secret: &PairingSecret,
+    timeouts: &PairingTimeouts,
+    proof_verified: &mut bool,
+) -> Result<(), PairingError> {
+    let mac = crypto::pairing_proof(secret, Role::Desktop, binding.ekm());
     send(
         channel,
         Payload::PairingProof(PairingProof { mac: mac.to_vec() }),
@@ -313,10 +363,9 @@ where
     // longer if it asks its user something.
     let proof_deadline = Instant::now() + timeouts.step;
     let verdict_deadline = proof_deadline + timeouts.confirm;
-    let mut proof_verified = false;
     let mut phone_accepted = false;
-    while !(proof_verified && phone_accepted) {
-        let deadline = if proof_verified {
+    while !(*proof_verified && phone_accepted) {
+        let deadline = if *proof_verified {
             verdict_deadline
         } else {
             proof_deadline
@@ -328,42 +377,21 @@ where
             Ok(payload) => payload?,
         };
         match payload {
-            Payload::PairingProof(proof) if !proof_verified => {
-                if !crypto::verify_pairing_proof(&secret, Role::Phone, binding.ekm(), &proof.mac) {
-                    lock(offer)?.record_failed_proof(binding.phone, binding.peer_addr.ip());
+            Payload::PairingProof(proof) if !*proof_verified => {
+                if !crypto::verify_pairing_proof(secret, Role::Phone, binding.ekm(), &proof.mac) {
                     let error = PairingError::VerificationFailed;
                     return Err(abort(channel, PairingOutcome::VerificationFailed, error).await);
                 }
-                proof_verified = true;
+                *proof_verified = true;
             }
             Payload::PairingResult(result) if result.outcome() != PairingOutcome::Accepted => {
-                if result.outcome() == PairingOutcome::VerificationFailed {
-                    lock(offer)?.record_failed_proof(binding.phone, binding.peer_addr.ip());
-                }
                 return Err(PairingError::Rejected(result.outcome()));
             }
             Payload::PairingResult(_) if !phone_accepted => phone_accepted = true,
             other => return Err(unexpected(channel, &other).await),
         }
     }
-
-    let replaces = conflicting_records(store, binding, phone)?;
-    ask_to_replace(channel, prompt, phone, &replaces, timeouts).await?;
-
-    let stored = {
-        let mut offer = lock(offer)?;
-        match offer.status(Instant::now()) {
-            OfferStatus::Active => {
-                let stored = store_pairing(store, binding, phone, replaces);
-                if stored.is_ok() {
-                    offer.mark_used();
-                }
-                stored
-            }
-            status => Err(PairingError::OfferUnavailable(status)),
-        }
-    };
-    finish(channel, stored).await
+    Ok(())
 }
 
 /// Pairs by SAS with the phone the user picked, on a connection dialed

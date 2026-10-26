@@ -80,6 +80,9 @@ pub enum PairingState {
         expires_in_ms: u32,
         /// Length of the offer, for drawing progress.
         lifetime_ms: u32,
+        /// Why the last connection the user asked for, to a typed address,
+        /// ended. A failed connection does not end the offer.
+        last_failure: Option<PairingFailure>,
     },
     /// Looking for phones in pairing mode (code comparison).
     #[serde(rename_all = "camelCase")]

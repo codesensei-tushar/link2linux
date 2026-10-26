@@ -7,18 +7,19 @@ use std::sync::{Arc, Mutex};
 use link2linux_core::device::DeviceInfo;
 use link2linux_core::identity::CertificateFingerprint;
 use link2linux_core::pairing::{
-    PairedDevice, PairingBinding, PairingCode, PairingOutcome, PairingPrompt, PairingSuccess,
-    PairingTimeouts, QrOffer, SasDecision, TrustStore, pair_by_qr, pair_by_sas, records, refuse,
+    PairedDevice, PairingBinding, PairingCode, PairingError, PairingOutcome, PairingPrompt,
+    PairingSuccess, PairingTimeouts, QrOffer, SasDecision, TrustStore, pair_by_qr, pair_by_sas,
+    records, refuse,
 };
 use link2linux_core::session::{SessionConfig, SessionError};
-use link2linux_core::transport::PeerPin;
+use link2linux_core::transport::{Connection, PeerPin};
 use link2linux_protocol::v1::PairingMethod as WireMethod;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::state::{Phase, SAS_LIFETIME, failure_of};
-use super::{clear_offer_secret, finish_with};
+use super::{clear_offer_secret, connection_failed, finish_with};
 use crate::candidates::Plan;
 use crate::device::Established;
 use crate::dial::race;
@@ -34,6 +35,8 @@ pub(super) struct Job {
     pub method: PairingMethod,
     pub plan: Plan,
     pub offer: Option<Arc<Mutex<QrOffer>>>,
+    /// The user picked or typed the phone, rather than discovery finding it.
+    pub asked: bool,
 }
 
 /// A pairing that succeeded, with the connection it ran on.
@@ -45,7 +48,11 @@ struct Done {
 
 enum Outcome {
     Paired(Box<Done>),
+    /// The phone, or this desktop, ended the pairing.
     Failed(PairingFailure),
+    /// The connection ended before its peer proved it knows the QR code's
+    /// secret.
+    Unproven(PairingFailure),
 }
 
 /// Runs one pairing connection to its end and reports the result.
@@ -57,22 +64,8 @@ pub(super) async fn pair(core: Arc<Core>, job: Job) {
     };
     match outcome {
         Outcome::Paired(done) => complete(&core, job.generation, *done),
-        Outcome::Failed(reason) => {
-            let method = job.method;
-            let current = finish_with(&core, job.generation, |ctl| {
-                ctl.dialing = false;
-                match method {
-                    PairingMethod::QrCode => {
-                        ctl.offer = None;
-                        ctl.phase = Phase::Failed { method, reason };
-                    }
-                    PairingMethod::Sas => ctl.back_to_search(reason),
-                }
-            });
-            if current && method == PairingMethod::QrCode {
-                clear_offer_secret(&core);
-            }
-        }
+        Outcome::Failed(reason) => connection_failed(&core, &job, reason, true),
+        Outcome::Unproven(reason) => connection_failed(&core, &job, reason, false),
     }
 }
 
@@ -86,8 +79,17 @@ async fn connect_and_pair(core: &Arc<Core>, job: &Job) -> Outcome {
         Ok(winner) => winner,
         Err(error) => {
             tracing::debug!(%error, "could not reach the phone to pair");
-            return Outcome::Failed(PairingFailure::PhoneNotFound);
+            return Outcome::Unproven(PairingFailure::PhoneNotFound);
         }
+    };
+    let peer = connection.peer_fingerprint();
+    // Before the pairing exchange the peer has proven nothing: a failure
+    // counts against its key and address for the rest of the QR offer.
+    let unproven = |reason| {
+        if let Some(offer) = &job.offer {
+            lock(offer).record_failed_proof(peer, address.ip());
+        }
+        Outcome::Unproven(reason)
     };
     // The binding needs the connection, which the session then takes.
     let binding = PairingBinding::from_connection(&connection, wire);
@@ -97,11 +99,11 @@ async fn connect_and_pair(core: &Arc<Core>, job: &Job) -> Outcome {
         match PhoneSession::handshake(connection, start, SessionConfig::default()).await {
             Ok(session) => session,
             Err(SessionError::VersionMismatch { .. }) => {
-                return Outcome::Failed(PairingFailure::Unsupported);
+                return unproven(PairingFailure::Unsupported);
             }
             Err(error) => {
                 tracing::debug!(%error, "the pairing handshake failed");
-                return Outcome::Failed(PairingFailure::ConnectionLost);
+                return unproven(PairingFailure::ConnectionLost);
             }
         };
     let phone: DeviceInfo = session.peer().clone();
@@ -173,7 +175,17 @@ async fn connect_and_pair(core: &Arc<Core>, job: &Job) -> Outcome {
                 Some(reason) => session.goodbye(reason, "pairing failed").await,
                 None => session.close().await,
             };
-            Outcome::Failed(failure_of(&error, method))
+            let reason = failure_of(&error, method);
+            // pair_by_qr blocks a peer whose proof never verified.
+            let blocked = job
+                .offer
+                .as_ref()
+                .is_some_and(|offer| lock(offer).is_blocked(&peer, address.ip()));
+            if blocked || matches!(error, PairingError::OfferUnavailable(_)) {
+                Outcome::Unproven(reason)
+            } else {
+                Outcome::Failed(reason)
+            }
         }
         Ok(success) => match session.finish_pairing().await {
             Ok(()) => Outcome::Paired(Box::new(Done {
@@ -223,8 +235,8 @@ fn complete(core: &Arc<Core>, generation: u64, done: Done) {
         .find(|device| device.id == record.id);
     if let Some(device) = device {
         finish_with(core, generation, |ctl| {
-            ctl.dialing = false;
-            ctl.offer = None;
+            // Other connections on the same offer are closed.
+            ctl.reset();
             ctl.phase = Phase::Paired(device);
         });
     }

@@ -93,6 +93,13 @@ describe("PairingPage: QR code", () => {
     expect(input).toHaveFocus();
   });
 
+  it("says why a typed address did not pair, and keeps the code up", async () => {
+    await renderPage(createFakeApi(), qrOffer({ lastFailure: "phoneNotFound" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't reach the phone.");
+    expect(screen.getByRole("img", { name: "QR code for pairing with Desk" })).toBeInTheDocument();
+  });
+
   it("switches to code comparison with 'Can't scan?'", async () => {
     const user = userEvent.setup();
     const api = await renderPage(createFakeApi(), qrOffer());

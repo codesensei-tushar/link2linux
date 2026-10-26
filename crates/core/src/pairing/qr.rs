@@ -11,9 +11,10 @@
 //! A [`QrOffer`] is valid for [`OFFER_LIFETIME`] or until one pairing
 //! succeeds. A failed proof does not end it: the peer that failed is blocked
 //! for the rest of the offer, by key and by address, so a forged
-//! announcement cannot use the code up. Only after [`MAX_FAILED_PROOFS`]
-//! failures in all, as a backstop, does the desktop withdraw the offer and
-//! show a new code.
+//! announcement cannot use the code up. A peer that never sends a valid
+//! proof, because it stalls, drops the connection or breaks the protocol,
+//! has failed one too. Only after [`MAX_FAILED_PROOFS`] failures in all, as
+//! a backstop, does the desktop withdraw the offer and show a new code.
 //!
 //! The pairing tag and pairing beacons are public checks of a guess at the
 //! secret, which is why it is 16 random bytes and never typed or derived
@@ -336,7 +337,9 @@ impl QrOffer {
     }
 
     /// Counts a failed proof and blocks the peer for the rest of the offer.
-    pub(crate) fn record_failed_proof(&mut self, key: CertificateFingerprint, address: IpAddr) {
+    /// A peer whose connection ended before its proof verified, for any
+    /// reason, failed one.
+    pub fn record_failed_proof(&mut self, key: CertificateFingerprint, address: IpAddr) {
         self.failed_proofs = self.failed_proofs.saturating_add(1);
         self.blocked_keys.insert(key);
         self.blocked_addresses.insert(address);

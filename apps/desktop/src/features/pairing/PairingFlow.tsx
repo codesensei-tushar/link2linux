@@ -98,6 +98,7 @@ function otherMethod(method: PairingMethod): { method: PairingMethod; label: str
 function QrPanel({ step }: { step: Extract<Step, { step: "qrOffer" }> }) {
   const { switchTo } = usePairing();
   const image = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(step.svg)}`;
+  const failure = step.lastFailure ? failureCopy[step.lastFailure] : null;
   // Announce a renewed code, but not the first one (the title covers that).
   const [firstUri] = useState(step.uri);
   const renewed = firstUri !== step.uri;
@@ -130,6 +131,14 @@ function QrPanel({ step }: { step: Extract<Step, { step: "qrOffer" }> }) {
           <p className="pairing-panel__note">
             The phone will see this computer as <strong>{step.desktopName}</strong>.
           </p>
+          {failure && (
+            <div className="pairing-panel__problem" role="alert">
+              <TriangleAlert aria-hidden="true" />
+              <p>
+                <strong>{failure.title}.</strong> {failure.body}
+              </p>
+            </div>
+          )}
           <AddressForm />
         </div>
       </div>
