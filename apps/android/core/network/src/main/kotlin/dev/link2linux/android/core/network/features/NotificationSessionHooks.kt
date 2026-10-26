@@ -33,20 +33,18 @@ import kotlinx.coroutines.sync.withLock
  * `notifications`; in a session where it is not, nothing is attached and
  * its requests fall through to `ERROR_CODE_UNSUPPORTED`.
  *
- * The engine has one transport, so with several desktops connected the most
- * recently established session receives the live events. The others still
- * get answers to their requests.
+ * Every session with the feature is attached to the engine, so with several
+ * desktops connected each gets the live events once it has synced.
  */
 class NotificationSessionHooks(
     private val engine: NotificationEngine,
     private val scope: CoroutineScope,
 ) : SessionHooks {
 
-    private class Attached(val session: Session, val statusUpdates: Job)
+    private class Attached(val transport: NotificationTransport, val statusUpdates: Job)
 
-    // Held across the engine's attach and detach, so a session that ends late cannot detach its replacement.
     private val lock = Mutex()
-    private var attached: Attached? = null // guarded by lock
+    private val attached = HashMap<Session, Attached>() // guarded by lock
 
     @Volatile
     private var reported = engine.availability.value
@@ -75,10 +73,13 @@ class NotificationSessionHooks(
                 session.send { featureStatus = statusOf(change) }
             }
         }
+        val transport = SessionTransport(session)
         lock.withLock {
-            attached?.statusUpdates?.cancel()
-            attached = Attached(session, updates)
-            engine.attach(SessionTransport(session))
+            attached.put(session, Attached(transport, updates))?.let { old ->
+                old.statusUpdates.cancel()
+                engine.detach(old.transport)
+            }
+            engine.attach(transport)
         }
     }
 
@@ -92,16 +93,18 @@ class NotificationSessionHooks(
             else -> return false
         }
         // Only a request is answered; a request message sent as a one-way event is ignored.
-        if (envelope.expectsReply) engine.handle(request, RepliesTo(session, envelope.seq))
+        if (!envelope.expectsReply) return true
+        // A session that already ended still gets its answer, but no live events.
+        val from = lock.withLock { attached[session]?.transport } ?: SessionTransport(session)
+        engine.handle(request, RepliesTo(session, envelope.seq), from)
         return true
     }
 
     override suspend fun onEnded(desktop: PairedDevice, session: Session) {
         lock.withLock {
-            val current = attached?.takeIf { it.session === session } ?: return
-            current.statusUpdates.cancel()
-            attached = null
-            engine.detach()
+            val ended = attached.remove(session) ?: return
+            ended.statusUpdates.cancel()
+            engine.detach(ended.transport)
         }
     }
 

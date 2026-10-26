@@ -24,8 +24,9 @@ import kotlinx.coroutines.flow.asStateFlow
  * The process-wide notifications feature: settings, the engine, and the glue
  * to the listener service. The session reaches the engine through [engine]:
  * `engine.attach(transport)` when a session starts, `engine.handle(request,
- * replies)` for each request of the desktop, `engine.detach()` when it ends,
- * and `engine.availabilityChanges` for `FeatureStatus`.
+ * replies, transport)` for each request of the desktop,
+ * `engine.detach(transport)` when it ends, and `engine.availabilityChanges`
+ * for `FeatureStatus`.
  */
 class NotificationsRuntime private constructor(context: Context) {
     private val app = context.applicationContext

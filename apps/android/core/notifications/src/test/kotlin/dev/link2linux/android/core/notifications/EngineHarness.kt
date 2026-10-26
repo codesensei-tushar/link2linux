@@ -62,15 +62,16 @@ class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.a
         idle()
     }
 
-    suspend fun attach() {
+    suspend fun attach(transport: FakeTransport = this.transport) {
         engine.attach(transport)
     }
 
-    suspend fun sync(since: SyncCursor? = null): RecordingSink {
+    suspend fun sync(since: SyncCursor? = null, from: FakeTransport = transport): RecordingSink {
         val sink = RecordingSink()
         engine.handle(
             NotificationRequest.Sync(notificationSyncRequest { since?.let { this.since = it } }),
             sink,
+            from,
         )
         return sink
     }
@@ -92,7 +93,7 @@ class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.a
             createdUnixMs = now
             this.key = key
         }.toBuilder().apply(build).build()
-        engine.handle(NotificationRequest.Dismiss(req), sink)
+        engine.handle(NotificationRequest.Dismiss(req), sink, transport)
         return sink
     }
 
@@ -111,13 +112,13 @@ class EngineHarness(val scope: TestScope, ownPackage: String = "dev.link2linux.a
             this.actionId = actionId
             replyText = reply
         }.toBuilder().apply(build).build()
-        engine.handle(NotificationRequest.Action(req), sink)
+        engine.handle(NotificationRequest.Action(req), sink, transport)
         return sink
     }
 
     suspend fun image(hash: ByteString): RecordingSink {
         val sink = RecordingSink()
-        engine.handle(NotificationRequest.Image(imageRequest { sha256 = hash }), sink)
+        engine.handle(NotificationRequest.Image(imageRequest { sha256 = hash }), sink, transport)
         return sink
     }
 
