@@ -1,18 +1,43 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { createContext, use } from "react";
 
-import { demoNotifications } from "@/features/notifications/demo";
 import type { MirroredNotification, NotificationEvent } from "@/features/notifications/types";
 
-import { commands, type AppInfo, type Device } from "./bindings";
+import {
+  commands,
+  events,
+  type AppInfo,
+  type CommandError,
+  type Device,
+  type PairingMethod,
+  type PairingState,
+  type PhoneTarget,
+} from "./bindings";
+import { createPreviewApi } from "./preview-api";
 
-export type { AppInfo, Device, DeviceStatus } from "./bindings";
+export type {
+  AppInfo,
+  Device,
+  DeviceStatus,
+  DiscoveredPhone,
+  PairingFailure,
+  PairingMethod,
+  PairingState,
+  PhoneTarget,
+} from "./bindings";
+
+/** Stops listening to an event stream. */
+export type Unsubscribe = () => void;
 
 /**
  * Everything the UI asks of the desktop backend.
  *
  * Components reach it through `useDesktopApi()`, never through the generated
  * bindings directly, so tests and previews can swap in a fake.
+ *
+ * Commands that start or answer something resolve with nothing: the new state
+ * arrives through `onPairingChanged` and `onDevicesChanged`. They reject with
+ * an `Error` whose message is fit to show.
  */
 export interface DesktopApi {
   appInfo(): Promise<AppInfo>;
@@ -33,6 +58,23 @@ export interface DesktopApi {
   ): Promise<void>;
   /** A URL usable in `<img>` for an image the phone shared, or null when unavailable. */
   notificationImage(deviceId: string, sha256: string): Promise<string | null>;
+
+  unpairDevice(deviceId: string): Promise<void>;
+  getPairingState(): Promise<PairingState>;
+  startPairing(method: PairingMethod): Promise<void>;
+  pairWith(target: PhoneTarget): Promise<void>;
+  answerCode(matches: boolean): Promise<void>;
+  cancelPairing(): Promise<void>;
+  /** Subscribe before reading a snapshot, so nothing is missed in between. */
+  onPairingChanged(listener: (state: PairingState) => void): Promise<Unsubscribe>;
+  onDevicesChanged(listener: (devices: Device[]) => void): Promise<Unsubscribe>;
+}
+
+type Outcome = { status: "ok"; data: null } | { status: "error"; error: CommandError };
+
+async function expectOk(result: Promise<Outcome>): Promise<void> {
+  const outcome = await result;
+  if (outcome.status === "error") throw new Error(outcome.error.message);
 }
 
 /** Stands in for the unsubscribe function when there is nothing to follow. */
@@ -54,31 +96,24 @@ export const tauriApi: DesktopApi = {
   runNotificationAction: () => Promise.resolve(),
   // TODO(core): serve the images the phone shared.
   notificationImage: () => Promise.resolve(null),
-};
-
-/**
- * Stand-in for running the UI in a plain browser (`pnpm dev` without Tauri),
- * where IPC does not exist: no phones, and a version marked as a preview.
- */
-export const browserPreviewApi: DesktopApi = {
-  appInfo: () =>
-    Promise.resolve({
-      name: "link2linux",
-      version: "browser preview",
-      identifier: "dev.link2linux.desktop",
-      os: "browser",
-      arch: "",
+  unpairDevice: (deviceId) => expectOk(commands.unpairDevice(deviceId)),
+  getPairingState: () => commands.getPairingState(),
+  startPairing: (method) => expectOk(commands.startPairing(method)),
+  pairWith: (target) => expectOk(commands.pairWith(target)),
+  answerCode: (matches) => expectOk(commands.answerCode(matches)),
+  cancelPairing: () => commands.cancelPairing(),
+  onPairingChanged: (listener) =>
+    events.pairingChanged.listen((event) => {
+      listener(event.payload);
     }),
-  listDevices: () => Promise.resolve([]),
-  listNotifications: () => Promise.resolve(demoNotifications(Date.now())),
-  subscribeNotifications: () => noopUnsubscribe,
-  dismissNotification: () => Promise.resolve(),
-  runNotificationAction: () => Promise.resolve(),
-  notificationImage: () => Promise.resolve(null),
+  onDevicesChanged: (listener) =>
+    events.devicesChanged.listen((event) => {
+      listener(event.payload);
+    }),
 };
 
 /** The backend for the current environment. */
-export const defaultApi: DesktopApi = isTauri() ? tauriApi : browserPreviewApi;
+export const defaultApi: DesktopApi = isTauri() ? tauriApi : createPreviewApi();
 
 /** Provide a different `DesktopApi` with `<DesktopApiContext value={...}>`. */
 export const DesktopApiContext = createContext<DesktopApi>(defaultApi);
