@@ -32,6 +32,7 @@ fun PairingScreen(
             onClearScanError = viewModel::clearScanError,
             onPairWithoutCamera = viewModel::startSasPairing,
             onConfirmCode = viewModel::confirmCode,
+            onConfirmReplace = viewModel::confirmReplace,
             onCancel = viewModel::cancel,
             onDismiss = viewModel::dismiss,
             onUnpair = { viewModel.unpair(it.fingerprint) },
@@ -67,7 +68,8 @@ internal fun PairingScreen(
     ) { padding ->
         when (screen) {
             PairingScreenState.Home -> HomeContent(uiState, features, onOpenFeature, actions, Modifier.fillMaxSize(), padding)
-            else -> Unit
+            PairingScreenState.Scanning -> Unit
+            else -> AttemptContent(screen, actions, Modifier.fillMaxSize(), padding)
         }
     }
 }
@@ -79,6 +81,7 @@ internal data class PairingActions(
     val onClearScanError: () -> Unit = {},
     val onPairWithoutCamera: () -> Unit = {},
     val onConfirmCode: (Boolean) -> Unit = {},
+    val onConfirmReplace: (Boolean) -> Unit = {},
     val onCancel: () -> Unit = {},
     val onDismiss: () -> Unit = {},
     val onUnpair: (dev.link2linux.android.core.model.PairedDevice) -> Unit = {},
