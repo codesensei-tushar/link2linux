@@ -149,6 +149,22 @@ mod tests {
     }
 
     #[test]
+    fn events_are_named_without_their_content() {
+        use crate::session::SessionEvent;
+
+        let push = SessionEvent::Message {
+            seq: 4,
+            payload: Payload::ClipboardPush(ClipboardPush {
+                text: "hunter2".into(),
+                sensitive: true,
+            }),
+        };
+        assert_eq!(push.name(), "ClipboardPush");
+        let timed_out = SessionEvent::RequestTimedOut { request: 4 };
+        assert_eq!(timed_out.name(), "RequestTimedOut");
+    }
+
+    #[test]
     fn checks_which_answers_fit() {
         let ack = Payload::Ack(Ack {});
         let error = Payload::ErrorReply(ErrorReply::default());

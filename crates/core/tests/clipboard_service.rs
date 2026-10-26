@@ -269,6 +269,11 @@ fn drain(events: &mut broadcast::Receiver<ClipboardEvent>) -> Vec<ClipboardEvent
     std::iter::from_fn(|| events.try_recv().ok()).collect()
 }
 
+/// The clipboard holds `content` now, read in a read that started now.
+fn copied(hub: &ClipboardHub, content: ClipboardText, now: Instant) -> Option<Arc<Clip>> {
+    hub.copied(Some(content), now, hub.generation())
+}
+
 fn clip(text: &str) -> Arc<Clip> {
     Arc::new(Clip::new(self::text(text)))
 }
@@ -338,7 +343,7 @@ async fn a_clipboard_that_cannot_be_set_answers_unavailable() {
     assert_eq!(error_code(&answer), ErrorCode::Unavailable);
     assert!(drain(&mut events).is_empty());
     // The text is not taken for the phone's: copying it here shares it.
-    assert!(hub.copied(text("x"), Instant::now()).is_some());
+    assert!(copied(&hub, text("x"), Instant::now()).is_some());
 }
 
 #[tokio::test]
@@ -466,10 +471,7 @@ async fn a_phones_text_is_neither_pushed_back_nor_relayed_by_itself() {
 
     first.push("from one", false).await;
     // The clipboard reports the text the desktop just put there.
-    assert!(
-        hub.copied(clipboard.text().unwrap(), Instant::now())
-            .is_none()
-    );
+    assert!(copied(&hub, clipboard.text().unwrap(), Instant::now()).is_none());
 
     // Shared by itself anyway, it goes back to neither.
     first.share(clip("from one"), Origin::Automatic).await;
@@ -494,7 +496,7 @@ async fn a_copy_the_phone_already_got_is_not_pushed_again_by_itself() {
     let mut link = Link::ready("phone-1", &hub, &clipboard).await;
     drain(&mut events);
 
-    let copy = hub.copied(text("a"), Instant::now()).unwrap();
+    let copy = copied(&hub, text("a"), Instant::now()).unwrap();
     link.share(copy.clone(), Origin::Automatic).await;
     let (seq, push) = link.pushed().await;
     assert_eq!((push.text.as_str(), push.sensitive), ("a", false));
@@ -521,10 +523,10 @@ async fn one_push_waits_at_a_time_and_only_the_newest_copy_follows() {
     let mut link = Link::ready("phone-1", &hub, &clipboard).await;
     let now = Instant::now();
 
-    let a = hub.copied(text("a"), now).unwrap();
+    let a = copied(&hub, text("a"), now).unwrap();
     link.share(a, Origin::Automatic).await;
     for copy in ["b", "c", "d"] {
-        let copy = hub.copied(text(copy), now).unwrap();
+        let copy = copied(&hub, text(copy), now).unwrap();
         link.share(copy, Origin::Automatic).await;
     }
     let (seq, push) = link.pushed().await;
@@ -538,12 +540,12 @@ async fn one_push_waits_at_a_time_and_only_the_newest_copy_follows() {
     link.quiet().await;
 
     // A copy back to the text that waits is not pushed twice.
-    let e = hub.copied(text("e"), now).unwrap();
+    let e = copied(&hub, text("e"), now).unwrap();
     link.share(e, Origin::Automatic).await;
     let (seq, _) = link.pushed().await;
-    let d = hub.copied(text("d"), now).unwrap();
+    let d = copied(&hub, text("d"), now).unwrap();
     link.share(d, Origin::Automatic).await;
-    let e = hub.copied(text("e"), now).unwrap();
+    let e = copied(&hub, text("e"), now).unwrap();
     link.share(e, Origin::Automatic).await;
     link.ack(seq).await;
     link.quiet().await;
@@ -632,7 +634,7 @@ async fn nothing_goes_out_until_the_phone_reports_the_clipboard_ready() {
     let mut link = Link::connect(phone_hello(), fast(), &hub, &clipboard).await;
 
     // Before the phone's FeatureStatus.
-    let copy = hub.copied(text("a"), Instant::now()).unwrap();
+    let copy = copied(&hub, text("a"), Instant::now()).unwrap();
     link.share(copy.clone(), Origin::Automatic).await;
     link.quiet().await;
 
@@ -675,11 +677,11 @@ async fn a_recent_copy_goes_to_a_phone_whose_session_starts_and_an_old_one_does_
     let clipboard = FakeClipboard::new(ClipboardAccess::Background);
 
     let long_ago = Instant::now().checked_sub(RECENT_COPY).unwrap();
-    hub.copied(text("old"), long_ago).unwrap();
+    copied(&hub, text("old"), long_ago).unwrap();
     let mut link = Link::ready("phone-1", &hub, &clipboard).await;
     link.quiet().await;
 
-    hub.copied(text("new"), Instant::now()).unwrap();
+    copied(&hub, text("new"), Instant::now()).unwrap();
     let mut link = Link::ready("phone-1", &hub, &clipboard).await;
     let (seq, push) = link.pushed().await;
     assert_eq!(push.text, "new");
@@ -745,4 +747,63 @@ async fn secrets_and_long_copies_stay_here_and_the_user_is_told() {
         drain(&mut events),
         [ClipboardEvent::NotShared(NotShared::Secret)]
     );
+}
+
+#[tokio::test]
+async fn a_copy_goes_again_once_the_phone_holds_something_else() {
+    let hub = ClipboardHub::new(ClipboardSettings::default());
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let mut link = Link::ready("phone-1", &hub, &clipboard).await;
+    let now = Instant::now();
+
+    let x = copied(&hub, text("x"), now).unwrap();
+    link.share(x, Origin::Automatic).await;
+    let (seq, _) = link.pushed().await;
+    link.ack(seq).await;
+
+    // The phone shares y, then the user copies x again on the desktop.
+    link.push("y", false).await;
+    assert!(copied(&hub, clipboard.text().unwrap(), now).is_none());
+    let x = copied(&hub, text("x"), now).unwrap();
+    link.share(x, Origin::Automatic).await;
+    assert_eq!(link.pushed().await.1.text, "x");
+}
+
+#[tokio::test]
+async fn text_the_phone_once_had_replaces_the_copy_that_waits() {
+    let hub = ClipboardHub::new(ClipboardSettings::default());
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let mut link = Link::ready("phone-1", &hub, &clipboard).await;
+    let now = Instant::now();
+
+    // The phone pushed x earlier; the desktop then pushes z, and w waits.
+    link.push("x", false).await;
+    let z = copied(&hub, text("z"), now).unwrap();
+    link.share(z, Origin::Automatic).await;
+    let (seq, _) = link.pushed().await;
+    let w = copied(&hub, text("w"), now).unwrap();
+    link.share(w, Origin::Automatic).await;
+    // The user copies x again: the phone holds z by now, so x replaces w.
+    let x = copied(&hub, text("x"), now).unwrap();
+    link.share(x, Origin::Automatic).await;
+    link.ack(seq).await;
+    assert_eq!(link.pushed().await.1.text, "x");
+}
+
+#[tokio::test]
+async fn text_whose_push_failed_goes_again() {
+    let hub = ClipboardHub::new(ClipboardSettings::default());
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let mut link = Link::ready("phone-1", &hub, &clipboard).await;
+
+    link.share(clip("x"), Origin::Automatic).await;
+    let (seq, _) = link.pushed().await;
+    let busy = ErrorReply {
+        code: ErrorCode::Unavailable.into(),
+        ..ErrorReply::default()
+    };
+    link.answer(seq, Payload::ErrorReply(busy)).await;
+    // The phone may hold anything now: x is not taken for its text.
+    link.share(clip("x"), Origin::Automatic).await;
+    assert_eq!(link.pushed().await.1.text, "x");
 }

@@ -166,7 +166,7 @@ async fn drive(
                 }
                 Some(Command::Response(response)) => {
                     match features.notifications.handle_response(Some(session), response).await {
-                        Ok(Some(answer)) => tracing::debug!(?answer, "a banner asks to open the app"),
+                        Ok(Some(_)) => tracing::debug!("a banner asks to open the app"),
                         Ok(None) => {}
                         Err(DriverError::PhoneBrokeRules(error)) => {
                             tracing::warn!(%error, "the phone broke the notification rules");
@@ -261,7 +261,7 @@ fn handle(event: &SessionEvent, context: &LinkContext<'_>) -> Option<SessionEnd>
             Some(SessionEnd::from_goodbye(Some(goodbye.reason)))
         }
         other => {
-            tracing::trace!(?other, "an event nobody handles yet");
+            tracing::trace!(event = other.name(), "an event nobody handles yet");
             None
         }
     }

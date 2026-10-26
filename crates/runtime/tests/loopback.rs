@@ -16,6 +16,8 @@ use std::time::Duration;
 use link2linux_core::device::{DeviceInfo, DeviceKind, Feature};
 use link2linux_core::discovery::LocalAddress;
 use link2linux_core::identity::{CertificateFingerprint, Identity};
+use link2linux_core::notifications::present::OPEN_KEY;
+use link2linux_core::notifications::{Answer, Change};
 use link2linux_core::pairing::{QrPayload, StoreKey};
 use link2linux_core::session::{Reply, Session, SessionConfig, SessionEvent};
 use link2linux_platform::{
@@ -29,7 +31,9 @@ use link2linux_protocol::v1::{
     PhoneNotification, SyncCursor,
 };
 use link2linux_runtime::clipboard::ClipboardPort;
-use link2linux_runtime::notify::ServiceFactory;
+use link2linux_runtime::notify::{
+    BoxFuture, DriverError, DriverFactory, NotificationsDriver, PhoneSession, ServiceFactory,
+};
 use link2linux_runtime::paths::DataDir;
 use link2linux_runtime::view::{
     ClipboardDirection, ClipboardMode, ClipboardPhoneState, ClipboardStatus, Device, DeviceStatus,
@@ -38,7 +42,7 @@ use link2linux_runtime::view::{
 use link2linux_runtime::{Runtime, RuntimeConfig, Shell};
 use support::{PhoneTls, TestPhone};
 use tokio::net::TcpStream;
-use tokio::sync::{Notify, mpsc, watch};
+use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio_rustls::server::TlsStream;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -209,6 +213,74 @@ impl Clipboard for FakeClipboard {
     }
 }
 
+/// Notifications that fail on every `FeatureStatus`, as when their store
+/// cannot be written.
+struct FailingDrivers;
+
+impl DriverFactory for FailingDrivers {
+    fn create(&self, _device: &DeviceInfo) -> Box<dyn NotificationsDriver> {
+        Box::new(FailingDriver(broadcast::channel(1).0))
+    }
+}
+
+struct FailingDriver(broadcast::Sender<Change>);
+
+impl NotificationsDriver for FailingDriver {
+    fn session_started<'a>(
+        &'a mut self,
+        _session: &'a mut PhoneSession,
+    ) -> BoxFuture<'a, Result<(), DriverError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn handle_event<'a>(
+        &'a mut self,
+        _session: &'a mut PhoneSession,
+        event: SessionEvent,
+    ) -> BoxFuture<'a, Result<Option<SessionEvent>, DriverError>> {
+        Box::pin(async move {
+            match event {
+                SessionEvent::FeatureStatus(_) => {
+                    Err(DriverError::Failed("the store is full".into()))
+                }
+                other => Ok(Some(other)),
+            }
+        })
+    }
+
+    fn handle_response<'a>(
+        &'a mut self,
+        _session: Option<&'a mut PhoneSession>,
+        _response: NotificationResponse,
+    ) -> BoxFuture<'a, Result<Option<Answer>, DriverError>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn session_ended(&mut self) {}
+
+    fn subscribe(&self) -> broadcast::Receiver<Change> {
+        self.0.subscribe()
+    }
+
+    fn dismiss<'a>(
+        &'a mut self,
+        _session: Option<&'a mut PhoneSession>,
+        _key: &'a str,
+    ) -> BoxFuture<'a, Result<(), DriverError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn run_action<'a>(
+        &'a mut self,
+        _session: Option<&'a mut PhoneSession>,
+        _key: &'a str,
+        _action_id: &'a str,
+        _reply: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), DriverError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 /// Collects what the runtime reports.
 #[derive(Default)]
 struct Events {
@@ -315,6 +387,15 @@ fn start() -> Rig {
 
 /// A runtime with `clipboard` as the desktop clipboard.
 fn start_with(clipboard: Option<Arc<dyn ClipboardPort>>) -> Rig {
+    start_full(clipboard, None)
+}
+
+/// A runtime with `clipboard` as the desktop clipboard, and `drivers` for
+/// the phones' notifications instead of the real ones.
+fn start_full(
+    clipboard: Option<Arc<dyn ClipboardPort>>,
+    drivers: Option<Arc<dyn DriverFactory>>,
+) -> Rig {
     let data = tempfile::tempdir().unwrap();
     let (sink, respond) = FakeSink::new();
     let events = Arc::new(Events::default());
@@ -330,10 +411,12 @@ fn start_with(clipboard: Option<Arc<dyn ClipboardPort>>) -> Rig {
     let shell = Shell {
         identity: Identity::generate().unwrap(),
         store_key: Some(StoreKey::generate()),
-        drivers: Arc::new(ServiceFactory::new(
-            presenter.clone(),
-            Some(data.path().join("images")),
-        )),
+        drivers: drivers.unwrap_or_else(|| {
+            Arc::new(ServiceFactory::new(
+                presenter.clone(),
+                Some(data.path().join("images")),
+            ))
+        }),
         presenter,
         clipboard,
         events: events.clone(),
@@ -1150,4 +1233,115 @@ async fn a_clipboard_that_loses_its_display_server_is_shared_while_the_window_ha
     clipboard.copy("after");
     rig.runtime.set_active(true);
     assert_eq!(within(take_push(&mut session)).await.text, "after");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_feature_failing_on_the_phones_feature_status_keeps_it_from_no_one() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let rig = start_full(Some(clipboard.clone()), Some(Arc::new(FailingDrivers)));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-4").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let session = within(clipboard_session(&phone, desktop)).await;
+
+    // The clipboard learned that the phone takes it...
+    rig.events
+        .clipboard_where(|status| {
+            status
+                .phones
+                .iter()
+                .any(|phone| phone.state == ClipboardPhoneState::Ready)
+        })
+        .await;
+    // ...and the loop confirmed the pairing: the phone refusing this
+    // desktop's key now means it removed the pairing.
+    session
+        .goodbye(GoodbyeReason::Shutdown, "restarting")
+        .await
+        .unwrap();
+    let stranger = Identity::generate().unwrap().fingerprint();
+    assert!(
+        within(phone.accept(PhoneTls::pinned(stranger)))
+            .await
+            .is_err()
+    );
+    rig.events
+        .devices_where(|devices| devices.iter().any(|d| d.status == DeviceStatus::Revoked))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_desktop_copy_made_while_text_waited_wins_and_the_popup_still_puts_the_text_on() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::FocusOnly);
+    clipboard.copy("before");
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-5").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+
+    // The window had focus once, so the desktop knows what the clipboard
+    // held.
+    rig.runtime.set_active(true);
+    assert_eq!(within(take_push(&mut session)).await.text, "before");
+    rig.runtime.set_active(false);
+
+    // The phone's text waits, and the user copies something else meanwhile.
+    let reply = within(push_from_phone(&mut session, "from the phone", false)).await;
+    assert!(matches!(reply.payload, Payload::Ack(_)), "{reply:?}");
+    let (id, _) = rig.sink.wait_for_banners(1).await[0].clone();
+    clipboard.copy("copied here");
+
+    // The desktop copy wins: it goes to the phone and stays on the
+    // clipboard.
+    rig.runtime.set_active(true);
+    assert_eq!(within(take_push(&mut session)).await.text, "copied here");
+    assert_eq!(clipboard.text().unwrap().text, "copied here");
+
+    // A click on the pop-up puts the phone's text on, though the window
+    // has focus, and the pop-up goes.
+    rig.respond
+        .send(NotificationResponse::Action {
+            id,
+            key: OPEN_KEY.into(),
+        })
+        .unwrap();
+    clipboard
+        .wait_for(|clipboard| {
+            clipboard
+                .text()
+                .is_some_and(|text| text.text == "from the phone")
+        })
+        .await;
+    wait(&rig.sink.changed, || {
+        rig.sink.closed.lock().unwrap().contains(&id).then_some(())
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_a_phone_drops_its_text_that_waits() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::FocusOnly);
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-6").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+
+    let reply = within(push_from_phone(&mut session, "waits", false)).await;
+    assert!(matches!(reply.payload, Payload::Ack(_)), "{reply:?}");
+    let (id, _) = rig.sink.wait_for_banners(1).await[0].clone();
+
+    rig.runtime.unpair("clip-6").unwrap();
+    wait(&rig.sink.changed, || {
+        rig.sink.closed.lock().unwrap().contains(&id).then_some(())
+    })
+    .await;
+    rig.events
+        .clipboard_where(|status| status.held.is_none() && status.phones.is_empty())
+        .await;
+
+    // Focus finds nothing to put on the clipboard.
+    rig.runtime.set_active(true);
+    clipboard
+        .wait_for(|clipboard| clipboard.reads.load(Ordering::Relaxed) >= 1)
+        .await;
+    assert!(clipboard.text().is_none());
 }

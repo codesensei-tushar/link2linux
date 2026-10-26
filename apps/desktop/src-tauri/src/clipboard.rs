@@ -19,8 +19,11 @@ use gtk::gdk::{Atom, SELECTION_CLIPBOARD};
 /// that does.
 const SECRET_HINT: &str = "x-kde-passwordManagerHint";
 const SECRET: &[u8] = b"secret";
-/// Types that say the clipboard holds copied files, which are not shared.
-const FILE_TYPES: [&str; 2] = ["text/uri-list", "x-special/gnome-copied-files"];
+/// The type a file manager offers copied files as, which are not shared.
+const COPIED_FILES: &str = "x-special/gnome-copied-files";
+/// A list of URIs: copied files when they are all `file:` URIs, and else
+/// links, whose text is shared.
+const URI_LIST: &str = "text/uri-list";
 /// The text types a copy marked as secret is offered as.
 const TEXT_TYPES: [&str; 5] = [
     "UTF8_STRING",
@@ -127,27 +130,18 @@ impl Clipboard for WindowClipboard {
                     .into_iter()
                     .map(|atom| atom.name().to_string())
                     .collect();
-                if holds_files(&types) {
+                if types.iter().any(|name| name == COPIED_FILES) {
                     let _ = answer.send(None);
-                    return;
-                }
-                let read_text = move |clipboard: &gtk::Clipboard, sensitive: bool| {
-                    clipboard.request_text(move |_, text| {
-                        let _ = answer.send(text.map(|text| ClipboardText {
-                            text: text.to_owned(),
-                            sensitive,
-                        }));
+                } else if types.iter().any(|name| name == URI_LIST) {
+                    clipboard.request_contents(&Atom::intern(URI_LIST), move |clipboard, uris| {
+                        if names_files(&uris.data()) {
+                            let _ = answer.send(None);
+                        } else {
+                            read_text(clipboard, &types, answer);
+                        }
                     });
-                };
-                if types.iter().any(|name| name == SECRET_HINT) {
-                    clipboard.request_contents(
-                        &Atom::intern(SECRET_HINT),
-                        move |clipboard, hint| {
-                            read_text(clipboard, is_secret(&hint.data()));
-                        },
-                    );
                 } else {
-                    read_text(clipboard, false);
+                    read_text(clipboard, &types, answer);
                 }
             });
         })
@@ -180,6 +174,30 @@ impl Clipboard for WindowClipboard {
     }
 }
 
+/// Reads the copy's text, with its secret mark when `types` offer one, and
+/// sends it to `answer`.
+fn read_text(
+    clipboard: &gtk::Clipboard,
+    types: &[String],
+    answer: oneshot::Sender<Option<ClipboardText>>,
+) {
+    let read = move |clipboard: &gtk::Clipboard, sensitive: bool| {
+        clipboard.request_text(move |_, text| {
+            let _ = answer.send(text.map(|text| ClipboardText {
+                text: text.to_owned(),
+                sensitive,
+            }));
+        });
+    };
+    if types.iter().any(|name| name == SECRET_HINT) {
+        clipboard.request_contents(&Atom::intern(SECRET_HINT), move |clipboard, hint| {
+            read(clipboard, is_secret(&hint.data()));
+        });
+    } else {
+        read(clipboard, false);
+    }
+}
+
 /// Puts `text` on the clipboard with the mark that keeps it out of
 /// clipboard history.
 fn set_secret(clipboard: &gtk::Clipboard, text: String) -> bool {
@@ -198,9 +216,20 @@ fn set_secret(clipboard: &gtk::Clipboard, text: String) -> bool {
     })
 }
 
-/// Whether a copy that offers `types` is copied files.
-fn holds_files(types: &[String]) -> bool {
-    types.iter().any(|name| FILE_TYPES.contains(&name.as_str()))
+/// Whether a `text/uri-list` names copied files: at least one URI, and
+/// only `file:` ones. Lines starting with `#` are comments.
+fn names_files(list: &[u8]) -> bool {
+    let list = String::from_utf8_lossy(list);
+    let mut uris = list
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .peekable();
+    uris.peek().is_some()
+        && uris.all(|uri| {
+            uri.get(..5)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:"))
+        })
 }
 
 /// Whether the secret mark's content says the copy is secret.
@@ -283,16 +312,16 @@ mod tests {
     }
 
     #[test]
-    fn copied_files_are_told_from_text() {
-        let text = ["UTF8_STRING".to_owned(), "text/plain".to_owned()];
-        assert!(!holds_files(&text));
-        let files = [
-            "text/uri-list".to_owned(),
-            "x-special/gnome-copied-files".to_owned(),
-            "UTF8_STRING".to_owned(),
-        ];
-        assert!(holds_files(&files));
-        assert!(holds_files(&["x-special/gnome-copied-files".to_owned()]));
+    fn only_file_uris_are_copied_files() {
+        assert!(names_files(
+            b"file:///home/ana/a.txt\r\nfile:///home/ana/b.txt\r\n"
+        ));
+        assert!(names_files(b"# copied by a file manager\nFILE:///tmp/x\n"));
+        // A link copied in a browser is text to share.
+        assert!(!names_files(b"https://example.org/\r\n"));
+        assert!(!names_files(b"file:///tmp/x\nhttps://example.org/\n"));
+        assert!(!names_files(b""));
+        assert!(!names_files(b"# nothing\n\n"));
     }
 
     #[test]

@@ -231,6 +231,9 @@ impl Runtime {
     /// are told when sharing turns on or off.
     pub fn set_clipboard_settings(&self, settings: ClipboardSettings) {
         let core = &self.core;
+        if core.clipboard_hub.settings() == settings {
+            return;
+        }
         core.clipboard_hub.set_settings(settings);
         if core.clipboard.is_some() {
             for slot in lock(&core.slots).values() {

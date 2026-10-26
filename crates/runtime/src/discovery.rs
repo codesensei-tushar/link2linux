@@ -12,8 +12,11 @@ use link2linux_core::discovery::onlink::local_addresses;
 use link2linux_core::discovery::{
     Discovery, DiscoveryEvent, LanConfig, LanDiscovery, Match, Sighting,
 };
+use link2linux_core::notifications::present::OPEN_KEY;
+use link2linux_platform::NotificationResponse;
 use tokio::time;
 
+use crate::clipboard;
 use crate::link::{Command, lock};
 use crate::pairing;
 use crate::shared::Core;
@@ -128,6 +131,11 @@ pub(crate) async fn pump_responses(core: Arc<Core>) {
         };
         match response {
             Ok(response) => {
+                if let NotificationResponse::Action { id, key } = &response
+                    && key == OPEN_KEY
+                {
+                    clipboard::popup_clicked(&core, *id);
+                }
                 for slot in lock(&core.slots).values() {
                     let _ = slot.commands.send(Command::Response(response.clone()));
                 }

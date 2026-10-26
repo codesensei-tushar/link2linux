@@ -1,8 +1,10 @@
 //! The features of one phone, which its session loop drives.
 //!
 //! A feature joins the session loop here: a field for its driver in
-//! [`Features`], and a line in each of [`Features::session_started`],
-//! [`Features::handle_event`] and [`Features::session_ended`]. Requests the
+//! [`Features`], a line in [`Features::session_started`] and in
+//! [`Features::session_ended`], and two in [`Features::handle_event`]: one
+//! for the `FeatureStatus` every feature gets, one in the chain of the
+//! other events. Requests the
 //! user makes of a feature, such as dismissing a notification, are
 //! [`Command`](crate::link::Command)s, which the loop hands to its driver.
 
@@ -37,7 +39,7 @@ impl Features {
 
     /// Hands `event` to each feature in turn, and returns what none of them
     /// took, for the session loop. A `FeatureStatus` goes to every feature
-    /// and comes back too.
+    /// and comes back too, whatever a feature makes of it.
     ///
     /// # Errors
     ///
@@ -47,28 +49,50 @@ impl Features {
         session: &mut PhoneSession,
         event: SessionEvent,
     ) -> Result<Option<SessionEvent>, BrokeRules> {
-        let rest = match self.notifications.handle_event(session, event).await {
-            Ok(rest) => rest,
+        if let SessionEvent::FeatureStatus(states) = &event {
+            let states = states.clone();
+            self.notifications_event(session, SessionEvent::FeatureStatus(states.clone()))
+                .await?;
+            self.clipboard_event(session, SessionEvent::FeatureStatus(states))
+                .await;
+            return Ok(Some(event));
+        }
+        let Some(event) = self.notifications_event(session, event).await? else {
+            return Ok(None);
+        };
+        Ok(self.clipboard_event(session, event).await)
+    }
+
+    async fn notifications_event(
+        &mut self,
+        session: &mut PhoneSession,
+        event: SessionEvent,
+    ) -> Result<Option<SessionEvent>, BrokeRules> {
+        match self.notifications.handle_event(session, event).await {
+            Ok(rest) => Ok(rest),
             Err(DriverError::PhoneBrokeRules(error)) => {
                 tracing::warn!(%error, "the phone broke the notification rules");
-                return Err(BrokeRules);
+                Err(BrokeRules)
             }
             Err(error) => {
                 tracing::warn!(%error, "notification event failed");
-                None
+                Ok(None)
             }
-        };
-        let Some(event) = rest else {
-            return Ok(None);
-        };
-        Ok(self
-            .clipboard
+        }
+    }
+
+    async fn clipboard_event(
+        &mut self,
+        session: &mut PhoneSession,
+        event: SessionEvent,
+    ) -> Option<SessionEvent> {
+        self.clipboard
             .handle_event(session, event)
             .await
             .unwrap_or_else(|error| {
                 tracing::debug!(%error, "clipboard event failed");
                 None
-            }))
+            })
     }
 
     /// The session is over: each feature forgets what only held within it.

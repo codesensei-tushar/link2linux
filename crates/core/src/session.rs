@@ -247,6 +247,26 @@ pub enum SessionEvent {
     Goodbye(PeerGoodbye),
 }
 
+impl SessionEvent {
+    /// What the event is, such as the schema name of its message, for logs.
+    /// Events can carry the user's content, so logs name them instead of
+    /// printing them.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Message { payload, .. } | Self::Request { payload, .. } => {
+                rules::of(payload).name
+            }
+            Self::Reply(reply) => rules::of(&reply.payload).name,
+            Self::RequestTimedOut { .. } => "RequestTimedOut",
+            Self::FeatureStatus(_) => "FeatureStatus",
+            Self::Presence(_) => "PresenceUpdate",
+            Self::Pong { .. } => "Pong",
+            Self::Goodbye(_) => "Goodbye",
+        }
+    }
+}
+
 /// Why a session failed or ended abnormally.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

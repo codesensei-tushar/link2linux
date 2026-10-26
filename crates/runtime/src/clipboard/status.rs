@@ -159,7 +159,6 @@ pub(crate) fn bytes(len: usize) -> u32 {
 /// The clipboard page's state, kept from the hub's events.
 #[derive(Debug, Default)]
 pub(crate) struct Board {
-    phones: HashMap<String, ClipboardPhoneState>,
     activity: VecDeque<ClipboardActivity>,
     problem: Option<ClipboardProblem>,
 }
@@ -242,9 +241,6 @@ impl Board {
                     at_unix_ms: now,
                 });
             }
-            ClipboardEvent::Phone { device_id, state } => {
-                self.phones.insert(device_id.clone(), (*state).into());
-            }
             _ => {}
         }
     }
@@ -283,16 +279,8 @@ impl Board {
         });
     }
 
-    /// Whether any phone takes the clipboard now.
-    pub fn any_ready(&self) -> bool {
-        self.phones
-            .values()
-            .any(|state| *state == ClipboardPhoneState::Ready)
-    }
-
-    /// A phone is no longer paired.
+    /// A phone is no longer paired: its problem goes.
     pub fn forget(&mut self, device_id: &str) {
-        self.phones.remove(device_id);
         if self
             .problem
             .as_ref()
@@ -302,33 +290,39 @@ impl Board {
         }
     }
 
-    /// The snapshot for the page, with `phones` the paired phones' ids and
-    /// names in pairing order.
+    /// The snapshot for the page.
     pub fn snapshot(
         &self,
         mode: ClipboardMode,
-        phones: Vec<(String, String)>,
+        phones: Vec<ClipboardPhone>,
         held: Option<HeldClipboard>,
     ) -> ClipboardStatus {
         ClipboardStatus {
             mode,
-            phones: phones
-                .into_iter()
-                .map(|(device_id, name)| ClipboardPhone {
-                    state: self
-                        .phones
-                        .get(&device_id)
-                        .copied()
-                        .unwrap_or(ClipboardPhoneState::Disconnected),
-                    device_id,
-                    name,
-                })
-                .collect(),
+            phones,
             activity: self.activity.iter().cloned().collect(),
             problem: self.problem.clone(),
             held,
         }
     }
+}
+
+/// The paired phones, given as ids and names in pairing order, with the
+/// states their services reported. A phone without one is not connected.
+pub(crate) fn phones(
+    paired: Vec<(String, String)>,
+    states: &HashMap<String, PhoneClipboard>,
+) -> Vec<ClipboardPhone> {
+    paired
+        .into_iter()
+        .map(|(device_id, name)| ClipboardPhone {
+            state: states
+                .get(&device_id)
+                .map_or(ClipboardPhoneState::Disconnected, |state| (*state).into()),
+            device_id,
+            name,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -431,51 +425,36 @@ mod tests {
 
     #[test]
     fn every_paired_phone_is_listed_with_its_state() {
-        let mut board = Board::default();
-        assert!(!board.any_ready());
-        board.apply(
-            &ClipboardEvent::Phone {
-                device_id: "a".into(),
-                state: PhoneClipboard::Ready,
-            },
-            &name_of,
-            1,
-        );
-        board.apply(
-            &ClipboardEvent::Phone {
-                device_id: "c".into(),
-                state: PhoneClipboard::Unsupported,
-            },
-            &name_of,
-            1,
-        );
-        assert!(board.any_ready());
-        let phones = vec![
+        let states = HashMap::from([
+            ("a".to_owned(), PhoneClipboard::Ready),
+            // A phone no longer paired is left out.
+            ("c".to_owned(), PhoneClipboard::Ready),
+        ]);
+        let paired = vec![
             ("a".to_owned(), "Pixel".to_owned()),
             ("b".to_owned(), "Galaxy".to_owned()),
         ];
+        let listed: Vec<_> = phones(paired, &states)
+            .into_iter()
+            .map(|phone| (phone.name, phone.state))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("Pixel".to_owned(), ClipboardPhoneState::Ready),
+                ("Galaxy".to_owned(), ClipboardPhoneState::Disconnected)
+            ]
+        );
+
         let held = HeldClipboard {
             device_id: "a".into(),
             phone_name: "Pixel".into(),
             bytes: 4,
             sensitive: false,
         };
-        let status = board.snapshot(ClipboardMode::WhenFocused, phones, Some(held.clone()));
-        let states: Vec<_> = status
-            .phones
-            .iter()
-            .map(|phone| (phone.name.as_str(), phone.state))
-            .collect();
-        assert_eq!(
-            states,
-            [
-                ("Pixel", ClipboardPhoneState::Ready),
-                ("Galaxy", ClipboardPhoneState::Disconnected)
-            ]
-        );
+        let status =
+            Board::default().snapshot(ClipboardMode::WhenFocused, Vec::new(), Some(held.clone()));
         assert_eq!(status.held, Some(held));
-        board.forget("a");
-        assert!(!board.any_ready());
     }
 
     #[test]
