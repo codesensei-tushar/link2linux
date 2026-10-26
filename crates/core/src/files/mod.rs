@@ -234,15 +234,14 @@ pub enum TransferEvent {
 
 /// Removes the temporary files that transfers left in `dir` when the app
 /// ended before they finished, and returns how many there were. Call it
-/// when the app starts, before any session: transfers are never kept
-/// across a restart.
+/// once when the app starts, before any session: transfers are never kept
+/// across a restart. It reads the directory, so it blocks.
 ///
 /// # Errors
 ///
 /// Fails when `dir` cannot be read.
-pub async fn remove_leftovers(dir: &Path) -> io::Result<usize> {
-    let dir = dir.to_owned();
-    disk::blocking(move || disk::remove_leftovers(&dir)).await
+pub fn remove_leftovers(dir: &Path) -> io::Result<usize> {
+    disk::remove_leftovers(dir)
 }
 
 #[cfg(test)]

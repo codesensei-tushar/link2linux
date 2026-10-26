@@ -684,15 +684,13 @@ async fn unfinished_transfers_from_the_phone_expire_after_an_hour() {
     assert_eq!(service.next_deadline(), None);
 }
 
-#[tokio::test]
-async fn leftovers_of_an_earlier_run_are_removed() {
+#[test]
+fn leftovers_of_an_earlier_run_are_removed() {
     let downloads = tempfile::tempdir().unwrap();
     let leftover = format!(".link2linux-{}-0.part", "ab".repeat(16));
     fs::write(downloads.path().join(&leftover), b"partial").unwrap();
     fs::write(downloads.path().join("mine.txt"), b"mine").unwrap();
-    let removed = link2linux_core::files::remove_leftovers(downloads.path())
-        .await
-        .unwrap();
+    let removed = link2linux_core::files::remove_leftovers(downloads.path()).unwrap();
     assert_eq!(removed, 1);
     assert_eq!(names_in(downloads.path()), ["mine.txt"]);
 }
