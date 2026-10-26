@@ -15,7 +15,7 @@ use link2linux_core::files::{
     CHUNK_LEN, Direction, Failure, FileService, KEEP_UNFINISHED, SendError, Transfer,
     TransferEvent, TransferId, TransferState,
 };
-use link2linux_core::session::{Availability, SessionStart};
+use link2linux_core::session::{Availability, SessionEvent, SessionStart};
 use link2linux_core::{Feature, Session, SessionConfig};
 use link2linux_protocol::v1::{
     Ack, ErrorCode, ErrorReply, FileAccept, FileCancel, FileChunk, FileInfo, FileOffer, Pong,
@@ -1580,6 +1580,50 @@ async fn a_phone_that_goes_for_good_leaves_no_partial_file() {
 
     service.discard_all().await;
     assert_eq!(names_in(downloads.path()), ["small"]);
+}
+
+/// Writes what the desktop queued while nothing comes from the phone; any
+/// event that turns up meanwhile is dropped.
+async fn write_out(session: &mut Session<DuplexStream>) {
+    while timeout(Duration::from_millis(50), session.next_event())
+        .await
+        .is_ok()
+    {}
+}
+
+#[tokio::test]
+async fn the_phones_goodbye_during_a_send_reaches_the_session_loop() {
+    let sources = tempfile::tempdir().unwrap();
+    let downloads = tempfile::tempdir().unwrap();
+    let path = source(sources.path(), "big", &data(20 * CHUNK_LEN, 25));
+    let (mut session, mut phone) = connect(Availability::Ready, SessionConfig::default()).await;
+    let mut service = service(downloads.path());
+    service.send(vec![path]).await.unwrap();
+    service.session_started(&mut session).await.unwrap();
+    let status = session.next_event().await.unwrap().unwrap();
+    service.handle_event(&mut session, status).await.unwrap();
+    let (_, (seq, _)) = tokio::join!(write_out(&mut session), read_offer(&mut phone));
+    phone.answer(seq, accept(0, 0)).await;
+    let accepted = session.next_event().await.unwrap().unwrap();
+    service.handle_event(&mut session, accepted).await.unwrap();
+    // Two chunks go out; the window has room and more is to send.
+    let two = async {
+        read_chunk(&mut phone).await;
+        read_chunk(&mut phone).await;
+    };
+    tokio::join!(write_out(&mut session), two);
+
+    let goodbye = Payload::Goodbye(link2linux_protocol::v1::Goodbye {
+        reason: link2linux_protocol::v1::GoodbyeReason::UserDisconnect.into(),
+        detail: "the user disconnected".into(),
+    });
+    phone.send(goodbye, false, 0).await;
+    let event = session.next_event().await.unwrap().unwrap();
+    let rest = service.handle_event(&mut session, event).await.unwrap();
+    assert!(
+        matches!(rest, Some(SessionEvent::Goodbye(ref goodbye)) if goodbye.reason == link2linux_protocol::v1::GoodbyeReason::UserDisconnect),
+        "{rest:?}"
+    );
 }
 
 /// A phone running the same service, on the other end of a pipe.

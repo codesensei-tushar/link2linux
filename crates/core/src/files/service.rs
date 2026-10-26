@@ -271,6 +271,10 @@ impl FileService {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        if session.has_ended() {
+            // Nothing can go: the next session takes up what waits.
+            return Ok(());
+        }
         let now = Instant::now();
         self.set_ready(session.is_ready(Feature::Files), now);
         self.expire(now).await;
@@ -281,12 +285,14 @@ impl FileService {
             self.pause_all(TransferState::Waiting, now);
             return Ok(());
         }
-        for id in std::mem::take(&mut self.cancels) {
+        // Each cancel stays until it is on its way.
+        while let Some(&id) = self.cancels.first() {
             let request = Payload::FileCancel(FileCancel {
                 transfer_id: id.0.to_vec(),
             });
             let seq = session.queue_request(request)?;
             self.pending.insert(seq, Pending::Cancel);
+            self.cancels.remove(0);
         }
         self.offer_waiting(session, now)?;
         self.pump(session).await?;
@@ -486,7 +492,11 @@ impl FileService {
             },
             other => Some(other),
         };
-        self.run(session).await?;
+        // An event the session loop needs, such as the phone's Goodbye,
+        // goes back to it even when nothing more can be sent.
+        if let Err(error) = self.run(session).await {
+            tracing::debug!(%error, "files could not go on in this session");
+        }
         Ok(rest)
     }
 
