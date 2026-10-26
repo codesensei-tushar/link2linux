@@ -189,6 +189,30 @@ describe("FilesPage", () => {
     expect(screen.queryByRole("article", { name: /photo\.jpg and 1 more/ })).toBeNull();
   });
 
+  it("offers received files only once their transfer is over, by name when it has several", async () => {
+    const files = [
+      photo,
+      { ...photo, name: "second.jpg", saved: false },
+      { ...photo, name: "third.jpg", saved: false },
+    ];
+    const api = renderPage([
+      testTransfer({ id: "moving", status: { kind: "running" }, files }),
+      testTransfer({ id: "stopped", status: { kind: "cancelled", byPhone: true }, files }),
+    ]);
+    const cards = await screen.findAllByRole("article", {
+      name: "From Pixel: photo.jpg and 2 more",
+    });
+    const [stopped, moving] = cards as [HTMLElement, HTMLElement];
+    expect(within(moving).queryByRole("button", { name: /Open|Show in folder/ })).toBeNull();
+
+    // Of a transfer cut short, what arrived opens by its name.
+    expect(within(stopped).queryByRole("button", { name: "Open" })).toBeNull();
+    await userEvent.click(within(stopped).getByRole("button", { name: "Open photo.jpg" }));
+    expect(api.openReceivedFile).toHaveBeenCalledWith("phone-1", "stopped", 0);
+    expect(within(stopped).queryByText("second.jpg")).toBeNull();
+    expect(within(stopped).getByRole("button", { name: "Show in folder" })).toBeInTheDocument();
+  });
+
   it("says when an action fails", async () => {
     const api = createFakeApi();
     api.openReceivedFile.mockRejectedValue(new Error("No application opens it."));

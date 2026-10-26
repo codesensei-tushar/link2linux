@@ -43,8 +43,13 @@ export function TransferCard({
   const perSecond = kind === "running" ? shownRate(rate, now) : null;
   const speed = perSecond === null ? null : `${formatBytes(Math.round(perSecond))}/s`;
   const details = [statusText(transfer, phoneName), amount, speed].filter(Boolean).join(" · ");
-  const saved = transfer.files.flatMap((file, index) => (file.saved ? [{ file, index }] : []));
+  // Files are offered once the transfer is over: those that arrived, by
+  // name when the transfer has several.
+  const saved = finished
+    ? transfer.files.flatMap((file, index) => (file.saved ? [{ file, index }] : []))
+    : [];
   const [firstSaved] = saved;
+  const single = transfer.files.length === 1;
 
   return (
     <article
@@ -68,7 +73,7 @@ export function TransferCard({
             max={Math.max(transfer.size, 1)}
           />
         )}
-        {saved.length > 1 && (
+        {saved.length > 0 && !single && (
           <ul className="transfer__files" aria-label={`Files of ${title}`}>
             {saved.map(({ file, index }) => (
               <li key={index}>
@@ -101,7 +106,7 @@ export function TransferCard({
               Cancel
             </Button>
           )}
-          {firstSaved && saved.length === 1 && (
+          {firstSaved && single && (
             <Button
               size="sm"
               variant="primary"
