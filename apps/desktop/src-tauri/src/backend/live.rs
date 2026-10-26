@@ -1,11 +1,11 @@
 //! The backend that runs the real runtime: discovery, pairing and sessions
-//! with paired phones, phone notifications as desktop banners, and the
-//! shared clipboard.
+//! with paired phones, phone notifications as desktop banners, the shared
+//! clipboard, and file transfers.
 //!
 //! Everything it does lives in `link2linux-runtime`; this file only builds
 //! the runtime from what the shell has (the event sink, the D-Bus
-//! notification service, the clipboard, Bluetooth advertising) and forwards
-//! the trait's calls.
+//! notification service, the clipboard, the Downloads directory, Bluetooth
+//! advertising) and forwards the trait's calls.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use link2linux_platform::linux::ble::BluezPresence;
 use link2linux_platform::linux::{
-    DbusNotifications, LinuxClipboard, SecretServiceStore, SessionLock,
+    DbusNotifications, LinuxClipboard, SecretServiceStore, SessionLock, XdgFileStore,
 };
 use link2linux_platform::{Clipboard, ClipboardAccess, PresenceAdvertiser};
 use link2linux_runtime::clipboard::ClipboardPort;
@@ -24,8 +24,8 @@ use link2linux_runtime::paths::{DataDir, desktop_name, runtime_images_dir};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
-    Backend, BackendError, CachedImage, ClipboardStatus, Device, EventSink, MirroredNotification,
-    PairingMethod, PairingState, PhoneTarget, Settings,
+    Backend, BackendError, CachedImage, ClipboardStatus, Device, EventSink, FileTransfer,
+    MirroredNotification, PairingMethod, PairingState, PhoneTarget, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -86,10 +86,12 @@ impl LiveBackend {
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), images)),
             presenter,
             clipboard: Some(clipboard(opening, window_clipboard)),
+            files: Some(Arc::new(XdgFileStore::new())),
             events,
         };
         let mut config = RuntimeConfig::new(data_dir.clone());
         config.clipboard = settings.clipboard();
+        config.files = settings.share_files;
         let handle = tauri::async_runtime::handle().inner().clone();
         let runtime = Arc::new(Runtime::start(handle, &config, shell)?);
         if runtime.needs_store_key() {
@@ -259,6 +261,42 @@ impl Backend for LiveBackend {
         self.runtime.clipboard()
     }
 
+    fn transfers(&self, device_id: &str) -> Result<Vec<FileTransfer>, BackendError> {
+        self.runtime.transfers(device_id)
+    }
+
+    fn send_files(&self, device_id: &str, paths: Vec<PathBuf>) -> Result<(), BackendError> {
+        self.runtime.send_files(device_id, paths)
+    }
+
+    fn cancel_transfer(&self, device_id: &str, transfer_id: &str) -> Result<(), BackendError> {
+        self.runtime.cancel_transfer(device_id, transfer_id)
+    }
+
+    fn forget_transfer(&self, device_id: &str, transfer_id: &str) -> Result<(), BackendError> {
+        self.runtime.forget_transfer(device_id, transfer_id)
+    }
+
+    fn open_received_file(
+        &self,
+        device_id: &str,
+        transfer_id: &str,
+        index: usize,
+    ) -> Result<(), BackendError> {
+        self.runtime
+            .open_received_file(device_id, transfer_id, index)
+    }
+
+    fn show_received_file(
+        &self,
+        device_id: &str,
+        transfer_id: &str,
+        index: usize,
+    ) -> Result<(), BackendError> {
+        self.runtime
+            .show_received_file(device_id, transfer_id, index)
+    }
+
     fn send_clipboard(&self) -> Result<(), BackendError> {
         self.runtime.send_clipboard();
         Ok(())
@@ -269,6 +307,9 @@ impl Backend for LiveBackend {
         self.popups.set_show_text(settings.show_notification_text);
         if before.clipboard() != settings.clipboard() {
             self.runtime.set_clipboard_settings(settings.clipboard());
+        }
+        if before.share_files != settings.share_files {
+            self.runtime.set_files_enabled(settings.share_files);
         }
         settings.save(&self.settings_path).map_err(|error| {
             tracing::warn!(%error, "could not save the settings");

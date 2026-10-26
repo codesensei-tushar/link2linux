@@ -1,19 +1,22 @@
 //! A live session with a paired phone, from the handshake to its end.
 
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use link2linux_core::discovery::reconnect::SessionEnd;
+use link2linux_core::files::TransferId;
 use link2linux_core::identity::CertificateFingerprint;
 use link2linux_core::pairing::{FileTrustStore, records};
 use link2linux_core::session::SessionEvent;
 use link2linux_platform::NotificationResponse;
 use link2linux_protocol::v1::{Goodbye, GoodbyeReason};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::clipboard::{Copies, Outgoing};
 use crate::features::Features;
-use crate::notify::{DriverError, PhoneSession};
+use crate::notify::PhoneSession;
 
 /// What the owner of a session can ask of it.
 #[derive(Debug)]
@@ -38,6 +41,23 @@ pub enum Command {
     },
     /// The user turned clipboard sharing on or off on this desktop.
     ClipboardSharing,
+    /// The user sent files to the phone. The shell checked them.
+    SendFiles {
+        /// The files, as one transfer.
+        paths: Vec<PathBuf>,
+    },
+    /// The user cancelled a file transfer, in either direction.
+    CancelTransfer {
+        /// The transfer.
+        id: TransferId,
+    },
+    /// The user removed a finished transfer from the files page.
+    ForgetTransfer {
+        /// The transfer.
+        id: TransferId,
+    },
+    /// The user turned files on or off on this desktop.
+    FilesSwitch,
     /// The user removed the pairing: tell the phone and leave.
     Unpair,
     /// The network changed or the user asked to reconnect: no session
@@ -141,9 +161,11 @@ async fn drive(
 ) -> Ending {
     // The sender goes with the phone's slot, when the phone is forgotten.
     let mut copying = true;
+    let mut window_active = context.active;
     loop {
         tokio::select! {
             () = cancel.cancelled() => return Ending::Shutdown,
+            () = sleep_until(features.next_deadline()) => features.tick(Some(session)).await,
             changed = copies.changed(), if copying => {
                 let copy = copies.borrow_and_update().clone();
                 match (changed, copy) {
@@ -159,20 +181,10 @@ async fn drive(
             command = commands.recv() => match command {
                 None => return Ending::Shutdown,
                 Some(Command::Unpair) => return Ending::Removed,
-                Some(Command::SetActive(active)) => {
-                    if let Err(error) = session.set_active(active).await {
-                        tracing::debug!(%error, "could not set the session active");
-                    }
-                }
+                Some(Command::SetActive(active)) => window_active = active,
                 Some(Command::Response(response)) => {
-                    match features.notifications.handle_response(Some(session), response).await {
-                        Ok(Some(_)) => tracing::debug!("a banner asks to open the app"),
-                        Ok(None) => {}
-                        Err(DriverError::PhoneBrokeRules(error)) => {
-                            tracing::warn!(%error, "the phone broke the notification rules");
-                            return Ending::PhoneBrokeRules;
-                        }
-                        Err(error) => tracing::warn!(%error, "notification response failed"),
+                    if features.handle_response(Some(session), response).await.is_err() {
+                        return Ending::PhoneBrokeRules;
                     }
                 }
                 Some(Command::Dismiss { key }) => {
@@ -192,6 +204,18 @@ async fn drive(
                 Some(Command::ClipboardSharing) => {
                     if let Err(error) = features.clipboard.sharing_changed(session).await {
                         tracing::debug!(%error, "could not tell the phone about clipboard sharing");
+                    }
+                }
+                Some(Command::SendFiles { paths }) => {
+                    if let Err(error) = features.files.send(Some(session), paths).await {
+                        tracing::warn!(%error, "could not send files");
+                    }
+                }
+                Some(Command::CancelTransfer { id }) => features.files.cancel(Some(session), id).await,
+                Some(Command::ForgetTransfer { id }) => features.files.forget(id),
+                Some(Command::FilesSwitch) => {
+                    if let Err(error) = features.files.switched(session).await {
+                        tracing::debug!(%error, "could not tell the phone about files");
                     }
                 }
                 Some(Command::Reconnect | Command::NetworkChanged) => {}
@@ -216,6 +240,21 @@ async fn drive(
                 }
             },
         }
+        // Ping often while the user looks, or while files move.
+        let active = window_active || features.is_busy();
+        if session.is_active() != active
+            && let Err(error) = session.set_active(active).await
+        {
+            tracing::debug!(%error, "could not set the session active");
+        }
+    }
+}
+
+/// Sleeps until `deadline`, or forever without one.
+pub(crate) async fn sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 

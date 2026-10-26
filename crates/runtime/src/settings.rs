@@ -23,6 +23,10 @@ pub struct Settings {
     /// Text that a password manager marked as secret is shared too. Off by
     /// default.
     pub share_passwords: bool,
+    /// Files can be sent to the phones and received from them. On by
+    /// default: each phone has its own switch, off until its user turns it
+    /// on.
+    pub share_files: bool,
 }
 
 impl Default for Settings {
@@ -32,6 +36,7 @@ impl Default for Settings {
             show_notification_text: false,
             share_clipboard: clipboard.sharing,
             share_passwords: clipboard.share_passwords,
+            share_files: true,
         }
     }
 }
@@ -129,6 +134,27 @@ mod tests {
                 sharing: false,
                 share_passwords: true,
             }
+        );
+    }
+
+    #[test]
+    fn files_are_on_unless_the_user_turned_them_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // A file from before files were sent.
+        std::fs::write(&path, br#"{ "shareClipboard": false }"#).unwrap();
+        assert!(Settings::load(&path).share_files);
+
+        let off = Settings {
+            share_files: false,
+            ..Settings::default()
+        };
+        off.save(&path).unwrap();
+        assert_eq!(Settings::load(&path), off);
+        assert!(
+            String::from_utf8(std::fs::read(&path).unwrap())
+                .unwrap()
+                .contains("\"shareFiles\": false")
         );
     }
 }

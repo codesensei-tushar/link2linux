@@ -31,6 +31,7 @@ use crate::clipboard::{
 };
 use crate::device::{self, Established, Inbox};
 use crate::features::Features;
+use crate::files::{FilesFactory, NoFiles, Opener};
 use crate::link::{Command, lock};
 use crate::notify::dto::{self, MirroredNotification, NotificationEvent};
 use crate::notify::{DriverFactory, Presenter};
@@ -54,6 +55,8 @@ pub struct RuntimeConfig {
     pub dial_timeouts: Option<DialTimeouts>,
     /// The user's clipboard settings at the start.
     pub clipboard: ClipboardSettings,
+    /// Whether files are turned on at the start. On by default.
+    pub files: bool,
 }
 
 impl RuntimeConfig {
@@ -67,6 +70,7 @@ impl RuntimeConfig {
             extra_locals: Vec::new(),
             dial_timeouts: None,
             clipboard: ClipboardSettings::default(),
+            files: true,
         }
     }
 }
@@ -90,6 +94,9 @@ pub struct Shell {
     /// The desktop clipboard. Without one, the desktop reports the
     /// clipboard unavailable to the phones.
     pub clipboard: Option<Arc<dyn ClipboardPort>>,
+    /// Where received files go, and how files are opened. Without, the
+    /// desktop reports files unavailable to the phones.
+    pub files: Option<Arc<dyn Opener>>,
 }
 
 /// Why the runtime could not start.
@@ -191,6 +198,8 @@ pub(crate) struct Core {
     pub clipboard_page: Mutex<clipboard::Page>,
     /// Wakes the task that keeps the clipboard page.
     pub clipboard_nudge: Notify,
+    /// Each phone's file transfers.
+    pub files: FilesFactory,
 }
 
 impl Core {
@@ -212,7 +221,12 @@ impl Core {
             id,
             name.clone(),
             DeviceKind::Desktop,
-            [Feature::Notifications, Feature::Clipboard],
+            [Feature::Notifications, Feature::Clipboard, Feature::Files],
+        );
+        // Before any session, as it cleans up after an earlier run.
+        let files = FilesFactory::new(
+            shell.files.unwrap_or_else(|| Arc::new(NoFiles)),
+            config.files,
         );
         let (keys, _) = watch::channel(DiscoveryKeys::default());
         let core = Arc::new(Self {
@@ -244,6 +258,7 @@ impl Core {
             clipboard_hub: ClipboardHub::new(config.clipboard),
             clipboard_page: Mutex::default(),
             clipboard_nudge: Notify::new(),
+            files,
         });
         // Following the hub before any phone's service can report.
         let clipboard_events = core.clipboard_hub.subscribe();
@@ -265,12 +280,16 @@ impl Core {
     }
 
     /// The first message of a session: this desktop, whether it shares
-    /// its clipboard, and its Bluetooth LE address if it advertises.
+    /// its clipboard and takes files, and its Bluetooth LE address if it
+    /// advertises.
     pub fn session_start(&self) -> SessionStart {
         let mut start = SessionStart::new(self.local.clone());
         start
             .availability
             .insert(Feature::Clipboard, self.clipboard_availability());
+        start
+            .availability
+            .insert(Feature::Files, self.files.availability());
         if let Some(address) = *lock(&self.ble_address) {
             start.presence = PresenceUpdate {
                 ble_address: address.to_vec(),
@@ -323,6 +342,12 @@ impl Core {
                 record.id.clone(),
                 self.clipboard_hub.clone(),
                 self.clipboard_port(),
+            ),
+            files: self.files.create(
+                &record.id,
+                &record.name,
+                self.events.clone(),
+                self.presenter.clone(),
             ),
         };
         self.handle.spawn(forward_changes(
@@ -399,6 +424,7 @@ impl Core {
             slot.cancel.cancel();
         }
         self.drivers.forget(id);
+        self.files.forget(id);
         lock(&self.evidence).forget(id);
         lock(&self.clipboard_page).board.forget(id);
         self.clipboard_hub.forget_phone(id);

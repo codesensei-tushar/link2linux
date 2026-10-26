@@ -289,3 +289,71 @@ async fn the_session_ending_fails_waiting_requests() {
     let err = session.send_request(dismiss()).await.unwrap_err();
     assert!(matches!(err, RequestError::Ended), "{err:?}");
 }
+
+#[tokio::test]
+async fn queued_requests_and_answers_go_out_while_the_session_reads() {
+    let (mut session, mut peer) = notifying().await;
+    let request = session.queue_request(image_request()).unwrap();
+    assert!(session.queued_len() > 0, "nothing is written yet");
+
+    let script = async {
+        assert_eq!(read_request(&mut peer).await, request);
+        let image = Payload::ImageData(ImageData::default());
+        peer.send(&answer(3, request, image)).await.unwrap();
+        peer.send(&session_common::request(4, image_request()))
+            .await
+            .unwrap();
+    };
+    let (reply, ()) = tokio::join!(next_answer(&mut session), script);
+    assert_eq!(reply.request, request);
+    assert_eq!(session.queued_len(), 0);
+    let event = session.next_event().await.unwrap();
+    assert!(
+        matches!(event, Some(SessionEvent::Request { seq: 4, .. })),
+        "{event:?}"
+    );
+
+    let refusal = ErrorReply {
+        code: ErrorCode::NotFound.into(),
+        ..ErrorReply::default()
+    };
+    let sent = session
+        .queue_reply(4, Payload::ErrorReply(refusal))
+        .unwrap();
+    let frame = tokio::select! {
+        event = session.next_event() => panic!("unexpected {event:?}"),
+        frame = peer.next() => frame.unwrap().unwrap(),
+    };
+    assert_eq!((frame.seq, frame.reply_to), (sent, 4));
+    let err = session.queue_reply(9, Payload::Ack(Ack {})).unwrap_err();
+    assert!(matches!(err, SessionError::NoSuchRequest(9)), "{err:?}");
+}
+
+#[tokio::test]
+async fn the_session_says_once_when_queued_frames_are_written() {
+    let (mut session, mut peer) = notifying().await;
+    session.queue_request(image_request()).unwrap();
+    session.wake_when_drained(0);
+    let (event, frame) = tokio::join!(session.next_event(), peer.next());
+    assert!(
+        matches!(event, Ok(Some(SessionEvent::Drained))),
+        "{event:?}"
+    );
+    assert!(frame.unwrap().unwrap().expects_reply);
+
+    session.queue_request(image_request()).unwrap();
+    let frame = tokio::select! {
+        event = session.next_event() => panic!("unexpected {event:?}"),
+        frame = peer.next() => frame.unwrap().unwrap(),
+    };
+    assert!(frame.expects_reply);
+}
+
+#[tokio::test]
+async fn queued_frames_go_out_as_far_as_the_stream_takes_them_now() {
+    let (mut session, mut peer) = notifying().await;
+    let request = session.queue_request(image_request()).unwrap();
+    session.write_queued().unwrap();
+    assert_eq!(session.queued_len(), 0);
+    assert_eq!(read_request(&mut peer).await, request);
+}

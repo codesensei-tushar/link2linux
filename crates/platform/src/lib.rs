@@ -6,7 +6,8 @@
 //! - [`NotificationSink`]: show phone notifications on the desktop;
 //! - [`Clipboard`]: read, write and watch the desktop clipboard, as far as
 //!   the desktop session allows ([`ClipboardAccess`]);
-//! - [`FileStore`]: where received files go, and opening them;
+//! - [`FileStore`]: where received files go, and opening them or showing
+//!   them in their folder;
 //! - [`CallAudio`]: carry call audio between the phone and the desktop's
 //!   microphone and speakers over Bluetooth;
 //! - [`SecretStore`]: keep small secrets, such as the desktop's private
@@ -273,8 +274,15 @@ pub trait FileStore: Send + Sync {
     /// Fails when the OS does not say where downloads go.
     fn downloads_dir(&self) -> Result<PathBuf, PlatformError>;
 
-    /// Opens `path` with the desktop's default application.
+    /// Opens the file at the absolute `path` with the desktop's default
+    /// application. Only ever on the user's request: received files are
+    /// never opened by themselves.
     fn open(&self, path: &Path) -> impl Future<Output = Result<(), PlatformError>> + Send;
+
+    /// Shows the file at the absolute `path` in the desktop's file
+    /// manager, selected in its folder where the file manager can do that.
+    fn show_in_folder(&self, path: &Path)
+    -> impl Future<Output = Result<(), PlatformError>> + Send;
 }
 
 /// Call audio between the phone and the desktop, over Bluetooth.

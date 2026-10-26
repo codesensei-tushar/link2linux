@@ -1,3 +1,4 @@
+import { demoTransfers } from "@/features/files/demo";
 import { demoNotifications } from "@/features/notifications/demo";
 
 import type {
@@ -201,6 +202,17 @@ export function createPreviewApi(search: string = globalThis.location.search): D
       });
       return Promise.resolve();
     },
+    listTransfers: (deviceId) =>
+      Promise.resolve(deviceId === "preview-1" ? demoTransfers(Date.now()) : []),
+    subscribeTransfers: () => () => undefined,
+    pickFilesToSend: () => Promise.reject(new Error("The file chooser needs the desktop app.")),
+    sendDroppedFiles: () => Promise.resolve(),
+    cancelTransfer: () => Promise.resolve(),
+    forgetTransfer: () => Promise.resolve(),
+    openReceivedFile: () => Promise.resolve(),
+    showReceivedFile: () => Promise.resolve(),
+    onFileDrag: () => Promise.resolve(() => undefined),
+    onFilesDropped: () => Promise.resolve(() => undefined),
     unpairDevice: (id) => {
       setDevices(devices.filter((d) => d.id !== id));
       return Promise.resolve();

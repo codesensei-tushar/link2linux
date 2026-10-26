@@ -12,7 +12,8 @@ mod state;
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{DragDropEvent, Manager, WindowEvent};
+use tauri_specta::Event as _;
 
 use backend::Backend;
 use tauri_specta::{Builder, collect_commands, collect_events};
@@ -40,6 +41,13 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::notifications::notification_image,
             commands::clipboard::get_clipboard_status,
             commands::clipboard::send_clipboard,
+            commands::files::list_transfers,
+            commands::files::pick_files_to_send,
+            commands::files::send_dropped_files,
+            commands::files::cancel_transfer,
+            commands::files::forget_transfer,
+            commands::files::open_received_file,
+            commands::files::show_received_file,
             commands::settings::get_settings,
             commands::settings::set_settings,
         ])
@@ -48,6 +56,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             events::DevicesChanged,
             events::NotificationChanged,
             events::ClipboardChanged,
+            events::TransferChanged,
+            events::FileDrag,
+            events::FilesDropped,
         ])
         // IPC types only travel from Rust to the UI for now, so one TypeScript
         // type per Rust type is enough (no separate input/output variants).
@@ -64,6 +75,7 @@ pub fn run() {
     let builder = specta_builder();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -87,16 +99,56 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // The window's focus sets how often sessions ping, and when a
-            // clipboard that works only then is used.
-            if let tauri::WindowEvent::Focused(focused) = event
-                && let Some(state) = window.app_handle().try_state::<AppState>()
-            {
-                state.backend().set_active(*focused);
+            let app = window.app_handle();
+            match event {
+                // The window's focus sets how often sessions ping, and when a
+                // clipboard that works only then is used.
+                WindowEvent::Focused(focused) => {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        state.backend().set_active(*focused);
+                    }
+                }
+                WindowEvent::DragDrop(drag) => file_drag(app, drag),
+                _ => {}
             }
         })
         .run(tauri::generate_context!())
         .expect("failed to start the link2linux desktop app");
+}
+
+/// Tells the page about files dragged over the window, and keeps the paths
+/// of a drop for `send_dropped_files`: the shell reads them from the
+/// desktop, so the page never names files itself.
+fn file_drag(app: &tauri::AppHandle, drag: &DragDropEvent) {
+    match drag {
+        DragDropEvent::Enter { .. } => {
+            let _ = events::FileDrag { over: true }.emit(app);
+        }
+        DragDropEvent::Drop { paths, .. } => {
+            let _ = events::FileDrag { over: false }.emit(app);
+            let Some(state) = app.try_state::<AppState>() else {
+                return;
+            };
+            if paths.is_empty() {
+                return;
+            }
+            let names = paths
+                .iter()
+                .map(|path| {
+                    path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |name| name.to_string_lossy().into_owned(),
+                    )
+                })
+                .collect();
+            let drop_id = state.keep_drop(paths.clone());
+            let _ = events::FilesDropped { drop_id, names }.emit(app);
+        }
+        DragDropEvent::Leave => {
+            let _ = events::FileDrag { over: false }.emit(app);
+        }
+        _ => {}
+    }
 }
 
 /// Brings the main window to the front, for a click on a pop-up.

@@ -74,6 +74,21 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("switch", { name: "Share passwords" })).not.toBeChecked();
   });
 
+  it("sends and receives files until the user turns them off", async () => {
+    const user = userEvent.setup();
+    const api = renderPage();
+
+    const files = await screen.findByRole("switch", { name: "Send and receive files" });
+    expect(files).toBeChecked();
+    expect(files).toHaveAccessibleDescription(/saved in your Downloads folder/);
+
+    await user.click(files);
+    expect(files).not.toBeChecked();
+    expect(api.setSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ shareFiles: false }),
+    );
+  });
+
   it("says when a change could not be saved", async () => {
     const user = userEvent.setup();
     const api = createFakeApi();

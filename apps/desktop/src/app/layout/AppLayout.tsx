@@ -2,6 +2,7 @@ import { useEffect, useRef, type MouseEvent } from "react";
 import { Outlet, useLocation } from "react-router";
 
 import { features } from "@/features";
+import { FileDropOverlay } from "@/features/files/FileDropOverlay";
 
 import { Sidebar } from "./Sidebar";
 import "./layout.css";
@@ -34,6 +35,7 @@ export function AppLayout() {
       <main id="main" ref={mainRef} tabIndex={-1} className="app-main">
         <Outlet />
       </main>
+      <FileDropOverlay />
     </div>
   );
 }

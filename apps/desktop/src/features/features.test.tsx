@@ -18,7 +18,9 @@ describe("features", () => {
     ]);
   });
 
-  it.each(features.filter((f) => !["pairing", "notifications", "clipboard"].includes(f.id)))(
+  it.each(
+    features.filter((f) => !["pairing", "notifications", "clipboard", "files"].includes(f.id)),
+  )(
     "$label renders a placeholder page that says what it will do",
     ({ Page, label, description }) => {
       render(<Page />);

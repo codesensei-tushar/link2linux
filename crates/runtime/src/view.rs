@@ -28,6 +28,10 @@ pub use crate::clipboard::{
     ClipboardActivity, ClipboardDirection, ClipboardMode, ClipboardPhone, ClipboardPhoneState,
     ClipboardProblem, ClipboardProblemKind, ClipboardStatus, HeldClipboard,
 };
+pub use crate::files::dto::{
+    FileTransfer, FileTransferEvent, TransferDirection, TransferFailure, TransferFileInfo,
+    TransferStatus,
+};
 pub use crate::notify::dto::{
     ConversationMessageInfo, ImageRef, MirroredNotification, NotificationActionInfo,
     NotificationActionKindView, NotificationCategoryView, NotificationContentView,
@@ -224,6 +228,18 @@ pub enum BackendError {
     /// The runtime did not start, so nothing it does is available.
     #[error("link2linux didn't start, so this isn't available.")]
     NotStarted,
+    /// One of the files to send is a folder.
+    #[error("Folders can't be sent yet. Send the files in them instead.")]
+    FolderNotSendable,
+    /// One of the files to send can't be read, or isn't a regular file.
+    #[error("A file couldn't be read, so nothing was sent.")]
+    FileUnreadable,
+    /// More files than one transfer takes.
+    #[error("Send at most 500 files at a time.")]
+    TooManyFiles,
+    /// Files are turned off on this computer.
+    #[error("Turn on Files in Settings to send files.")]
+    FilesOff,
 }
 
 /// Why the app could not start, for the page shown instead of the app.
@@ -247,4 +263,6 @@ pub trait EventSink: Send + Sync {
     fn notification_changed(&self, _device_id: &str, _event: &NotificationEvent) {}
     /// The shared clipboard's state changed.
     fn clipboard_changed(&self, _status: &ClipboardStatus) {}
+    /// A file transfer with a phone changed.
+    fn transfer_changed(&self, _device_id: &str, _event: &FileTransferEvent) {}
 }

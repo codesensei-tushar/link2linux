@@ -215,7 +215,10 @@ impl<C: Clipboard> ClipboardService<C> {
             text: clip.text().text.clone(),
             sensitive: clip.is_sensitive(),
         };
-        let seq = session.start_request(Payload::ClipboardPush(push)).await?;
+        // Not waiting for the whole push to be written: the session reads
+        // while the rest goes out, as the phone may be sending a file.
+        let seq = session.queue_request(Payload::ClipboardPush(push))?;
+        session.write_queued()?;
         tracing::debug!(seq, bytes = clip.len(), "pushed the clipboard");
         self.holds = Some(clip.digest());
         self.in_flight = Some((seq, clip));

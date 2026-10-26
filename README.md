@@ -55,7 +55,7 @@ your terms.
 | Notifications | Phone notifications on your desktop: reply inline, run actions, dismiss on both devices | In progress (v0.1) |
 | Messages | Reply to texts from your keyboard, straight from the notification | Planned (v0.2) |
 | Clipboard | Copy on one device, paste on the other | In progress (v0.2) |
-| Files | Send files both ways with drag and drop or the share sheet | Planned (v0.2) |
+| Files | Send files both ways with drag and drop or the share sheet | In progress (v0.2) |
 | Photos | Send recent photos to your computer in a couple of taps | Planned (v0.2) |
 | Calls | See who's calling and talk through your computer over Bluetooth | Planned (v0.3) |
 | Phone status | Battery, signal and ring-my-phone | Planned (v0.3) |

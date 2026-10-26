@@ -19,6 +19,14 @@ from Unreleased to a version.
   click Send. Passwords a password manager marks as secret stay on the
   computer unless you turn on "Share passwords". Clipboard sharing is off on
   the phone until you turn it on.
+- File transfer. Send files from the phone with "Send to computer" in the
+  share sheet, which always asks first, or from its Files screen; send
+  them from the computer by dragging them onto the window or with "Send
+  files". Received files go to Downloads on both devices. Each file is
+  checked against its SHA-256 before it is kept, a received name never
+  overwrites a file, and a transfer cut off by a lost connection resumes
+  where it stopped within the hour. Files are off on the phone until you
+  turn them on; Android 8 and 9 also ask for storage access.
 
 ## [0.1.2] - 2026-10-26
 
