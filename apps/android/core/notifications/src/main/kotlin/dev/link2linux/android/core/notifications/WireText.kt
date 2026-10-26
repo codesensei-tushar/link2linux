@@ -25,16 +25,6 @@ object WireText {
 
     fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
-    /**
-     * Keys and group names are never truncated: at most 256 bytes they travel
-     * as they are, else as "h:" and the base64url SHA-256 of them.
-     */
-    fun identifier(value: String): String {
-        val bytes = value.toByteArray(Charsets.UTF_8)
-        if (bytes.size <= Limits.KEY) return value
-        return "h:" + base64Url.encodeToString(sha256(bytes))
-    }
-
     /** Cuts at a character boundary so the UTF-8 form fits [maxBytes]. */
     fun truncate(value: String, maxBytes: Int): String {
         if (value.length * 3 <= maxBytes || value.toByteArray(Charsets.UTF_8).size <= maxBytes) return value

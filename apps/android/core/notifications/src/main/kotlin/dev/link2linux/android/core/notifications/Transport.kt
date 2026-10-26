@@ -99,6 +99,13 @@ interface NotificationPolicy {
 
     /** The user shares this app's notifications without their content. */
     fun isContentHidden(packageName: String): Boolean
+
+    /**
+     * A desktop may reply, and run actions that may open an app, while the
+     * phone is locked. Off, it works as Android's own lock screen does,
+     * which asks for the phone to be unlocked first.
+     */
+    val actWhileLocked: Boolean
 }
 
 /** Facts about the phone that decide whether an action may run now. */

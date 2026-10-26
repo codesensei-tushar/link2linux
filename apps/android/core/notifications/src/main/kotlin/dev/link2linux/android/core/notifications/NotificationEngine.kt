@@ -516,6 +516,9 @@ class NotificationEngine(
         if (wire.requiresUnlock && environment.isLocked) {
             return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the action needs the phone unlocked")
         }
+        if ((takesReply || action.mayOpenActivity) && environment.isLocked && !policy.actWhileLocked) {
+            return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the phone is locked")
+        }
         val mayStart = environment.canStartActivitiesFromBackground
         if (action.opensActivity && !mayStart) {
             return failure(ErrorCode.ERROR_CODE_NOT_ALLOWED, "the app may not open apps from the background")

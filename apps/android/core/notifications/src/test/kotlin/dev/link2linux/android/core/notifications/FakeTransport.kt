@@ -31,6 +31,7 @@ class FakePolicy : NotificationPolicy {
     override var accessGranted = true
     override var dismissSync = true
     override var hideOneTimeCodes = true
+    override var actWhileLocked = false
     val excluded = mutableSetOf<String>()
     val hidden = mutableSetOf<String>()
 

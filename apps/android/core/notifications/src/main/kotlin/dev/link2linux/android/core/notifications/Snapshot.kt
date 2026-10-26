@@ -41,8 +41,13 @@ data class NotificationSnapshot(
     val onlyAlertOnce: Boolean = false,
     /** Android muted its interruption, for example under Do Not Disturb. */
     val interruptionSuppressed: Boolean = false,
-    /** `Notification.visibility`. */
+    /** `Notification.visibility`: the app's choice. */
     val visibility: Int = AndroidValues.VISIBILITY_PRIVATE,
+    /**
+     * The user's lock-screen setting for the notification's channel, or
+     * [AndroidValues.VISIBILITY_NO_OVERRIDE]. The stricter of the two is sent.
+     */
+    val visibilityOverride: Int = AndroidValues.VISIBILITY_NO_OVERRIDE,
     val progress: ProgressSnapshot? = null,
     val conversation: ConversationSnapshot? = null,
     /** Actions in display order, including call actions from a call style. */
@@ -92,6 +97,8 @@ data class ActionSnapshot(
     val requiresUnlock: Boolean = false,
     /** Its PendingIntent starts an activity. */
     val opensActivity: Boolean = false,
+    /** It may start an activity: it does, or Android cannot say (before Android 12). */
+    val mayOpenActivity: Boolean = opensActivity,
     val callRole: CallRole? = null,
     val invoker: ActionInvoker,
 )
@@ -148,6 +155,7 @@ object AndroidValues {
     const val VISIBILITY_SECRET = -1
     const val VISIBILITY_PRIVATE = 0
     const val VISIBILITY_PUBLIC = 1
+    const val VISIBILITY_NO_OVERRIDE = -1000
 
     const val GROUP_ALERT_ALL = 0
     const val GROUP_ALERT_SUMMARY = 1

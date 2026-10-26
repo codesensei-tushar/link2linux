@@ -200,6 +200,27 @@ class NotificationEngineRequestsTest {
     }
 
     @Test
+    fun `a locked phone takes no reply and opens no app from a desktop unless the user allows it`() = runTest {
+        val rec = Recorder()
+        val reply = ActionSnapshot("Reply", replyKey = "r", reply = ReplyInput(), invoker = rec)
+        val open = ActionSnapshot("Open", mayOpenActivity = true, invoker = rec)
+        val h = ready(this, snap("n").copy(actions = listOf(reply, open)))
+        val replyId = actionId(h, index = 0)
+        val openId = actionId(h, index = 1)
+        h.env.isLocked = true
+        h.env.canStartActivitiesFromBackground = true
+
+        h.act("n", replyId, reply = "on my way", idem = idempotency(10)).assertError(ErrorCode.ERROR_CODE_NOT_ALLOWED)
+        h.act("n", openId, idem = idempotency(11)).assertError(ErrorCode.ERROR_CODE_NOT_ALLOWED)
+        assertTrue(rec.calls.isEmpty())
+
+        h.policy.actWhileLocked = true
+        assertEquals(NotificationReply.Ack, h.act("n", replyId, reply = "on my way", idem = idempotency(12)).single)
+        assertEquals(NotificationReply.Ack, h.act("n", openId, idem = idempotency(13)).single)
+        assertEquals(2, rec.calls.size)
+    }
+
+    @Test
     fun `a locked phone does not block actions that do not need unlock`() = runTest {
         val rec = Recorder()
         val h = ready(this, withAction(ActionSnapshot("Mark read", invoker = rec)))
