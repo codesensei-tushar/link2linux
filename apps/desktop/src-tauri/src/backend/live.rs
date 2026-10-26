@@ -1,25 +1,29 @@
 //! The backend that runs the real runtime: discovery, pairing and sessions
-//! with paired phones, and phone notifications as desktop banners.
+//! with paired phones, phone notifications as desktop banners, and the
+//! shared clipboard.
 //!
 //! Everything it does lives in `link2linux-runtime`; this file only builds
 //! the runtime from what the shell has (the event sink, the D-Bus
-//! notification service, Bluetooth advertising) and forwards the trait's
-//! calls.
+//! notification service, the clipboard, Bluetooth advertising) and forwards
+//! the trait's calls.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use link2linux_platform::PresenceAdvertiser;
 use link2linux_platform::linux::ble::BluezPresence;
-use link2linux_platform::linux::{DbusNotifications, SecretServiceStore, SessionLock};
+use link2linux_platform::linux::{
+    DbusNotifications, LinuxClipboard, SecretServiceStore, SessionLock,
+};
+use link2linux_platform::{Clipboard, ClipboardAccess, PresenceAdvertiser};
+use link2linux_runtime::clipboard::ClipboardPort;
 use link2linux_runtime::notify::{Presenter, PrivatePopups, ServiceFactory};
 use link2linux_runtime::paths::{DataDir, desktop_name, runtime_images_dir};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
-    Backend, BackendError, CachedImage, Device, EventSink, MirroredNotification, PairingMethod,
-    PairingState, PhoneTarget, Settings,
+    Backend, BackendError, CachedImage, ClipboardStatus, Device, EventSink, MirroredNotification,
+    PairingMethod, PairingState, PhoneTarget, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -37,6 +41,8 @@ impl LiveBackend {
     /// Starts the runtime on Tauri's async runtime, with data in the user's
     /// XDG data directory and the private key in the keyring.
     /// `open_window` brings up the window when the user clicks a pop-up.
+    /// `window_clipboard` is the clipboard as the window sees it, used when
+    /// the desktop session lets no background app use the clipboard.
     ///
     /// # Errors
     ///
@@ -45,6 +51,7 @@ impl LiveBackend {
     pub fn start(
         events: Arc<dyn EventSink>,
         open_window: impl Fn() + Send + Sync + 'static,
+        window_clipboard: impl ClipboardPort + 'static,
     ) -> Result<Self, RuntimeError> {
         let data_dir = DataDir::from_env()?;
         let keyring = SecretServiceStore::new(APP_ID);
@@ -72,10 +79,11 @@ impl LiveBackend {
             store_key,
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), images)),
             presenter,
-            clipboard: None,
+            clipboard: Some(open_clipboard(window_clipboard)),
             events,
         };
-        let config = RuntimeConfig::new(data_dir.clone());
+        let mut config = RuntimeConfig::new(data_dir.clone());
+        config.clipboard = settings.clipboard();
         let handle = tauri::async_runtime::handle().inner().clone();
         let runtime = Arc::new(Runtime::start(handle, &config, shell)?);
         if runtime.needs_store_key() {
@@ -88,6 +96,19 @@ impl LiveBackend {
             settings: Mutex::new(settings),
             settings_path,
         })
+    }
+}
+
+/// The desktop clipboard: followed in the background where the desktop
+/// session allows it, else through the window while it has focus.
+fn open_clipboard(window_clipboard: impl ClipboardPort + 'static) -> Arc<dyn ClipboardPort> {
+    let clipboard = LinuxClipboard::open();
+    match Clipboard::access(&clipboard) {
+        ClipboardAccess::Background => Arc::new(clipboard),
+        ClipboardAccess::FocusOnly => {
+            tracing::info!("the clipboard is shared while the window has focus");
+            Arc::new(window_clipboard)
+        }
     }
 }
 
@@ -223,9 +244,19 @@ impl Backend for LiveBackend {
         *self.settings.lock().expect("not poisoned")
     }
 
+    fn clipboard(&self) -> ClipboardStatus {
+        self.runtime.clipboard()
+    }
+
+    fn send_clipboard(&self) -> Result<(), BackendError> {
+        self.runtime.send_clipboard();
+        Ok(())
+    }
+
     fn set_settings(&self, settings: Settings) -> Result<(), BackendError> {
         *self.settings.lock().expect("not poisoned") = settings;
         self.popups.set_show_text(settings.show_notification_text);
+        self.runtime.set_clipboard_settings(settings.clipboard());
         settings.save(&self.settings_path).map_err(|error| {
             tracing::warn!(%error, "could not save the settings");
             BackendError::NotSaved

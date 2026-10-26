@@ -77,6 +77,10 @@ impl Backend for FailedBackend {
         Err(BackendError::NotStarted)
     }
 
+    fn send_clipboard(&self) -> Result<(), BackendError> {
+        Err(BackendError::NotStarted)
+    }
+
     fn set_settings(&self, _settings: Settings) -> Result<(), BackendError> {
         Err(BackendError::NotStarted)
     }
@@ -116,6 +120,8 @@ mod tests {
             backend.notifications("phone-1"),
             Err(BackendError::NotStarted)
         ));
+        assert_eq!(backend.send_clipboard(), Err(BackendError::NotStarted));
+        assert!(backend.clipboard().phones.is_empty());
     }
 
     #[test]

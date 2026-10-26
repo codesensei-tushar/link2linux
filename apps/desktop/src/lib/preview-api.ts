@@ -1,13 +1,22 @@
 import { demoNotifications } from "@/features/notifications/demo";
 
-import type { DesktopApi, Device, PairingState, PhoneTarget, Settings, Unsubscribe } from "./api";
+import type {
+  ClipboardStatus,
+  DesktopApi,
+  Device,
+  PairingState,
+  PhoneTarget,
+  Settings,
+  Unsubscribe,
+} from "./api";
 
 const DAY_MS = 86_400_000;
 
 /**
  * Stand-in for running the UI in a plain browser (`pnpm dev` without Tauri),
  * where IPC does not exist. It plays a short, fixed story so every screen can
- * be looked at. `?preview=qr|code|success|failed|empty|startup-error` opens on that screen.
+ * be looked at. `?preview=qr|code|success|failed|empty|startup-error` opens on that screen,
+ * and `?preview=clipboard-focus` shows a clipboard shared only while the window has focus.
  */
 export function createPreviewApi(search: string = globalThis.location.search): DesktopApi {
   const scenario = new URLSearchParams(search).get("preview");
@@ -33,9 +42,49 @@ export function createPreviewApi(search: string = globalThis.location.search): D
             lastConnectedUnixMs: now - 2 * DAY_MS,
           },
         ];
-  let settings: Settings = { showNotificationText: false };
+  let settings: Settings = {
+    showNotificationText: false,
+    shareClipboard: true,
+    sharePasswords: false,
+  };
+  const focusOnly = scenario === "clipboard-focus";
+  let clipboard: ClipboardStatus = {
+    mode: focusOnly ? "whenFocused" : "automatic",
+    phones: devices.map((device) => ({
+      deviceId: device.id,
+      name: device.name,
+      state: device.status === "connected" ? "ready" : "disconnected",
+    })),
+    activity:
+      devices.length === 0
+        ? []
+        : [
+            {
+              deviceId: "preview-1",
+              phoneName: "Pixel 9",
+              direction: "received",
+              bytes: 42,
+              sensitive: false,
+              atUnixMs: now - 4 * 60_000,
+            },
+            {
+              deviceId: "preview-1",
+              phoneName: "Pixel 9",
+              direction: "sent",
+              bytes: 1_204,
+              sensitive: false,
+              atUnixMs: now - 26 * 60_000,
+            },
+          ],
+    problem: null,
+    held:
+      focusOnly && devices.length > 0
+        ? { deviceId: "preview-1", phoneName: "Pixel 9", bytes: 42, sensitive: false }
+        : null,
+  };
   const pairingListeners = new Set<(state: PairingState) => void>();
   const deviceListeners = new Set<(devices: Device[]) => void>();
+  const clipboardListeners = new Set<(status: ClipboardStatus) => void>();
 
   const qr: PairingState = {
     step: "qrOffer",
@@ -89,6 +138,12 @@ export function createPreviewApi(search: string = globalThis.location.search): D
       listener(next);
     });
   };
+  const setClipboard = (next: ClipboardStatus) => {
+    clipboard = next;
+    clipboardListeners.forEach((listener) => {
+      listener(next);
+    });
+  };
   const listen = <T>(set: Set<(value: T) => void>, listener: (value: T) => void) => {
     set.add(listener);
     const stop: Unsubscribe = () => set.delete(listener);
@@ -121,6 +176,31 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     dismissNotification: () => Promise.resolve(),
     runNotificationAction: () => Promise.resolve(),
     notificationImage: () => Promise.resolve(null),
+    getClipboardStatus: () => Promise.resolve(clipboard),
+    onClipboardChanged: (listener) => listen(clipboardListeners, listener),
+    sendClipboard: () => {
+      const ready = clipboard.phones.filter((phone) => phone.state === "ready");
+      const at = Date.now();
+      setClipboard({
+        ...clipboard,
+        activity: [
+          ...ready.map((phone) => ({
+            deviceId: phone.deviceId,
+            phoneName: phone.name,
+            direction: "sent" as const,
+            bytes: 18,
+            sensitive: false,
+            atUnixMs: at,
+          })),
+          ...clipboard.activity,
+        ].slice(0, 20),
+        problem:
+          ready.length === 0
+            ? { kind: "noPhone", deviceId: null, phoneName: null, bytes: null, atUnixMs: at }
+            : null,
+      });
+      return Promise.resolve();
+    },
     unpairDevice: (id) => {
       setDevices(devices.filter((d) => d.id !== id));
       return Promise.resolve();

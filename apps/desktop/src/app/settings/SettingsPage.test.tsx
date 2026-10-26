@@ -27,7 +27,51 @@ describe("SettingsPage", () => {
 
     await user.click(toggle);
     expect(toggle).toBeChecked();
-    expect(api.setSettings).toHaveBeenCalledWith({ showNotificationText: true });
+    expect(api.setSettings).toHaveBeenCalledWith({
+      showNotificationText: true,
+      shareClipboard: true,
+      sharePasswords: false,
+    });
+  });
+
+  it("shares the clipboard but not passwords until the user says otherwise", async () => {
+    const user = userEvent.setup();
+    const api = renderPage();
+
+    const sharing = await screen.findByRole("switch", {
+      name: "Share the clipboard with your phones",
+    });
+    const passwords = screen.getByRole("switch", { name: "Share passwords" });
+    expect(sharing).toBeChecked();
+    expect(passwords).not.toBeChecked();
+    expect(passwords).toHaveAccessibleDescription(/they stay on this computer/);
+
+    await user.click(passwords);
+    expect(api.setSettings).toHaveBeenLastCalledWith({
+      showNotificationText: false,
+      shareClipboard: true,
+      sharePasswords: true,
+    });
+
+    // Passwords cannot be shared while the clipboard is not.
+    await user.click(sharing);
+    expect(api.setSettings).toHaveBeenLastCalledWith({
+      showNotificationText: false,
+      shareClipboard: false,
+      sharePasswords: true,
+    });
+    expect(passwords).toBeDisabled();
+  });
+
+  it("treats settings saved before the clipboard was shared as the defaults", async () => {
+    const api = createFakeApi();
+    api.getSettings.mockResolvedValue({ showNotificationText: true });
+    renderPage(api);
+
+    expect(
+      await screen.findByRole("switch", { name: "Share the clipboard with your phones" }),
+    ).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Share passwords" })).not.toBeChecked();
   });
 
   it("says when a change could not be saved", async () => {
@@ -36,7 +80,9 @@ describe("SettingsPage", () => {
     api.setSettings.mockRejectedValue(new Error("The setting couldn't be saved."));
     renderPage(api);
 
-    await user.click(await screen.findByRole("switch"));
+    await user.click(
+      await screen.findByRole("switch", { name: "Show notification text in pop-ups" }),
+    );
     expect(await screen.findByRole("note")).toHaveTextContent("The setting couldn't be saved.");
   });
 
@@ -48,6 +94,8 @@ describe("SettingsPage", () => {
 
     expect(await screen.findByText("Couldn't load the settings")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByRole("switch")).not.toBeChecked();
+    expect(
+      await screen.findByRole("switch", { name: "Show notification text in pop-ups" }),
+    ).not.toBeChecked();
   });
 });

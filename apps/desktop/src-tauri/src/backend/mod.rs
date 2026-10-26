@@ -17,9 +17,9 @@ pub mod live;
 pub use link2linux_runtime::notify::CachedImage;
 pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
-    BackendError, Device, DeviceStatus, DiscoveredPhone, EventSink, MirroredNotification,
-    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneTarget, QrImage,
-    StartupError,
+    BackendError, ClipboardMode, ClipboardStatus, Device, DeviceStatus, DiscoveredPhone, EventSink,
+    MirroredNotification, NotificationEvent, PairingFailure, PairingMethod, PairingState,
+    PhoneTarget, QrImage, StartupError,
 };
 
 /// What the desktop shell needs from the pairing and device layer.
@@ -64,6 +64,22 @@ pub trait Backend: Send + Sync {
     /// A picture the phone shared, if it has arrived.
     fn notification_image(&self, _device_id: &str, _sha256: &str) -> Option<CachedImage> {
         None
+    }
+
+    /// The state of the shared clipboard.
+    fn clipboard(&self) -> ClipboardStatus {
+        ClipboardStatus {
+            mode: ClipboardMode::Unavailable,
+            phones: Vec::new(),
+            activity: Vec::new(),
+            problem: None,
+            held: None,
+        }
+    }
+    /// Sends what the clipboard holds to every phone. What came of it
+    /// arrives as a new clipboard status.
+    fn send_clipboard(&self) -> Result<(), BackendError> {
+        Ok(())
     }
 
     /// The desktop app's settings.

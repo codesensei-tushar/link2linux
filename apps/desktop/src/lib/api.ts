@@ -7,6 +7,7 @@ import {
   commands,
   events,
   type AppInfo,
+  type ClipboardStatus,
   type CommandError,
   type Device,
   type PairingMethod,
@@ -19,6 +20,13 @@ import { createPreviewApi } from "./preview-api";
 
 export type {
   AppInfo,
+  ClipboardActivity,
+  ClipboardMode,
+  ClipboardPhone,
+  ClipboardPhoneState,
+  ClipboardProblem,
+  ClipboardProblemKind,
+  ClipboardStatus,
   Device,
   DeviceStatus,
   DiscoveredPhone,
@@ -66,6 +74,13 @@ export interface DesktopApi {
   ): Promise<void>;
   /** A URL usable in `<img>` for an image the phone shared, or null when unavailable. */
   notificationImage(deviceId: string, sha256: string): Promise<string | null>;
+
+  /** How the clipboard is shared, each phone's state and what went where lately. */
+  getClipboardStatus(): Promise<ClipboardStatus>;
+  /** Subscribe before reading a snapshot, so nothing is missed in between. */
+  onClipboardChanged(listener: (status: ClipboardStatus) => void): Promise<Unsubscribe>;
+  /** Sends what the clipboard holds to every phone. What came of it arrives as a new status. */
+  sendClipboard(): Promise<void>;
 
   unpairDevice(deviceId: string): Promise<void>;
   getPairingState(): Promise<PairingState>;
@@ -125,6 +140,12 @@ export const tauriApi: DesktopApi = {
   runNotificationAction: (deviceId, key, actionId, replyText) =>
     expectOk(commands.runNotificationAction(deviceId, key, actionId, replyText ?? null)),
   notificationImage: (deviceId, sha256) => expectData(commands.notificationImage(deviceId, sha256)),
+  getClipboardStatus: () => commands.getClipboardStatus(),
+  onClipboardChanged: (listener) =>
+    events.clipboardChanged.listen((event) => {
+      listener(event.payload);
+    }),
+  sendClipboard: () => expectOk(commands.sendClipboard()),
   unpairDevice: (deviceId) => expectOk(commands.unpairDevice(deviceId)),
   getPairingState: () => commands.getPairingState(),
   startPairing: (method) => expectOk(commands.startPairing(method)),
