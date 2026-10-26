@@ -153,7 +153,9 @@ pub(crate) fn share(core: &Core, clip: &Arc<Clip>, origin: Origin) {
 /// Follows the desktop clipboard and shares each new copy, until the
 /// runtime stops or the clipboard can no longer be followed. Returns at
 /// once on a desktop whose session does not let a background app follow
-/// the clipboard.
+/// the clipboard. A clipboard that loses its display server turns
+/// focus-only: it is shared while the window has focus from then on, as
+/// [`window_focus`] does, and the page says so.
 pub(crate) async fn watch(core: Arc<Core>) {
     let Some(clipboard) = core.clipboard.clone() else {
         return;
@@ -167,9 +169,8 @@ pub(crate) async fn watch(core: Arc<Core>) {
             changed = Clipboard::changed(&clipboard) => changed,
         };
         if let Err(error) = changed {
-            // The connection to the display server is gone, and with it
-            // reading and writing.
-            tracing::warn!(%error, "the clipboard can no longer be followed");
+            tracing::warn!(%error, "the clipboard can no longer be followed in the background");
+            core.clipboard_changed();
             return;
         }
         match Clipboard::read(&clipboard).await {

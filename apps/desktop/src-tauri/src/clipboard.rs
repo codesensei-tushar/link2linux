@@ -1,10 +1,13 @@
-//! The clipboard through the window's toolkit, for desktop sessions that let
+//! The desktop clipboard as the shell hands it to the runtime: the
+//! platform's while it works in the background, else the clipboard as the
+//! app's window sees it ([`WindowClipboard`]), for desktop sessions that let
 //! an app use the clipboard only while its window has focus, such as a
-//! Wayland session without a clipboard protocol for background apps.
+//! Wayland session without a clipboard protocol for background apps, or one
+//! whose display server went away.
 //!
 //! GTK runs on the app's main thread, so each call is sent there and its
-//! answer comes back through a channel. The runtime uses this clipboard
-//! only while the window has focus.
+//! answer comes back through a channel. The runtime uses the window's
+//! clipboard only while the window has focus.
 
 use link2linux_platform::{Clipboard, ClipboardAccess, ClipboardText, PlatformError};
 use tauri::AppHandle;
@@ -28,6 +31,52 @@ const TEXT_TYPES: [&str; 5] = [
 ];
 /// What `set_with_data` reports a request for the mark with.
 const HINT_INFO: u32 = 1;
+
+/// The desktop clipboard: `background` while it can be used in the
+/// background, else `window`. The platform's clipboard turns focus-only
+/// when it loses its display server, so the choice is made at each use.
+pub struct FallbackClipboard<B, W> {
+    background: B,
+    window: W,
+}
+
+impl<B: Clipboard, W: Clipboard> FallbackClipboard<B, W> {
+    pub fn new(background: B, window: W) -> Self {
+        Self { background, window }
+    }
+
+    fn in_background(&self) -> bool {
+        self.background.access() == ClipboardAccess::Background
+    }
+}
+
+impl<B: Clipboard, W: Clipboard> Clipboard for FallbackClipboard<B, W> {
+    fn access(&self) -> ClipboardAccess {
+        self.background.access()
+    }
+
+    async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
+        if self.in_background() {
+            self.background.read().await
+        } else {
+            self.window.read().await
+        }
+    }
+
+    async fn write(&self, text: &ClipboardText) -> Result<(), PlatformError> {
+        if self.in_background() {
+            self.background.write(text).await
+        } else {
+            self.window.write(text).await
+        }
+    }
+
+    async fn changed(&self) -> Result<(), PlatformError> {
+        // It fails once when the display server goes away, and then never
+        // resolves, as for a clipboard that was focus-only from the start.
+        self.background.changed().await
+    }
+}
 
 /// The desktop clipboard as the app's window sees it.
 pub struct WindowClipboard {
@@ -161,7 +210,77 @@ fn is_secret(hint: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    /// A clipboard in memory, whose access the test can take away.
+    struct Memory {
+        access: Mutex<ClipboardAccess>,
+        text: Mutex<Option<ClipboardText>>,
+    }
+
+    impl Memory {
+        fn new(access: ClipboardAccess, text: &str) -> Self {
+            Self {
+                access: Mutex::new(access),
+                text: Mutex::new(Some(ClipboardText {
+                    text: text.to_owned(),
+                    sensitive: false,
+                })),
+            }
+        }
+
+        fn text(&self) -> String {
+            self.text.lock().unwrap().clone().unwrap().text
+        }
+    }
+
+    impl Clipboard for &Memory {
+        fn access(&self) -> ClipboardAccess {
+            *self.access.lock().unwrap()
+        }
+
+        async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
+            Ok(self.text.lock().unwrap().clone())
+        }
+
+        async fn write(&self, text: &ClipboardText) -> Result<(), PlatformError> {
+            *self.text.lock().unwrap() = Some(text.clone());
+            Ok(())
+        }
+
+        async fn changed(&self) -> Result<(), PlatformError> {
+            std::future::pending().await
+        }
+    }
+
+    #[test]
+    fn the_window_takes_over_once_the_background_clipboard_is_gone() {
+        tauri::async_runtime::block_on(window_takes_over());
+    }
+
+    async fn window_takes_over() {
+        let platform = Memory::new(ClipboardAccess::Background, "platform");
+        let window = Memory::new(ClipboardAccess::FocusOnly, "window");
+        let clipboard = FallbackClipboard::new(&platform, &window);
+        let copy = ClipboardText {
+            text: "copy".into(),
+            sensitive: false,
+        };
+
+        assert_eq!(clipboard.access(), ClipboardAccess::Background);
+        assert_eq!(clipboard.read().await.unwrap().unwrap().text, "platform");
+        clipboard.write(&copy).await.unwrap();
+        assert_eq!(platform.text(), "copy");
+
+        // The display server went away.
+        *platform.access.lock().unwrap() = ClipboardAccess::FocusOnly;
+        assert_eq!(clipboard.access(), ClipboardAccess::FocusOnly);
+        assert_eq!(clipboard.read().await.unwrap().unwrap().text, "window");
+        clipboard.write(&copy).await.unwrap();
+        assert_eq!(window.text(), "copy");
+    }
 
     #[test]
     fn copied_files_are_told_from_text() {

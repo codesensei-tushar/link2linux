@@ -9,7 +9,7 @@
 mod support;
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -114,7 +114,9 @@ impl NotificationSink for FakeSink {
 /// The desktop clipboard, in memory. The test copies on it as the user
 /// would.
 struct FakeClipboard {
-    access: ClipboardAccess,
+    access: Mutex<ClipboardAccess>,
+    /// The display server went away, and `changed` has not said so yet.
+    lost: AtomicBool,
     content: Mutex<Option<ClipboardText>>,
     /// Counts the changes; `changed` reports each one once, also one made
     /// while nobody waited.
@@ -127,7 +129,8 @@ struct FakeClipboard {
 impl FakeClipboard {
     fn new(access: ClipboardAccess) -> Arc<Self> {
         Arc::new(Self {
-            access,
+            access: Mutex::new(access),
+            lost: AtomicBool::new(false),
             content: Mutex::default(),
             generation: watch::Sender::new(0),
             reported: AtomicU64::new(0),
@@ -154,6 +157,14 @@ impl FakeClipboard {
         });
     }
 
+    /// The display server goes away: the clipboard turns focus-only, as
+    /// the platform's does, and `changed` fails once.
+    fn lose(&self) {
+        *self.access.lock().unwrap() = ClipboardAccess::FocusOnly;
+        self.lost.store(true, Ordering::Relaxed);
+        self.generation.send_modify(|generation| *generation += 1);
+    }
+
     async fn wait_for(&self, check: impl Fn(&Self) -> bool) {
         wait(&self.touched, || check(self).then_some(())).await;
     }
@@ -161,7 +172,7 @@ impl FakeClipboard {
 
 impl Clipboard for FakeClipboard {
     fn access(&self) -> ClipboardAccess {
-        self.access
+        *self.access.lock().unwrap()
     }
 
     async fn read(&self) -> Result<Option<ClipboardText>, PlatformError> {
@@ -177,11 +188,17 @@ impl Clipboard for FakeClipboard {
     }
 
     async fn changed(&self) -> Result<(), PlatformError> {
-        if self.access == ClipboardAccess::FocusOnly {
-            std::future::pending::<()>().await;
-        }
         let mut generations = self.generation.subscribe();
         loop {
+            if self.lost.swap(false, Ordering::Relaxed) {
+                return Err(PlatformError::Unavailable {
+                    service: "clipboard",
+                    reason: "the display server went away".into(),
+                });
+            }
+            if Clipboard::access(self) == ClipboardAccess::FocusOnly {
+                std::future::pending::<()>().await;
+            }
             let current = *generations.borrow_and_update();
             if current > self.reported.load(Ordering::Relaxed) {
                 self.reported.store(current, Ordering::Relaxed);
@@ -1110,4 +1127,27 @@ async fn a_focus_only_desktop_offers_the_phones_clipboard_until_its_window_has_f
     rig.runtime.set_active(true);
     let push = within(take_push(&mut session)).await;
     assert_eq!(push.text, "copied meanwhile");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clipboard_that_loses_its_display_server_is_shared_while_the_window_has_focus() {
+    let clipboard = FakeClipboard::new(ClipboardAccess::Background);
+    let rig = start_with(Some(clipboard.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "clip-3").await);
+    let (desktop, _) = pair(&rig, &phone).await;
+    let mut session = within(clipboard_session(&phone, desktop)).await;
+
+    clipboard.copy("before");
+    assert_eq!(within(take_push(&mut session)).await.text, "before");
+
+    // The page says the clipboard now follows the window.
+    clipboard.lose();
+    rig.events
+        .clipboard_where(|status| status.mode == ClipboardMode::WhenFocused)
+        .await;
+
+    // A copy made since goes when the window gains focus.
+    clipboard.copy("after");
+    rig.runtime.set_active(true);
+    assert_eq!(within(take_push(&mut session)).await.text, "after");
 }

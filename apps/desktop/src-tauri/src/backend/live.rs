@@ -17,6 +17,8 @@ use link2linux_platform::linux::{
 };
 use link2linux_platform::{Clipboard, ClipboardAccess, PresenceAdvertiser};
 use link2linux_runtime::clipboard::ClipboardPort;
+
+use crate::clipboard::FallbackClipboard;
 use link2linux_runtime::notify::{Presenter, PrivatePopups, ServiceFactory};
 use link2linux_runtime::paths::{DataDir, desktop_name, runtime_images_dir};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
@@ -42,7 +44,8 @@ impl LiveBackend {
     /// XDG data directory and the private key in the keyring.
     /// `open_window` brings up the window when the user clicks a pop-up.
     /// `window_clipboard` is the clipboard as the window sees it, used when
-    /// the desktop session lets no background app use the clipboard.
+    /// the desktop session lets no background app use the clipboard, or no
+    /// longer does.
     ///
     /// # Errors
     ///
@@ -51,9 +54,12 @@ impl LiveBackend {
     pub fn start(
         events: Arc<dyn EventSink>,
         open_window: impl Fn() + Send + Sync + 'static,
-        window_clipboard: impl ClipboardPort + 'static,
+        window_clipboard: impl Clipboard + 'static,
     ) -> Result<Self, RuntimeError> {
         let data_dir = DataDir::from_env()?;
+        // Reaching the display server can take a few seconds: it happens
+        // while the keyring is asked.
+        let opening = std::thread::spawn(LinuxClipboard::open);
         let keyring = SecretServiceStore::new(APP_ID);
         // Waits while the keyring asks the user to unlock it, within the
         // store's timeouts.
@@ -79,7 +85,7 @@ impl LiveBackend {
             store_key,
             drivers: Arc::new(ServiceFactory::new(presenter.clone(), images)),
             presenter,
-            clipboard: Some(open_clipboard(window_clipboard)),
+            clipboard: Some(clipboard(opening, window_clipboard)),
             events,
         };
         let mut config = RuntimeConfig::new(data_dir.clone());
@@ -101,15 +107,20 @@ impl LiveBackend {
 
 /// The desktop clipboard: followed in the background where the desktop
 /// session allows it, else through the window while it has focus.
-fn open_clipboard(window_clipboard: impl ClipboardPort + 'static) -> Arc<dyn ClipboardPort> {
-    let clipboard = LinuxClipboard::open();
-    match Clipboard::access(&clipboard) {
-        ClipboardAccess::Background => Arc::new(clipboard),
-        ClipboardAccess::FocusOnly => {
-            tracing::info!("the clipboard is shared while the window has focus");
-            Arc::new(window_clipboard)
-        }
+fn clipboard(
+    opening: std::thread::JoinHandle<LinuxClipboard>,
+    window_clipboard: impl Clipboard + 'static,
+) -> Arc<dyn ClipboardPort> {
+    let Ok(platform) = opening.join() else {
+        tracing::warn!(
+            "the clipboard could not be opened; it is shared while the window has focus"
+        );
+        return Arc::new(window_clipboard);
+    };
+    if Clipboard::access(&platform) == ClipboardAccess::FocusOnly {
+        tracing::info!("the clipboard is shared while the window has focus");
     }
+    Arc::new(FallbackClipboard::new(platform, window_clipboard))
 }
 
 /// Tells the pop-ups whether the screen is locked, as logind reports it.
