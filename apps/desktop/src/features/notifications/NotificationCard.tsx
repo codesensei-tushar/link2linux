@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { useDesktopApi } from "@/lib/api";
-import { X } from "lucide-react";
+import { EyeOff, X } from "lucide-react";
 
 import { Button } from "@/components/ui";
 import { NotificationActions } from "./NotificationActions";
@@ -45,6 +45,13 @@ function AppIcon({
   );
 }
 
+/** Why a notification has no content to show, for each way the phone can withhold it. */
+const withheldExplanation = {
+  redactedBySystem: "Content hidden by Android. Check your phone",
+  redactedAppLocked: "Hidden because the app is locked on your phone",
+  hiddenByUser: "You chose not to share this app's content",
+} as const;
+
 function Conversation({ notification }: { notification: MirroredNotification }) {
   return (
     <ul className="notification__messages" aria-label="Recent messages">
@@ -86,11 +93,15 @@ export function NotificationCard({
   onDismiss,
   onRunAction,
 }: NotificationCardProps) {
+  const withheld = n.content === "full" ? null : withheldExplanation[n.content];
   const conversation = n.messages.length > 0;
   const { progress } = n;
 
   return (
-    <article className="notification" aria-label={`${n.appName}: ${n.title || "notification"}`}>
+    <article
+      className="notification"
+      aria-label={`${n.appName}: ${withheld ? "content hidden" : n.title || "notification"}`}
+    >
       <AppIcon deviceId={deviceId} name={n.appName} image={n.appIcon} />
       <div className="notification__main">
         <header className="notification__header">
@@ -111,28 +122,37 @@ export function NotificationCard({
             />
           )}
         </header>
-        {n.title && <p className="notification__title">{n.title}</p>}
-        {conversation ? (
-          <Conversation notification={n} />
+        {withheld ? (
+          <p className="notification__withheld">
+            <EyeOff aria-hidden="true" />
+            {withheld}
+          </p>
         ) : (
-          n.text && <p className="notification__text">{n.text}</p>
-        )}
-        {n.subText && <p className="notification__sub">{n.subText}</p>}
-        {n.actions.length > 0 && (
-          <NotificationActions
-            actions={n.actions}
-            onRun={(action, replyText) => {
-              onRunAction(n, action, replyText);
-            }}
-          />
-        )}
-        {progress && (
-          <progress
-            className="notification__progress"
-            aria-label={`${n.title || n.appName} progress`}
-            max={progress.indeterminate ? undefined : progress.max}
-            value={progress.indeterminate ? undefined : progress.current}
-          />
+          <>
+            {n.title && <p className="notification__title">{n.title}</p>}
+            {conversation ? (
+              <Conversation notification={n} />
+            ) : (
+              n.text && <p className="notification__text">{n.text}</p>
+            )}
+            {n.subText && <p className="notification__sub">{n.subText}</p>}
+            {n.actions.length > 0 && (
+              <NotificationActions
+                actions={n.actions}
+                onRun={(action, replyText) => {
+                  onRunAction(n, action, replyText);
+                }}
+              />
+            )}
+            {progress && (
+              <progress
+                className="notification__progress"
+                aria-label={`${n.title || n.appName} progress`}
+                max={progress.indeterminate ? undefined : progress.max}
+                value={progress.indeterminate ? undefined : progress.current}
+              />
+            )}
+          </>
         )}
       </div>
     </article>
