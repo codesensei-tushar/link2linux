@@ -51,8 +51,8 @@ export function SettingsPage() {
             <p id={hintId} className="setting__hint">
               Pop-ups pass through your desktop's notification service, where other apps on this
               computer can read them. With this off, a pop-up only names the app, and the
-              notification stays in this window. While the screen is locked, pop-ups never show the
-              text.
+              notification stays in this window. While the screen is locked, or this app can't tell
+              whether it is, pop-ups never show the text.
             </p>
           </div>
         </div>

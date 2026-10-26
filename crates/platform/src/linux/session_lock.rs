@@ -3,7 +3,8 @@
 //!
 //! GNOME and KDE Plasma set the hint while their lock screen is up. A
 //! screen locker that does not tell logind leaves it unset, and the session
-//! then always counts as unlocked.
+//! then always counts as unlocked. Callers treat the session as locked
+//! while logind does not answer.
 
 use std::time::Duration;
 

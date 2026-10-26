@@ -15,6 +15,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use tokio::sync::{Mutex, OnceCell};
 use zbus::Connection;
+use zbus::proxy::OwnerChangedStream;
 use zbus::zvariant::Value;
 
 use crate::{
@@ -81,6 +82,9 @@ struct Signals {
     actions: ActionInvokedStream,
     closed: NotificationClosedStream,
     replied: NotificationRepliedStream,
+    /// When the service is replaced; `None` where the bus cannot say, as
+    /// on a direct connection.
+    owner: Option<OwnerChangedStream<'static>>,
 }
 
 struct Live {
@@ -88,13 +92,18 @@ struct Live {
     capabilities: Vec<String>,
     signals: Mutex<Signals>,
     /// The notifications this sink shows, with the action key of their
-    /// reply field, if any.
+    /// reply field, if any. Only these are ever replaced or closed: once
+    /// one is gone, its id may name another app's notification.
     shown: std::sync::Mutex<HashMap<u32, Option<String>>>,
 }
 
 impl Live {
     fn supports(&self, capability: &str) -> bool {
         self.capabilities.iter().any(|c| c == capability)
+    }
+
+    fn is_shown(&self, id: u32) -> bool {
+        self.shown.lock().expect("not poisoned").contains_key(&id)
     }
 }
 
@@ -163,6 +172,7 @@ impl DbusNotifications {
             actions: proxy.receive_action_invoked().await.map_err(dbus)?,
             closed: proxy.receive_notification_closed().await.map_err(dbus)?,
             replied: proxy.receive_notification_replied().await.map_err(dbus)?,
+            owner: proxy.inner().receive_owner_changed().await.ok(),
         };
         let capabilities = proxy
             .get_capabilities()
@@ -255,6 +265,9 @@ impl NotificationSink for DbusNotifications {
             );
         }
 
+        // An id no longer on screen may already name another app's
+        // notification, so it is never replaced.
+        let replaces = replaces.filter(|id| live.is_shown(id.0));
         let id = live
             .proxy
             .notify(
@@ -278,7 +291,11 @@ impl NotificationSink for DbusNotifications {
 
     async fn close(&self, id: NotificationId) -> Result<(), PlatformError> {
         let live = self.live().await?;
-        // The id stays known until NotificationClosed reports it.
+        // The id stays known until NotificationClosed reports it. One that
+        // is already gone may name another app's notification by now.
+        if !live.is_shown(id.0) {
+            return Ok(());
+        }
         live.proxy.close_notification(id.0).await.map_err(dbus)
     }
 
@@ -299,6 +316,7 @@ impl NotificationSink for DbusNotifications {
             actions,
             closed,
             replied,
+            owner,
         } = &mut *signals;
         loop {
             let response = tokio::select! {
@@ -340,6 +358,15 @@ impl NotificationSink for DbusNotifications {
                     };
                     ours.then_some(NotificationResponse::Closed { id: NotificationId(args.id), reason })
                 }
+                changed = owner_changed(owner) => {
+                    if changed.is_none() {
+                        *owner = None;
+                    }
+                    // A new service numbers its notifications from the start
+                    // again, so none of the old ids are this sink's any more.
+                    live.shown.lock().expect("not poisoned").clear();
+                    None
+                }
             };
             if let Some(response) = response {
                 return Ok(response);
@@ -348,8 +375,17 @@ impl NotificationSink for DbusNotifications {
     }
 }
 
+/// The next change of the service's owner: `Some` when it changed, `None`
+/// when the stream ended. Never ready without a stream.
+async fn owner_changed(owner: &mut Option<OwnerChangedStream<'static>>) -> Option<()> {
+    match owner {
+        Some(stream) => stream.next().await.map(drop),
+        None => std::future::pending().await,
+    }
+}
+
 fn is_ours(live: &Live, id: u32) -> bool {
-    live.shown.lock().expect("not poisoned").contains_key(&id)
+    live.is_shown(id)
 }
 
 fn gone() -> PlatformError {
@@ -381,6 +417,7 @@ mod tests {
     struct MockService {
         capabilities: Vec<String>,
         shown: Arc<StdMutex<Vec<Shown>>>,
+        closes: Arc<StdMutex<Vec<u32>>>,
         next_id: u32,
     }
 
@@ -419,6 +456,7 @@ mod tests {
             id: u32,
             #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         ) -> zbus::fdo::Result<()> {
+            self.closes.lock().unwrap().push(id);
             Self::notification_closed(&emitter, id, 3).await?;
             Ok(())
         }
@@ -453,6 +491,7 @@ mod tests {
         sink: DbusNotifications,
         server: Connection,
         shown: Arc<StdMutex<Vec<Shown>>>,
+        closes: Arc<StdMutex<Vec<u32>>>,
     }
 
     impl Mock {
@@ -463,6 +502,7 @@ mod tests {
 
     async fn mock(capabilities: &[&str]) -> Mock {
         let shown = Arc::new(StdMutex::new(Vec::new()));
+        let closes = Arc::new(StdMutex::new(Vec::new()));
         let (a, b) = UnixStream::pair().unwrap();
         let server = Builder::unix_stream(a)
             .server(zbus::Guid::generate())
@@ -473,6 +513,7 @@ mod tests {
                 MockService {
                     capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
                     shown: shown.clone(),
+                    closes: closes.clone(),
                     next_id: 0,
                 },
             )
@@ -484,6 +525,7 @@ mod tests {
             sink: DbusNotifications::with_connection(client),
             server,
             shown,
+            closes,
         }
     }
 
@@ -560,32 +602,29 @@ mod tests {
     #[tokio::test]
     async fn offers_the_reply_field_where_the_service_has_one() {
         let m = mock(&["actions", "inline-reply"]).await;
-        let id = m
-            .sink
-            .show(&message(), Some(NotificationId(7)))
-            .await
-            .unwrap();
-        assert_eq!(id, NotificationId(7), "replaces keeps the id");
+        let first = m.sink.show(&message(), None).await.unwrap();
+        let id = m.sink.show(&message(), Some(first)).await.unwrap();
+        assert_eq!(id, first, "replaces keeps the id");
         {
             let shown = m.shown.lock().unwrap();
-            assert_eq!(shown[0].replaces, 7);
+            assert_eq!(shown[1].replaces, first.0);
             assert_eq!(
-                shown[0].actions,
+                shown[1].actions,
                 ["mark-read", "Mark as read", INLINE_REPLY_KEY, "Reply"]
             );
             assert_eq!(
-                hint::<String>(&shown[0], "x-kde-reply-placeholder-text").as_deref(),
+                hint::<String>(&shown[1], "x-kde-reply-placeholder-text").as_deref(),
                 Some("Reply to Ana")
             );
         }
         let emitter = m.emitter().await;
-        MockService::notification_replied(&emitter, 7, "On my way")
+        MockService::notification_replied(&emitter, id.0, "On my way")
             .await
             .unwrap();
         assert_eq!(
             m.sink.next_response().await.unwrap(),
             NotificationResponse::Replied {
-                id: NotificationId(7),
+                id,
                 action_key: "reply".into(),
                 text: "On my way".into(),
             }
@@ -648,6 +687,25 @@ mod tests {
                 reason: CloseReason::Expired
             }
         );
+    }
+
+    #[tokio::test]
+    async fn an_id_that_is_gone_is_never_replaced_or_closed() {
+        let m = mock(&["actions"]).await;
+        let id = m.sink.show(&message(), None).await.unwrap();
+        m.sink.show(&message(), Some(id)).await.unwrap();
+        assert_eq!(m.shown.lock().unwrap()[1].replaces, id.0, "still on screen");
+
+        let emitter = m.emitter().await;
+        MockService::notification_closed(&emitter, id.0, 1)
+            .await
+            .unwrap();
+        m.sink.next_response().await.unwrap();
+        // The service may give the id to another app's notification now.
+        m.sink.show(&message(), Some(id)).await.unwrap();
+        assert_eq!(m.shown.lock().unwrap()[2].replaces, 0);
+        m.sink.close(id).await.unwrap();
+        assert!(m.closes.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use link2linux_platform::PresenceAdvertiser;
 use link2linux_platform::linux::ble::BluezPresence;
@@ -86,22 +87,31 @@ impl LiveBackend {
 }
 
 /// Tells the pop-ups whether the screen is locked, as logind reports it.
-/// Without logind the screen counts as unlocked.
+/// While logind does not answer, the screen counts as locked, and the app
+/// asks again, less often the longer it stays away.
 fn follow_lock(popups: Arc<PrivatePopups>) {
+    const FIRST_RETRY: Duration = Duration::from_secs(1);
+    const LAST_RETRY: Duration = Duration::from_secs(60);
     tauri::async_runtime::spawn(async move {
-        let mut lock = match SessionLock::connect().await {
-            Ok(lock) => lock,
-            Err(error) => {
-                tracing::info!(%error, "the lock screen state is unavailable");
-                return;
+        let mut retry = FIRST_RETRY;
+        loop {
+            match SessionLock::connect().await {
+                Ok(mut lock) => match lock.is_locked().await {
+                    Ok(locked) => {
+                        retry = FIRST_RETRY;
+                        popups.set_locked(locked).await;
+                        while let Some(locked) = lock.changed().await {
+                            popups.set_locked(locked).await;
+                        }
+                        tracing::info!("logind stopped reporting the lock screen state");
+                    }
+                    Err(error) => tracing::info!(%error, "the lock screen state is unavailable"),
+                },
+                Err(error) => tracing::info!(%error, "the lock screen state is unavailable"),
             }
-        };
-        match lock.is_locked().await {
-            Ok(locked) => popups.set_locked(locked),
-            Err(error) => tracing::info!(%error, "the lock screen state is unavailable"),
-        }
-        while let Some(locked) = lock.changed().await {
-            popups.set_locked(locked);
+            popups.set_locked(true).await;
+            tokio::time::sleep(retry).await;
+            retry = (retry * 2).min(LAST_RETRY);
         }
     });
 }

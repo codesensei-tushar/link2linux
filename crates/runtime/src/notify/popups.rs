@@ -6,10 +6,13 @@
 //! names only the phone's app, and the content stays in the link2linux
 //! window, which a click on the pop-up opens. The user can let pop-ups show
 //! the text; even then a locked screen gets pop-ups without it, and none
-//! at all for what the phone's app marked secret.
+//! at all for what the phone's app marked secret. The screen counts as
+//! locked whenever the app cannot tell, and locking it takes the text off
+//! the pop-ups still on screen.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use link2linux_core::notifications::present::OPEN_KEY;
 use link2linux_platform::{
@@ -32,12 +35,17 @@ pub struct PrivatePopups {
     inner: Arc<dyn Presenter>,
     show_text: AtomicBool,
     locked: AtomicBool,
+    /// The pop-ups on screen with their text, each with the form it takes
+    /// once the screen locks: without the text, or `None` to go.
+    with_text: Mutex<HashMap<NotificationId, Option<DesktopNotification>>>,
     open_window: Box<dyn Fn() + Send + Sync>,
 }
 
 impl PrivatePopups {
     /// Pop-ups through `inner`, with the text when `show_text` is on.
     /// `open_window` brings up the app window when the user clicks one.
+    /// Until [`Self::set_locked`] says otherwise, the screen counts as
+    /// locked.
     pub fn new(
         inner: Arc<dyn Presenter>,
         show_text: bool,
@@ -46,7 +54,8 @@ impl PrivatePopups {
         Self {
             inner,
             show_text: AtomicBool::new(show_text),
-            locked: AtomicBool::new(false),
+            locked: AtomicBool::new(true),
+            with_text: Mutex::default(),
             open_window: Box::new(open_window),
         }
     }
@@ -56,44 +65,83 @@ impl PrivatePopups {
         self.show_text.store(show_text, Ordering::Relaxed);
     }
 
-    /// Whether the desktop's screen is locked.
-    pub fn set_locked(&self, locked: bool) {
-        self.locked.store(locked, Ordering::Relaxed);
+    /// Whether the desktop's screen is locked: pass `true` also when that
+    /// is unknown. Locking takes the text off the pop-ups still on screen,
+    /// and takes down those that must not appear on a locked screen.
+    pub async fn set_locked(&self, locked: bool) {
+        let was_locked = self.locked.swap(locked, Ordering::Relaxed);
+        if !locked || was_locked {
+            return;
+        }
+        let on_screen: Vec<_> = self.on_screen().drain().collect();
+        for (id, when_locked) in on_screen {
+            self.hide_text(id, when_locked).await;
+        }
     }
 
-    /// The pop-up for `notification` as things stand, or `None` when it
-    /// must not appear at all.
-    fn popup(&self, notification: &DesktopNotification) -> Option<DesktopNotification> {
+    /// Shows pop-up `id` again in its form for a locked screen, or takes it
+    /// down when it has none.
+    async fn hide_text(&self, id: NotificationId, when_locked: Option<DesktopNotification>) {
+        // Replacing keeps the id: the notification service answers a
+        // replacement with the id it replaced.
+        let hidden = match when_locked {
+            Some(popup) => self.inner.show(&popup, Some(id)).await.map(drop),
+            None => self.inner.close(id).await,
+        };
+        if let Err(error) = hidden {
+            tracing::warn!(%error, "taking the text off a pop-up failed");
+        }
+    }
+
+    fn on_screen(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<NotificationId, Option<DesktopNotification>>> {
+        self.with_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The pop-up for `notification` as things stand, and whether it shows
+    /// the text, or `None` when it must not appear at all.
+    fn popup(&self, notification: &DesktopNotification) -> Option<(DesktopNotification, bool)> {
         let locked = self.locked.load(Ordering::Relaxed);
         if locked && notification.visibility == Visibility::Secret {
             return None;
         }
-        let mut popup = if self.show_text.load(Ordering::Relaxed) && !locked {
-            notification.clone()
+        if self.show_text.load(Ordering::Relaxed) && !locked {
+            Some((with_open(notification.clone()), true))
         } else {
-            DesktopNotification {
-                app_name: notification.app_name.clone(),
-                summary: notification.app_name.clone(),
-                body: NEUTRAL_TEXT.to_owned(),
-                urgency: notification.urgency,
-                category: notification.category.clone(),
-                quiet: notification.quiet,
-                visibility: notification.visibility,
-                ..DesktopNotification::default()
-            }
-        };
-        // Clicking the pop-up itself reports this action.
-        if !popup.actions.iter().any(|action| action.key == OPEN_KEY) {
-            popup.actions.insert(
-                0,
-                DesktopAction {
-                    key: OPEN_KEY.to_owned(),
-                    label: "Open".to_owned(),
-                },
-            );
+            Some((neutral(notification), false))
         }
-        Some(popup)
     }
+}
+
+/// `notification` without its text: only the app's name.
+fn neutral(notification: &DesktopNotification) -> DesktopNotification {
+    with_open(DesktopNotification {
+        app_name: notification.app_name.clone(),
+        summary: notification.app_name.clone(),
+        body: NEUTRAL_TEXT.to_owned(),
+        urgency: notification.urgency,
+        category: notification.category.clone(),
+        quiet: notification.quiet,
+        visibility: notification.visibility,
+        ..DesktopNotification::default()
+    })
+}
+
+/// `popup` with the action that clicking the pop-up itself reports.
+fn with_open(mut popup: DesktopNotification) -> DesktopNotification {
+    if !popup.actions.iter().any(|action| action.key == OPEN_KEY) {
+        popup.actions.insert(
+            0,
+            DesktopAction {
+                key: OPEN_KEY.to_owned(),
+                label: "Open".to_owned(),
+            },
+        );
+    }
+    popup
 }
 
 impl Presenter for PrivatePopups {
@@ -104,8 +152,25 @@ impl Presenter for PrivatePopups {
     ) -> BoxFuture<'a, Result<NotificationId, PlatformError>> {
         Box::pin(async move {
             let replaces = replaces.filter(|id| *id != NOT_SHOWN);
+            if let Some(old) = replaces {
+                self.on_screen().remove(&old);
+            }
             match self.popup(notification) {
-                Some(popup) => self.inner.show(&popup, replaces).await,
+                Some((popup, with_text)) => {
+                    let id = self.inner.show(&popup, replaces).await?;
+                    if with_text {
+                        let when_locked = (notification.visibility != Visibility::Secret)
+                            .then(|| neutral(notification));
+                        self.on_screen().insert(id, when_locked.clone());
+                        // The screen may have locked while this was shown.
+                        if self.locked.load(Ordering::Relaxed)
+                            && self.on_screen().remove(&id).is_some()
+                        {
+                            self.hide_text(id, when_locked).await;
+                        }
+                    }
+                    Ok(id)
+                }
                 None => {
                     // An older pop-up of the same notification goes too.
                     if let Some(id) = replaces {
@@ -121,6 +186,7 @@ impl Presenter for PrivatePopups {
         if id == NOT_SHOWN {
             return Box::pin(async { Ok(()) });
         }
+        self.on_screen().remove(&id);
         self.inner.close(id)
     }
 
@@ -131,10 +197,12 @@ impl Presenter for PrivatePopups {
     fn next_response(&self) -> BoxFuture<'_, Result<NotificationResponse, PlatformError>> {
         Box::pin(async move {
             let response = self.inner.next_response().await?;
-            if let NotificationResponse::Action { key, .. } = &response
-                && key == OPEN_KEY
-            {
-                (self.open_window)();
+            match &response {
+                NotificationResponse::Action { key, .. } if key == OPEN_KEY => (self.open_window)(),
+                NotificationResponse::Closed { id, .. } => {
+                    self.on_screen().remove(id);
+                }
+                _ => {}
             }
             Ok(response)
         })
@@ -268,6 +336,7 @@ mod tests {
     async fn the_text_shows_when_the_user_allows_it_and_the_screen_is_unlocked() {
         let rig = rig(false);
         rig.popups.set_show_text(true);
+        rig.popups.set_locked(false).await;
         rig.popups
             .show(&message(Visibility::Private), None)
             .await
@@ -277,7 +346,7 @@ mod tests {
         expected.actions.insert(0, open_action());
         assert_eq!(rig.last_shown(), expected);
 
-        rig.popups.set_locked(true);
+        rig.popups.set_locked(true).await;
         rig.popups
             .show(&message(Visibility::Public), None)
             .await
@@ -286,8 +355,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_screen_counts_as_locked_until_its_state_is_known() {
+        let rig = rig(true);
+        rig.popups
+            .show(&message(Visibility::Public), None)
+            .await
+            .unwrap();
+        assert_eq!(rig.last_shown().body, NEUTRAL_TEXT);
+        assert_eq!(
+            rig.popups
+                .show(&message(Visibility::Secret), None)
+                .await
+                .unwrap(),
+            NOT_SHOWN
+        );
+    }
+
+    #[tokio::test]
+    async fn locking_takes_the_text_off_popups_on_screen() {
+        let rig = rig(true);
+        rig.popups.set_locked(false).await;
+        let private = rig
+            .popups
+            .show(&message(Visibility::Private), None)
+            .await
+            .unwrap();
+        let secret = rig
+            .popups
+            .show(&message(Visibility::Secret), None)
+            .await
+            .unwrap();
+        let gone = rig
+            .popups
+            .show(&message(Visibility::Public), None)
+            .await
+            .unwrap();
+        rig.respond
+            .send(NotificationResponse::Closed {
+                id: gone,
+                reason: link2linux_platform::CloseReason::Expired,
+            })
+            .unwrap();
+        rig.popups.next_response().await.unwrap();
+        assert_eq!(rig.desktop.shown.lock().unwrap().len(), 3);
+
+        rig.popups.set_locked(true).await;
+        let shown = rig.desktop.shown.lock().unwrap().clone();
+        assert_eq!(
+            shown.len(),
+            4,
+            "only the pop-up still on screen is shown again"
+        );
+        let (again, replaces) = shown.last().unwrap();
+        assert_eq!(*replaces, Some(private));
+        assert_eq!(again.body, NEUTRAL_TEXT);
+        assert_eq!(again.actions, [open_action()]);
+        assert_eq!(*rig.desktop.closed.lock().unwrap(), [secret]);
+
+        // Locking again changes nothing.
+        rig.popups.set_locked(true).await;
+        assert_eq!(rig.desktop.shown.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
     async fn secret_notifications_do_not_appear_on_a_locked_screen() {
         let rig = rig(true);
+        rig.popups.set_locked(false).await;
         let first = rig
             .popups
             .show(&message(Visibility::Secret), None)
@@ -295,21 +428,23 @@ mod tests {
             .unwrap();
         assert_ne!(first, NOT_SHOWN);
 
-        rig.popups.set_locked(true);
+        // Locking takes the earlier pop-up down at once.
+        rig.popups.set_locked(true).await;
+        assert_eq!(*rig.desktop.closed.lock().unwrap(), [first]);
         let id = rig
             .popups
             .show(&message(Visibility::Secret), Some(first))
             .await
             .unwrap();
         assert_eq!(id, NOT_SHOWN);
-        // The earlier pop-up is taken down, and nothing new appears.
-        assert_eq!(*rig.desktop.closed.lock().unwrap(), [first]);
+        // Nothing new appears.
         assert_eq!(rig.desktop.shown.lock().unwrap().len(), 1);
+        let closed = rig.desktop.closed.lock().unwrap().len();
         rig.popups.close(id).await.unwrap();
-        assert_eq!(rig.desktop.closed.lock().unwrap().len(), 1);
+        assert_eq!(rig.desktop.closed.lock().unwrap().len(), closed);
 
         // Once unlocked, an update is a new pop-up rather than a replacement.
-        rig.popups.set_locked(false);
+        rig.popups.set_locked(false).await;
         rig.popups
             .show(&message(Visibility::Secret), Some(id))
             .await
