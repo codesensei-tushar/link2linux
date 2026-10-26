@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- Keep the device awake for the first minute of a beacon burst. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Show the connection service's notification on Android 13 and later. Asked for when the user
+         turns the connection on; the service runs without it, only its notification is hidden. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- The connection service keeps the phone findable and connected. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

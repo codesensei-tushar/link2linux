@@ -1,5 +1,10 @@
 package dev.link2linux.android.feature.pairing
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -21,9 +27,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import dev.link2linux.android.core.designsystem.component.EmptyState
 import dev.link2linux.android.core.designsystem.component.FeatureListItem
 import dev.link2linux.android.core.model.Feature
@@ -69,6 +77,9 @@ internal fun HomeContent(
                     },
                 )
             }
+        }
+        if (devices != null) {
+            item { ConnectionRow(uiState.connectionEnabled, actions.onSetConnection) }
         }
         if (features.isNotEmpty()) {
             item { SectionHeader(stringResource(R.string.feature_pairing_features_header)) }
@@ -120,5 +131,29 @@ private fun SectionHeader(text: String) {
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun ConnectionRow(enabled: Boolean, onSet: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        // The service runs either way; a refusal only hides its notification.
+        onSet(true)
+    }
+    ListItem(
+        headlineContent = { Text(stringResource(R.string.feature_pairing_connection_title)) },
+        supportingContent = { Text(stringResource(R.string.feature_pairing_connection_body)) },
+        trailingContent = {
+            Switch(
+                checked = enabled,
+                onCheckedChange = { on ->
+                    val needsAsk = on && Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED
+                    if (needsAsk) request.launch(Manifest.permission.POST_NOTIFICATIONS) else onSet(on)
+                },
+            )
+        },
     )
 }

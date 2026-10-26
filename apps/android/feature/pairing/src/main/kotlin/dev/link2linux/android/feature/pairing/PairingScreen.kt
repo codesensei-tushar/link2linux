@@ -33,6 +33,7 @@ fun PairingScreen(
             onPairWithoutCamera = viewModel::startSasPairing,
             onConfirmCode = viewModel::confirmCode,
             onConfirmReplace = viewModel::confirmReplace,
+            onSetConnection = viewModel::setConnectionEnabled,
             onCancel = viewModel::cancel,
             onDismiss = viewModel::dismiss,
             onUnpair = { viewModel.unpair(it.fingerprint) },
@@ -82,6 +83,7 @@ internal data class PairingActions(
     val onPairWithoutCamera: () -> Unit = {},
     val onConfirmCode: (Boolean) -> Unit = {},
     val onConfirmReplace: (Boolean) -> Unit = {},
+    val onSetConnection: (Boolean) -> Unit = {},
     val onCancel: () -> Unit = {},
     val onDismiss: () -> Unit = {},
     val onUnpair: (dev.link2linux.android.core.model.PairedDevice) -> Unit = {},
@@ -92,7 +94,7 @@ internal data class PairingActions(
 private fun HomePreview() {
     L2lTheme(dynamicColor = false) {
         PairingScreen(
-            uiState = PairingUiState(emptyList(), PairingScreenState.Home, null),
+            uiState = PairingUiState(emptyList(), PairingScreenState.Home, null, connectionEnabled = true),
             features = Feature.optIn,
             onOpenFeature = {},
             actions = PairingActions(),
