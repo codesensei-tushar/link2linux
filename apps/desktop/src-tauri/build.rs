@@ -4,6 +4,8 @@ fn main() {
     // unless a capability grants them (see capabilities/default.json).
     let manifest = tauri_build::AppManifest::new().commands(&[
         "app_info",
+        "startup_error",
+        "restart_app",
         "list_devices",
         "unpair_device",
         "get_pairing_state",

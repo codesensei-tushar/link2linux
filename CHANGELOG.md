@@ -29,9 +29,11 @@ from Unreleased to a version.
   desktop to your phones now lives in the system keyring (the Secret Service of
   GNOME Keyring, KWallet or KeePassXC) instead of a file. A key from 0.1.0 moves
   there on the first start, and its file is overwritten and deleted. Without a
-  keyring, the key stays in a file only you can read, as before. Once the key
-  has moved, 0.1.0 no longer finds it: going back to 0.1.0 means pairing your
-  phones again.
+  keyring, the key stays in a file only you can read, as before. If the keyring
+  that holds the key is locked or not running, the app says so and offers to
+  try again, rather than making a new key that your phones wouldn't know. Once
+  the key has moved, 0.1.0 no longer finds it: going back to 0.1.0 means
+  pairing your phones again.
 - **Pop-ups hide the notification's text.** Desktop pop-ups pass through the
   desktop's notification service, where other apps can read them, so a pop-up
   now only names the phone's app and says "New notification". The whole

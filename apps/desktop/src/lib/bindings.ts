@@ -7,6 +7,13 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  Returns the app's name, version and the platform it runs on. */
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**
+	 *  Why the app could not start, or nothing when it did. The window shows
+	 *  this instead of the app.
+	 */
+	startupError: () => __TAURI_INVOKE<StartupError | null>("startup_error"),
+	/**  Starts the app again, to try again after a failed start. */
+	restartApp: () => __TAURI_INVOKE<void>("restart_app"),
 	/**  Lists paired phones. */
 	listDevices: () => __TAURI_INVOKE<Device[]>("list_devices"),
 	/**  Forgets a paired phone. The new list arrives as a `DevicesChanged` event. */
@@ -83,7 +90,7 @@ export type CommandError = {
 	message: string,
 };
 
-export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved";
+export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted";
 
 export type ConversationMessageInfo = {
 	/**  Empty for messages the phone's user sent. */
@@ -306,6 +313,16 @@ export type Settings = {
 	 *  service, where other programs can read them.
 	 */
 	showNotificationText?: boolean,
+};
+
+/**  Why the app could not start, for the page shown instead of the app. */
+export type StartupError = {
+	/**  What failed, in plain words. */
+	message: string,
+	/**  What the user can do about it. */
+	hint: string,
+	/**  The error itself, for a bug report. */
+	detail: string,
 };
 
 /* Tauri Specta runtime */

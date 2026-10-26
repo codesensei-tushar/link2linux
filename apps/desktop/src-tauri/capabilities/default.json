@@ -6,6 +6,8 @@
   "platforms": ["linux", "macOS", "windows"],
   "permissions": [
     "allow-app-info",
+    "allow-startup-error",
+    "allow-restart-app",
     "allow-list-devices",
     "allow-unpair-device",
     "allow-get-pairing-state",

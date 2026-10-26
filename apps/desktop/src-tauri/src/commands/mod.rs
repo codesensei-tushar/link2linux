@@ -37,6 +37,7 @@ pub enum CommandErrorCode {
     InvalidAddress,
     NotFound,
     NotSaved,
+    NotStarted,
 }
 
 impl From<BackendError> for CommandError {
@@ -46,6 +47,7 @@ impl From<BackendError> for CommandError {
             BackendError::InvalidAddress => CommandErrorCode::InvalidAddress,
             BackendError::NotFound => CommandErrorCode::NotFound,
             BackendError::NotSaved => CommandErrorCode::NotSaved,
+            BackendError::NotStarted => CommandErrorCode::NotStarted,
         };
         Self {
             code,
