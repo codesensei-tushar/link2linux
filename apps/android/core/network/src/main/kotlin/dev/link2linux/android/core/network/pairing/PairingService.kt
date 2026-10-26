@@ -62,9 +62,11 @@ import java.util.concurrent.ConcurrentHashMap
  * whose Hello names a pairing method pairs; any other must come from a
  * paired desktop whose record (found by key) has the same device id.
  *
- * Before any of that, a connection must arrive on one of the phone's
- * addresses on a local network ([listenAddresses]), and it must finish the
- * TLS handshake and the Hello exchange in time. Only [MAX_PRE_AUTH]
+ * Before any of that, a connection must come from a host on a local
+ * network, the phone's own or one routed to it, to the phone's address on
+ * a network it is on ([listenAddresses]), and it must finish the TLS
+ * handshake and the Hello
+ * exchange in time. Only [MAX_PRE_AUTH]
  * connections may be that far at once, [MAX_PRE_AUTH_PER_SOURCE] of them
  * from one host, and their handshakes share [HANDSHAKE_THREADS] threads of
  * their own, so hosts that open connections and stall cannot use up the
@@ -237,12 +239,12 @@ class PairingService(
     }
 
     /**
-     * Whether [socket] may go on to the TLS handshake: it arrived on a local
-     * network, and the caps on unfinished connections leave room for it.
+     * Whether [socket] may go on to the TLS handshake: it came from a host on
+     * a local network, and the caps on unfinished connections leave room for it.
      * Returns the slot it holds until its Hello exchange is over.
      */
     private fun admit(socket: Socket): PreAuthLimits.Slot? {
-        if (!listenAddresses.isLocal(socket.localAddress)) return null
+        if (!listenAddresses.isLocal(socket.localAddress, socket.inetAddress)) return null
         return preAuth.tryAcquire(socket.inetAddress)
     }
 

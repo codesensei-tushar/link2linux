@@ -117,7 +117,7 @@ class NotificationSessionTest {
             override suspend fun setName(name: String?) = Unit
         },
         scope = scope,
-        listenAddresses = ListenAddresses { it.isLoopbackAddress },
+        listenAddresses = ListenAddresses { local, _ -> local.isLoopbackAddress },
         hooks = NotificationSessionHooks(engine, scope),
         port = 0,
         bindAddress = InetAddress.getLoopbackAddress(),

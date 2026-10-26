@@ -29,10 +29,44 @@ data class LocalNetwork(
     val ownAddresses: List<InetAddress> = addresses.map { it.address },
 )
 
-/** Whether [address] is one the phone has on one of these networks. An IPv4-mapped IPv6 address counts as its IPv4 address. */
-fun List<LocalNetwork>.ownsAddress(address: InetAddress): Boolean {
+/** Whether [address] is one the phone has on this network. An IPv4-mapped IPv6 address counts as its IPv4 address. */
+fun LocalNetwork.owns(address: InetAddress): Boolean {
     val wanted = Subnets.unmapped(address.address)
-    return any { network -> network.ownAddresses.any { Subnets.unmapped(it.address).contentEquals(wanted) } }
+    return ownAddresses.any { Subnets.unmapped(it.address).contentEquals(wanted) }
+}
+
+/** Whether [address] is one the phone has on one of these networks. */
+fun List<LocalNetwork>.ownsAddress(address: InetAddress): Boolean = any { it.owns(address) }
+
+/**
+ * Whether a connection from [remote] to [local], one of the phone's own
+ * addresses, came over one of these networks: [local] is the phone's address
+ * on a network, and [remote] is an address a local network uses, by the
+ * rules the desktop dials by (docs/protocol.md, "Choosing what to dial"):
+ *
+ * - on that network's link: in the subnet of one of its IPv4 addresses, in
+ *   the /64 of one of its IPv6 addresses, or IPv6 link-local to the phone's
+ *   own link-local address, which only arrives over that address' link;
+ * - or a private address ([Subnets.isPrivate]), which a routed local network
+ *   can reach, as for a desktop on another subnet of the same home or office.
+ *
+ * A host on the internet that reaches the phone, such as at its global IPv6
+ * address, is neither.
+ */
+fun List<LocalNetwork>.carries(local: InetAddress, remote: InetAddress): Boolean {
+    val from = InetAddress.getByAddress(Subnets.unmapped(remote.address))
+    return any { network ->
+        network.owns(local) &&
+            when {
+                from is Inet4Address -> Subnets.isOnLink(network, from) || Subnets.isPrivate(from)
+                from.isLinkLocalAddress -> local is Inet6Address && local.isLinkLocalAddress
+                else -> Subnets.isPrivate(from) ||
+                    // The desktop's rule: the /64, whatever the prefix length of the phone's address.
+                    network.ownAddresses.any {
+                        it is Inet6Address && !it.isLinkLocalAddress && Subnets.sharesPrefix(it.address, from.address, 64)
+                    }
+            }
+    }
 }
 
 /**
@@ -97,6 +131,21 @@ object Subnets {
     private const val MIN_IPV4_PREFIX = 8
     private const val MIN_IPV6_PREFIX = 48
 
+    /**
+     * Whether [address] is one a routed local network uses, as the desktop
+     * decides which last known addresses it may dial off the link: loopback,
+     * IPv4 private (10/8, 172.16/12, 192.168/16) or IPv6 unique local
+     * (fc00::/7). Carrier-grade NAT space (100.64/10) is not: mobile carriers
+     * number their customers from it.
+     */
+    fun isPrivate(address: InetAddress): Boolean {
+        val bytes = unmapped(address.address)
+        return when (bytes.size) {
+            4 -> InetAddress.getByAddress(bytes).let { it.isLoopbackAddress || it.isSiteLocalAddress }
+            else -> address.isLoopbackAddress || (bytes[0].toInt() and 0xfe) == 0xfc
+        }
+    }
+
     /** The 4 bytes of an IPv4-mapped IPv6 address (::ffff:a.b.c.d); any other address as it is. */
     fun unmapped(address: ByteArray): ByteArray {
         val mapped = address.size == 16 && (0 until 10).all { address[it] == 0.toByte() } &&
@@ -104,7 +153,7 @@ object Subnets {
         return if (mapped) address.copyOfRange(12, 16) else address
     }
 
-    private fun sharesPrefix(a: ByteArray, b: ByteArray, prefixLength: Int): Boolean {
+    internal fun sharesPrefix(a: ByteArray, b: ByteArray, prefixLength: Int): Boolean {
         if (a.size != b.size || prefixLength !in 0..a.size * 8) return false
         val whole = prefixLength / 8
         for (i in 0 until whole) if (a[i] != b[i]) return false

@@ -34,9 +34,9 @@ internal object DiscoveryModule {
     fun localNetworks(@ApplicationContext context: Context): ConnectivityLocalNetworks =
         ConnectivityLocalNetworks(context)
 
-    /** The listener takes connections only on the phone's addresses on these networks. */
+    /** The listener takes connections only over these networks, from hosts on them. */
     @Provides
-    fun listenAddresses(networks: ConnectivityLocalNetworks): ListenAddresses = ListenAddresses(networks::isLocalAddress)
+    fun listenAddresses(networks: ConnectivityLocalNetworks): ListenAddresses = ListenAddresses(networks::isLocalConnection)
 
     @Provides
     @Singleton

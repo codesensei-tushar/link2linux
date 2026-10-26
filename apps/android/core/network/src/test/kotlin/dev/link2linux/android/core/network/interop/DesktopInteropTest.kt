@@ -57,7 +57,7 @@ class DesktopInteropTest {
         devices = devices,
         localDevice = local,
         scope = scope,
-        listenAddresses = ListenAddresses { it.isLoopbackAddress },
+        listenAddresses = ListenAddresses { local, _ -> local.isLoopbackAddress },
         port = 0,
         bindAddress = InetAddress.getLoopbackAddress(),
     )

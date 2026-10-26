@@ -71,7 +71,7 @@ class PairingServiceTest {
     private val services = mutableListOf<PairingService>()
 
     private fun newService(
-        listenAddresses: ListenAddresses = ListenAddresses { it.isLoopbackAddress },
+        listenAddresses: ListenAddresses = ListenAddresses { local, _ -> local.isLoopbackAddress },
         hooks: SessionHooks = SessionHooks.None,
         devices: PairedDeviceRepository = this.devices,
     ) = PairingService(
@@ -386,8 +386,8 @@ class PairingServiceTest {
 
     @Test
     fun aConnectionThatDidNotArriveOverALocalNetworkIsClosedBeforeTls() = runBlocking {
-        val asked = mutableListOf<InetAddress>()
-        val offLan = newService(listenAddresses = ListenAddresses { synchronized(asked) { asked += it }; false })
+        val asked = mutableListOf<Pair<InetAddress, InetAddress>>()
+        val offLan = newService(listenAddresses = ListenAddresses { local, remote -> synchronized(asked) { asked += local to remote }; false })
         val desktop = TestDesktop()
         pairedRecord(desktop, on = offLan)
         val port = port(offLan)
@@ -396,7 +396,9 @@ class PairingServiceTest {
 
         assertTrue(result.isFailure || result.getOrNull()?.inputStream?.read() == -1)
         assertNull(desktop.seenPhone) // the phone never sent its certificate
-        assertEquals(listOf(InetAddress.getLoopbackAddress()), synchronized(asked) { asked.toList() })
+        // Both ends were asked about: the phone's address, and where the connection came from.
+        val loopback = InetAddress.getLoopbackAddress()
+        assertEquals(listOf(loopback to loopback), synchronized(asked) { asked.toList() })
     }
 
     @Test
