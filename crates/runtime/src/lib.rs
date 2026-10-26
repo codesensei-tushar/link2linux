@@ -7,12 +7,18 @@
 //! reports every change as a snapshot through [`view::EventSink`].
 
 pub mod candidates;
+// Nothing calls into this until the runtime that starts it is added.
+#[allow(dead_code)]
+mod device;
 pub mod dial;
 pub mod link;
 pub mod notify;
 // Nothing calls into this until the runtime that starts it is added.
-#[allow(dead_code, unused_imports)]
+#[allow(dead_code)]
 mod pairing;
 pub mod paths;
 pub mod qr;
+// Nothing calls into this until the runtime that starts it is added.
+#[allow(dead_code)]
+mod shared;
 pub mod view;
