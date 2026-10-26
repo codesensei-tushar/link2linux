@@ -193,6 +193,12 @@ impl FilesDriver {
         self.after_command(session).await;
     }
 
+    /// The phone is unpaired, or the app is closing: deletes what arrived
+    /// of the transfers from it that are not finished.
+    pub async fn discard_all(&mut self) {
+        self.service.discard_all().await;
+    }
+
     /// Removes finished transfer `id` from the list.
     pub fn forget(&mut self, id: TransferId) {
         self.service.forget(id);

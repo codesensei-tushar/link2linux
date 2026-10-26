@@ -1507,6 +1507,8 @@ enum Stop {
     DropAfterReceiving(u64),
     /// It cancels what it sends once this many bytes went.
     CancelAfterSending(u64),
+    /// It drops the connection once it sent this many bytes.
+    DropAfterSending(u64),
 }
 
 /// The stand-in phone's side of files: the core's own service on its
@@ -1554,6 +1556,11 @@ impl PhoneFiles {
                 match stop {
                     Some(Stop::DropAfterReceiving(mark)) => {
                         if passed(Direction::Incoming, mark).is_some() {
+                            break;
+                        }
+                    }
+                    Some(Stop::DropAfterSending(mark)) => {
+                        if passed(Direction::Outgoing, mark).is_some() {
                             break;
                         }
                     }
@@ -2115,4 +2122,53 @@ async fn a_read_during_a_phones_write_neither_echoes_nor_relays_the_phones_text(
     clipboard.copy("later");
     assert_eq!(within(take_push(&mut watching)).await.text, "later");
     assert_eq!(within(take_push(&mut sending)).await.text, "later");
+}
+
+/// The partial files the desktop keeps in its Downloads directory.
+fn partials(rig: &Rig) -> usize {
+    std::fs::read_dir(&rig.files.downloads)
+        .map(|entries| {
+            entries
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .is_ok_and(|e| e.file_name().to_string_lossy().starts_with(".link2linux-"))
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_a_phone_deletes_what_it_had_not_finished_sending() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "files-5").await);
+    let desktop = pair_and_confirm(&rig, &phone).await;
+    let sources = tempfile::tempdir().unwrap();
+    std::fs::write(
+        sources.path().join("big.bin"),
+        file_data(3 * 1024 * 1024, 5),
+    )
+    .unwrap();
+    let session = within(files_session(&phone, desktop)).await;
+    let on_phone = tempfile::tempdir().unwrap();
+    let phone_files = PhoneFiles::start(
+        session,
+        FileService::new(on_phone.path().into()),
+        Some(Stop::DropAfterSending(512 * 1024)),
+    );
+    phone_files.send(vec![sources.path().join("big.bin")]).await;
+    within(phone_files.task).await.unwrap();
+    rig.events
+        .transfer_where("files-5", |t| t.status == TransferStatus::Interrupted)
+        .await;
+    assert_eq!(partials(&rig), 1);
+
+    rig.runtime.unpair("files-5").unwrap();
+    within(async {
+        while partials(&rig) > 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
 }

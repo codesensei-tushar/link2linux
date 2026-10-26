@@ -226,6 +226,19 @@ impl FileService {
         true
     }
 
+    /// The phone is gone for good, or the app is closing: deletes what
+    /// arrived of the transfers from it that are not finished, as nothing
+    /// of them is kept across a restart either.
+    pub async fn discard_all(&mut self) {
+        for transfer in &mut self.incoming {
+            if !transfer.state.is_finished() {
+                transfer.discard().await;
+                transfer.state = TransferState::Cancelled { by_peer: false };
+                transfer.live = false;
+            }
+        }
+    }
+
     /// Removes a finished transfer from the list. Returns whether there
     /// was one.
     pub fn forget(&mut self, id: TransferId) -> bool {

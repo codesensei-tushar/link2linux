@@ -90,6 +90,9 @@ pub(crate) async fn supervise(
         down_since: now,
     };
     supervisor.run(initial).await;
+    // The phone is unpaired or replaced, or the app is closing: its
+    // unfinished files go, as they would at the next start.
+    supervisor.features.files.discard_all().await;
 }
 
 impl Supervisor {

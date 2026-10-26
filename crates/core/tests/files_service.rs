@@ -1557,6 +1557,31 @@ async fn a_refusal_this_build_does_not_know_is_tried_again() {
     assert_eq!(offer.transfer_id, id.0);
 }
 
+#[tokio::test]
+async fn a_phone_that_goes_for_good_leaves_no_partial_file() {
+    let downloads = tempfile::tempdir().unwrap();
+    let (desktop, mut phone) = desktop_with(service(downloads.path())).await;
+    let big = data(300 * KIB, 23);
+    let small = data(10, 24);
+    let files: [(&str, &[u8]); 2] = [("small", &small), ("big", &big)];
+    assert_eq!(phone.offer([1; 16], &files).await, accept(0, 0));
+    assert!(
+        phone
+            .send_file([1; 16], 0, &small, 0)
+            .await
+            .iter()
+            .all(is_ack)
+    );
+    let part = chunk([1; 16], 1, 0, &big[..CHUNK_LEN], Vec::new());
+    assert!(is_ack(&phone.ask(part).await));
+    drop(phone);
+    let mut service = desktop.stopped().await;
+    assert_eq!(names_in(downloads.path()).len(), 2);
+
+    service.discard_all().await;
+    assert_eq!(names_in(downloads.path()), ["small"]);
+}
+
 /// A phone running the same service, on the other end of a pipe.
 async fn pair(desktop_dir: &Path, phone_dir: &Path) -> (Driven, Driven) {
     let (here, there) = duplex(64 * 1024);
