@@ -60,7 +60,9 @@ pub(crate) fn route(core: &Arc<Core>, event: DiscoveryEvent) {
                 lock(&core.evidence).beacon(&phone_id, beacon.address, Instant::now());
                 wake(core, &phone_id);
             }
-            BeaconSender::Pairing => pairing::offer_seen(core, &[beacon.address]),
+            BeaconSender::Pairing => {
+                pairing::offer_seen(core, pairing::Lead::Beacon, &[beacon.address]);
+            }
         },
     }
 }
@@ -73,7 +75,9 @@ fn sighted(core: &Arc<Core>, sighting: &Sighting) {
                 lock(&core.evidence).mdns(phone_id, &record.instance, record.addresses.clone());
                 wake(core, phone_id);
             }
-            Match::Offer => pairing::offer_seen(core, &record.addresses),
+            Match::Offer => {
+                pairing::offer_seen(core, pairing::Lead::Announcement, &record.addresses);
+            }
             Match::PairingMode => {
                 pairing::phone_listed(core, &record.instance, Some(record.addresses.clone()));
             }
