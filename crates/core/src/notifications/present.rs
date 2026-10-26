@@ -257,7 +257,7 @@ fn action_request(key: String, action_id: String, reply_text: String) -> Answer 
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
-fn truncate(text: &str, max: usize) -> String {
+pub(crate) fn truncate(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_owned();
     }
