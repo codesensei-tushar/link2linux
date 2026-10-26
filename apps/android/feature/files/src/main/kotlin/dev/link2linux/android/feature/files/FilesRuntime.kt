@@ -9,19 +9,25 @@ import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.link2linux.android.core.data.loggingUncaught
 import dev.link2linux.android.core.files.FileEngine
+import dev.link2linux.android.core.files.FileNames
 import dev.link2linux.android.core.files.FilePeer
 import dev.link2linux.android.core.files.FilePolicy
 import dev.link2linux.android.core.files.OutgoingFile
 import dev.link2linux.android.core.files.TransferKey
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -139,7 +145,8 @@ class FilesRuntime @Inject internal constructor(@ApplicationContext context: Con
     ) {
         val count: Int get() = files.size
         val totalBytes: Long get() = files.sumOf { it.size }
-        val names: List<String> get() = files.map { it.name }
+        /** The names the desktop will get, which a provider's own names are not: they may hold bidi overrides or newlines. */
+        val names: List<String> get() = files.map { FileNames.safe(it.name) }
     }
 
     /**
@@ -153,10 +160,18 @@ class FilesRuntime @Inject internal constructor(@ApplicationContext context: Con
      */
     fun prepareShare(uris: List<Uri>): Deferred<Prepared> {
         val grants = ReadGrants.hold(app, uris)
-        return scope.async {
-            cacheCleared.await()
-            val resolved = OutgoingFiles.resolve(app, uris)
-            Prepared(resolved.files, resolved.unreadable, grants)
+        // ATOMIC: even a read cancelled before it starts runs its handler, which lets the grants go.
+        return scope.async(start = CoroutineStart.ATOMIC) {
+            try {
+                cacheCleared.await()
+                val job = currentCoroutineContext().job
+                val resolved = OutgoingFiles.resolve(app, uris, checkActive = job::ensureActive)
+                Prepared(resolved.files, resolved.unreadable, grants)
+            } catch (e: CancellationException) {
+                // The share was cancelled: nothing will discard it, so the grants go here.
+                grants?.let { ReadGrants.release(app, it) }
+                throw e
+            }
         }
     }
 

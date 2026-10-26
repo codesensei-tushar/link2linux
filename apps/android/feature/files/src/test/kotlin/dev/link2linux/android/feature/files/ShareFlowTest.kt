@@ -51,17 +51,36 @@ class ShareFlowTest {
     }
 
     @Test
-    fun `a share cancelled while it is read is let go once read`() = runTest {
+    fun `a share cancelled while it is read stops the read`() = runTest {
         val share = flow()
         share.prepare(listOf("a"))
         share.cancel()
         assertEquals(ShareState.Done(null), share.state.value)
-        assertTrue(discarded.isEmpty())
-        reading.complete("a")
+        // The read stops, and lets go of what it took itself: nothing is left to discard.
+        assertTrue(reading.isCancelled)
         testScheduler.runCurrent()
-        assertEquals(listOf("a"), discarded)
+        assertTrue(discarded.isEmpty())
         assertEquals(ShareState.Done(null), share.state.value)
         share.confirm("laptop")
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun `a share closed while it is read stops the read`() = runTest {
+        val share = flow()
+        share.prepare(listOf("a"))
+        share.close()
+        assertTrue(reading.isCancelled)
+    }
+
+    @Test
+    fun `a share cancelled once read is let go`() = runTest {
+        val share = flow()
+        share.prepare(listOf("a"))
+        reading.complete("a")
+        testScheduler.runCurrent()
+        share.cancel()
+        assertEquals(listOf("a"), discarded)
         assertTrue(sent.isEmpty())
     }
 

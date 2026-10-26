@@ -32,6 +32,7 @@ import dev.link2linux.protocol.v1.PairingMethod
 import dev.link2linux.protocol.v1.featureState
 import dev.link2linux.protocol.v1.featureStatus
 import dev.link2linux.protocol.v1.fileAccept
+import dev.link2linux.protocol.v1.fileCancel
 import dev.link2linux.protocol.v1.fileChunk
 import dev.link2linux.protocol.v1.fileInfo
 import dev.link2linux.protocol.v1.fileOffer
@@ -40,6 +41,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -333,6 +335,62 @@ class FileSessionTest {
         assertArrayEquals(data, store.saved["burst.bin"])
         // The session is still up.
         peer.assertNothingSent()
+    }
+
+    @Test
+    fun aBurstOfRequestsBeyondSixtyFourIsAllAnswered() = runBlocking {
+        val peer = connect()
+        peer.readStart()
+        val id = startTransfer(peer, 6)
+        // The first chunk holds the worker while the rest of the burst piles up behind it.
+        val gate = CountDownLatch(1)
+        store.gate = gate
+        val other = ByteString.copyFrom(ByteArray(16) { 7 })
+        val seqs = io {
+            List(FileSessionHooks.MAX_CHUNKS_WAITING) { peer.sendChunk(id) } +
+                List(92) { peer.send { expectsReply = true; fileCancel = fileCancel { transferId = other } } }
+        }
+        // Give the reader time to queue the burst behind the held worker.
+        delay(1_000)
+        gate.countDown()
+        val answers = io { List(seqs.size) { peer.read()!! } }
+        assertEquals(seqs, answers.map { it.replyTo })
+        peer.assertNothingSent()
+    }
+
+    @Test
+    fun aNinthUnansweredChunkEndsTheSession() = runBlocking {
+        val peer = connect()
+        peer.readStart()
+        val id = startTransfer(peer, 8)
+        val gate = CountDownLatch(1)
+        store.gate = gate
+        io { repeat(FileSessionHooks.MAX_CHUNKS_WAITING + 1) { peer.sendChunk(id) } }
+        val goodbye = io { generateSequence { peer.read() }.first { it.hasGoodbye() } }
+        assertEquals(GoodbyeReason.GOODBYE_REASON_PROTOCOL_ERROR, goodbye.goodbye.reason)
+        gate.countDown()
+    }
+
+    private suspend fun startTransfer(peer: DesktopPeer, n: Int): ByteString {
+        val id = ByteString.copyFrom(ByteArray(16) { n.toByte() })
+        peer.request {
+            fileOffer = fileOffer {
+                transferId = id
+                files += fileInfo {
+                    name = "burst.bin"
+                    size = 1000
+                }
+            }
+        }
+        return id
+    }
+
+    private fun DesktopPeer.sendChunk(id: ByteString): Long = send {
+        expectsReply = true
+        fileChunk = fileChunk {
+            transferId = id
+            data = ByteString.copyFrom(ByteArray(10))
+        }
     }
 
     @Test

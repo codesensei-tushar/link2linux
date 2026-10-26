@@ -26,14 +26,14 @@ sealed interface ShareState<out P, out D> {
  * One share in the share target, from reading its documents to the user's
  * answer. Another app can start the share target without the user, so
  * nothing is sent before [confirm]; a share that is cancelled, or left
- * without an answer, is let go once its documents are read.
+ * without an answer, stops being read, and is let go if it was read already.
  *
  * @param U a shared document. @param P the documents, read. @param D a desktop.
  */
 @OptIn(ExperimentalCoroutinesApi::class) // Deferred.getCompleted, once it completed
 internal class ShareFlow<U, P, D>(
     private val scope: CoroutineScope,
-    /** Reads and describes the documents. */
+    /** Reads and describes the documents; a cancelled read stops, and lets go of what it took. */
     private val read: (List<U>) -> Deferred<P>,
     private val send: (D, P) -> Unit,
     private val discard: (P) -> Unit,
@@ -74,9 +74,13 @@ internal class ShareFlow<U, P, D>(
         if (!sent) discardWhenRead()
     }
 
-    /** Lets the documents go, now or once they are read. Twice does no harm. */
+    /**
+     * Stops reading the documents, and lets them go if they were read. A read
+     * that is cancelled lets go of what it holds itself. Twice does no harm.
+     */
     private fun discardWhenRead() {
         val job = preparing ?: return
+        job.cancel()
         job.invokeOnCompletion { failure -> if (failure == null) discard(job.getCompleted()) }
     }
 }
