@@ -8,6 +8,8 @@ import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.model.PairingState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,8 +18,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.Inet6Address
 import java.net.InetSocketAddress
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Makes the phone findable while the connection service runs: keeps the mDNS
@@ -31,6 +35,8 @@ import java.net.InetSocketAddress
  *
  * [scope] must run its coroutines one at a time (a single-threaded
  * dispatcher): the controller keeps plain state that its coroutines share.
+ * Everything it does between [start] and [stop] runs there, as children of
+ * that start's job, so [stop] can wait for all of it.
  */
 class DiscoveryController(
     private val scope: CoroutineScope,
@@ -42,18 +48,31 @@ class DiscoveryController(
     private val sender: BeaconSender,
     private val wakeLock: TimedLock,
     private val multicastLock: HeldLock,
+    /** Time since boot, deep sleep included: on Android, `SystemClock.elapsedRealtime`. */
+    private val elapsedRealtimeMillis: () -> Long,
     private val announcer: Announcer = Announcer(),
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
     /** Before Android 14 the system's mDNS daemon needs a new registration whenever a network changes. */
     private val reregisterOnNetworkChange: Boolean = false,
 ) : DiscoveryStatus {
+
+    /** The job of the current [start], or null while stopped. */
+    @Volatile
+    private var job: Job? = null
+
+    /** Where the controller's work runs: under the current start's job, or nowhere while stopped. */
+    private val work = object : CoroutineScope {
+        override val coroutineContext: CoroutineContext
+            get() = scope.coroutineContext + (job ?: STOPPED)
+    }
+
     private val engine = BeaconEngine(
-        scope = scope,
+        scope = work,
         transport = object : BeaconTransport {
             override fun onBurstStart(kind: BurstKind) {
                 wakeLock.hold(WAKE_HOLD_MILLIS)
                 // Registering again makes Android send fresh announcements.
-                scope.launch { lastRegistered?.let { register(it) } }
+                work.launch { lastRegistered?.let { register(it) } }
             }
 
             override suspend fun send(datagram: ByteArray, unicast: List<InetSocketAddress>, keepAwake: Boolean) {
@@ -61,6 +80,7 @@ class DiscoveryController(
                 sender.send(localNetworks.networks.value, datagram, unicast)
             }
         },
+        elapsedMillis = elapsedRealtimeMillis,
         wallClockMillis = wallClockMillis,
     )
 
@@ -91,24 +111,28 @@ class DiscoveryController(
         val networks: List<LocalNetwork>,
     )
 
-    private var job: Job? = null
     private var facts: Facts? = null
     private var lastRegistered: Pair<Announcement, Int>? = null
     private var registerJob: Job? = null
 
     fun start() {
         if (job != null) return
-        job = scope.launch {
-            launch { follow() }
-            launch { rotatePeriodically() }
-        }
+        job = SupervisorJob(scope.coroutineContext[Job])
+        work.launch { follow() }
+        work.launch { rotatePeriodically() }
     }
 
-    suspend fun stop() {
-        job?.cancel()
+    /**
+     * Stops announcing. It runs on the controller's thread once nothing else
+     * does there, and ends everything [start] began before it unregisters,
+     * so no registration, lock or beacon comes after it returns.
+     */
+    suspend fun stop() = withContext(scope.coroutineContext.minusKey(Job)) {
+        val running = job
         job = null
+        running?.cancelAndJoin()
         engine.stop()
-        registerJob?.cancel()
+        registerJob = null
         multicastLock.release()
         wakeLock.release()
         lastRegistered = null
@@ -177,7 +201,7 @@ class DiscoveryController(
             registerJob?.cancel()
             lastRegistered = null
             _announced.value = null
-            registerJob = scope.launch { advertiser.unregister() }
+            registerJob = work.launch { advertiser.unregister() }
             return
         }
         val announcement = announcer.announcement(
@@ -195,10 +219,13 @@ class DiscoveryController(
     private fun register(wanted: Pair<Announcement, Int>) {
         lastRegistered = wanted
         registerJob?.cancel()
-        registerJob = scope.launch { advertiser.register(wanted.first, wanted.second) }
+        registerJob = work.launch { advertiser.register(wanted.first, wanted.second) }
     }
 
     private companion object {
         const val WAKE_HOLD_MILLIS = 8_000L
+
+        /** A cancelled job: work launched while the controller is stopped never runs. */
+        val STOPPED: Job = Job().apply { cancel() }
     }
 }

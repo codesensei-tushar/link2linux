@@ -66,7 +66,12 @@ class BeaconEngine(
     private val scope: CoroutineScope,
     private val transport: BeaconTransport,
     private val random: RandomBytes = SecureRandomBytes(),
-    private val elapsedMillis: () -> Long = { System.nanoTime() / 1_000_000 },
+    /**
+     * Time since boot, deep sleep included, for the gap between bursts:
+     * a clock that stops while the phone sleeps would make a burst hours ago
+     * look recent.
+     */
+    private val elapsedMillis: () -> Long,
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
 ) {
     private var inputs = BeaconInputs()

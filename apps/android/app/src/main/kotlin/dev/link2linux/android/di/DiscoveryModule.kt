@@ -1,6 +1,7 @@
 package dev.link2linux.android.di
 
 import android.content.Context
+import android.os.SystemClock
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -58,6 +59,7 @@ internal object DiscoveryModule {
         sender = UdpBeaconSender(),
         wakeLock = BeaconWakeLock(context),
         multicastLock = PairingMulticastLock(context),
+        elapsedRealtimeMillis = SystemClock::elapsedRealtime,
         // Android before 14 needs a new registration whenever a network changes.
         reregisterOnNetworkChange = android.os.Build.VERSION.SDK_INT < 34,
     )
