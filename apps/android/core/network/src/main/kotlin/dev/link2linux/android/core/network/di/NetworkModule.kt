@@ -6,6 +6,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import dev.link2linux.android.core.data.DesktopConnections
+import dev.link2linux.android.core.data.DesktopListener
 import dev.link2linux.android.core.data.LocalDeviceRepository
 import dev.link2linux.android.core.data.PairedDeviceRepository
 import dev.link2linux.android.core.data.PairingController
@@ -27,6 +28,9 @@ internal abstract class NetworkModule {
 
     @Binds
     abstract fun bindsDesktopConnections(impl: PairingService): DesktopConnections
+
+    @Binds
+    abstract fun bindsDesktopListener(impl: PairingService): DesktopListener
 
     companion object {
         @Provides
