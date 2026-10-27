@@ -9,7 +9,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -22,11 +21,11 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class PhotoEngineTest {
 
-    private val availability = MutableStateFlow(PhotoAvailability.READY)
     private val library = FakeLibrary(listOf(photo("b", taken = 2), photo("a", taken = 1)))
     private val failures = mutableListOf<Throwable>()
 
-    private fun TestScope.engine() = PhotoEngine(backgroundScope, library, availability, onFailure = { failures += it })
+    private fun TestScope.engine(availability: PhotoAvailability = PhotoAvailability.READY) =
+        PhotoEngine(backgroundScope, library, availability, onFailure = { failures += it })
 
     private fun ids(answer: PhotoAnswer): List<String> = (answer as PhotoAnswer.Listed).photos.map(Photo::getId)
 
@@ -44,12 +43,22 @@ class PhotoEngineTest {
             this.offset = offset
         })
 
-    /** Asks for the list and follows it, as a desktop does; gives what it is sent, with the time. */
+    /** Asks for the list as [desktop], which stays subscribed, and gives the reply; [changed] gets the updates. */
+    private suspend fun TestScope.ask(
+        engine: PhotoEngine,
+        desktop: PhotoDesktop = PhotoDesktop(),
+        changed: suspend (List<Photo>) -> Unit = {},
+    ): PhotoAnswer {
+        val reply = CompletableDeferred<PhotoAnswer>()
+        backgroundScope.launch { engine.subscribe(desktop, { reply.complete(it) }, changed) }
+        runCurrent()
+        return reply.await()
+    }
+
+    /** Asks for the list and follows it, as a desktop does; gives what it is sent after the reply, with the time. */
     private suspend fun TestScope.subscribe(engine: PhotoEngine, desktop: PhotoDesktop): MutableList<Pair<Long, List<String>>> {
         val sent = mutableListOf<Pair<Long, List<String>>>()
-        engine.list(desktop) as PhotoAnswer.Listed
-        backgroundScope.launch { engine.follow(desktop) { sent += testScheduler.currentTime to it.map(Photo::getId) } }
-        runCurrent()
+        ask(engine, desktop) { sent += testScheduler.currentTime to it.map(Photo::getId) } as PhotoAnswer.Listed
         return sent
     }
 
@@ -57,7 +66,7 @@ class PhotoEngineTest {
     fun theListIsTheLibrarysNewestFirst() = runTest {
         library.photos.value = listOf(photo("a", taken = 1), photo("c", taken = 3), photo("b", taken = 2))
 
-        assertEquals(listOf("c", "b", "a"), ids(engine().list(PhotoDesktop())))
+        assertEquals(listOf("c", "b", "a"), ids(ask(engine())))
     }
 
     @Test
@@ -70,7 +79,7 @@ class PhotoEngineTest {
             photo("nameless", taken = 1, name = ""),
         )
 
-        val listed = (engine().list(PhotoDesktop()) as PhotoAnswer.Listed).photos
+        val listed = (ask(engine()) as PhotoAnswer.Listed).photos
 
         assertEquals(listOf("ok", "nameless"), listed.map(Photo::getId))
         assertEquals(listOf("___x.jpg", "photo"), listed.map(Photo::getName))
@@ -80,7 +89,7 @@ class PhotoEngineTest {
     fun theListHoldsAtMostTwoHundred() = runTest {
         library.photos.value = (250 downTo 1).map { photo("p$it", taken = it.toLong()) }
 
-        val listed = ids(engine().list(PhotoDesktop()))
+        val listed = ids(ask(engine()))
 
         assertEquals(200, listed.size)
         assertEquals("p250", listed.first())
@@ -91,19 +100,17 @@ class PhotoEngineTest {
     fun everyRequestIsRefusedWhileTheFeatureIsOff() = runTest {
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
-        availability.value = PhotoAvailability.DISABLED
+        ask(engine, desktop)
+        engine.setAvailability(PhotoAvailability.DISABLED)
 
-        assertEquals(ErrorCode.ERROR_CODE_DISABLED, code(engine.list(desktop)))
+        assertEquals(ErrorCode.ERROR_CODE_DISABLED, code(ask(engine, desktop)))
         assertEquals(ErrorCode.ERROR_CODE_DISABLED, code(engine.thumbnail(desktop, "a")))
         assertEquals(ErrorCode.ERROR_CODE_DISABLED, code(engine.data(desktop, "a")))
     }
 
     @Test
     fun withoutThePermissionRequestsNameIt() = runTest {
-        availability.value = PhotoAvailability.PERMISSION_REQUIRED
-
-        val refused = (engine().list(PhotoDesktop()) as PhotoAnswer.Refused).message
+        val refused = (ask(engine(PhotoAvailability.PERMISSION_REQUIRED)) as PhotoAnswer.Refused).message
 
         assertEquals(ErrorCode.ERROR_CODE_PERMISSION_REQUIRED, refused.code)
         assertEquals("photos", refused.permission)
@@ -113,7 +120,7 @@ class PhotoEngineTest {
     fun aListThatFailsIsAnInternalError() = runTest {
         library.failure = SecurityException("no access")
 
-        assertEquals(ErrorCode.ERROR_CODE_INTERNAL, code(engine().list(PhotoDesktop())))
+        assertEquals(ErrorCode.ERROR_CODE_INTERNAL, code(ask(engine())))
         assertEquals(1, failures.size)
     }
 
@@ -122,7 +129,7 @@ class PhotoEngineTest {
         val engine = engine()
         val asked = PhotoDesktop()
         val other = PhotoDesktop()
-        engine.list(asked)
+        ask(engine, asked)
 
         assertTrue(engine.thumbnail(asked, "a") is PhotoAnswer.Thumbnail)
         // Another desktop, or another session, that did not ask has been sent nothing.
@@ -138,7 +145,7 @@ class PhotoEngineTest {
         val engine = engine()
         val desktop = PhotoDesktop()
         library.files["a"] = ByteArray(3)
-        engine.list(desktop)
+        ask(engine, desktop)
 
         library.photos.value = listOf(photo("b", taken = 2))
         library.files.remove("a")
@@ -151,7 +158,7 @@ class PhotoEngineTest {
     fun aThumbnailSizeOutOfRangeIsInvalid() = runTest {
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
+        ask(engine, desktop)
 
         for (size in listOf(0, 63, 2049, -1)) {
             assertEquals("max_size $size", ErrorCode.ERROR_CODE_INVALID_ARGUMENT, code(engine.thumbnail(desktop, "a", size)))
@@ -164,7 +171,7 @@ class PhotoEngineTest {
     fun aThumbnailIsAJpegOfTheSizeAskedFor() = runTest {
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
+        ask(engine, desktop)
 
         val thumbnail = (engine.thumbnail(desktop, "a", 400) as PhotoAnswer.Thumbnail).message
 
@@ -180,7 +187,7 @@ class PhotoEngineTest {
         library.height = 200
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
+        ask(engine, desktop)
 
         val thumbnail = (engine.thumbnail(desktop, "a", 2048) as PhotoAnswer.Thumbnail).message
 
@@ -192,7 +199,7 @@ class PhotoEngineTest {
         library.bytesPerPixel = 0.2
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
+        ask(engine, desktop)
 
         val thumbnail = (engine.thumbnail(desktop, "a", 2048) as PhotoAnswer.Thumbnail).message
 
@@ -206,7 +213,7 @@ class PhotoEngineTest {
         library.bytesPerPixel = 1.0
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
+        ask(engine, desktop)
 
         val thumbnail = (engine.thumbnail(desktop, "a", 2048) as PhotoAnswer.Thumbnail).message
 
@@ -222,7 +229,7 @@ class PhotoEngineTest {
         val file = ByteArray(600 * 1024) { it.toByte() }
         library.files["a"] = file
         library.modified["a"] = 77
-        engine.list(desktop)
+        ask(engine, desktop)
 
         val first = (engine.data(desktop, "a") as PhotoAnswer.Data).message
         val last = (engine.data(desktop, "a", 512L * 1024) as PhotoAnswer.Data).message
@@ -240,7 +247,7 @@ class PhotoEngineTest {
         val engine = engine()
         val desktop = PhotoDesktop()
         library.files["a"] = ByteArray(10)
-        engine.list(desktop)
+        ask(engine, desktop)
 
         assertEquals(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, code(engine.data(desktop, "a", 11)))
         assertEquals(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, code(engine.data(desktop, "a", -1)))
@@ -250,7 +257,7 @@ class PhotoEngineTest {
     fun tooManyThumbnailsWaitingAreBusy() = runTest {
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
+        ask(engine, desktop)
         val gate = CompletableDeferred<Unit>()
         library.gate = gate
 
@@ -272,7 +279,7 @@ class PhotoEngineTest {
         val engine = engine()
         val desktop = PhotoDesktop()
         library.files["a"] = ByteArray(10)
-        engine.list(desktop)
+        ask(engine, desktop)
         val gate = CompletableDeferred<Unit>()
         library.gate = gate
 
@@ -369,12 +376,12 @@ class PhotoEngineTest {
         val desktop = PhotoDesktop()
         val sent = subscribe(engine, desktop)
 
-        availability.value = PhotoAvailability.PERMISSION_REQUIRED
+        engine.setAvailability(PhotoAvailability.PERMISSION_REQUIRED)
         runCurrent()
         library.photos.value = listOf(photo("c", taken = 3))
         advanceTimeBy(60_000)
         runCurrent()
-        availability.value = PhotoAvailability.READY
+        engine.setAvailability(PhotoAvailability.READY)
 
         assertEquals(emptyList<Pair<Long, List<String>>>(), sent)
         // Until it asks again, the desktop may fetch nothing.
@@ -387,12 +394,11 @@ class PhotoEngineTest {
         val engine = engine()
         val desktop = PhotoDesktop()
         val sent = mutableListOf<List<String>>()
-        engine.list(desktop)
-        val first = backgroundScope.launch { engine.follow(desktop) { sent += it.map(Photo::getId) } }
+        val first = backgroundScope.launch { engine.subscribe(desktop, {}) { sent += it.map(Photo::getId) } }
         runCurrent()
 
         library.photos.value = listOf(photo("c", taken = 3))
-        engine.list(desktop)
+        ask(engine, desktop)
         advanceTimeBy(5_000)
         runCurrent()
 
@@ -403,14 +409,28 @@ class PhotoEngineTest {
     }
 
     @Test
-    fun aCancelledFollowerEndsTheSubscription() = runTest {
+    fun aCancelledSubscriptionEndsWhatTheDesktopMayFetch() = runTest {
         val engine = engine()
         val desktop = PhotoDesktop()
-        engine.list(desktop)
-        val follower = backgroundScope.launch { engine.follow(desktop) {} }
+        val subscription = backgroundScope.launch { engine.subscribe(desktop, {}, {}) }
+        runCurrent()
+        assertTrue(engine.thumbnail(desktop, "a") is PhotoAnswer.Thumbnail)
+
+        subscription.cancel()
         runCurrent()
 
-        follower.cancel()
+        assertEquals(ErrorCode.ERROR_CODE_NOT_FOUND, code(engine.thumbnail(desktop, "a")))
+    }
+
+    @Test
+    fun aSubscriptionCancelledWhileItRepliesEndsToo() = runTest {
+        val engine = engine()
+        val desktop = PhotoDesktop()
+        val replying = CompletableDeferred<Unit>()
+        val subscription = backgroundScope.launch { engine.subscribe(desktop, { replying.await() }, {}) }
+        runCurrent()
+
+        subscription.cancel()
         runCurrent()
 
         assertEquals(ErrorCode.ERROR_CODE_NOT_FOUND, code(engine.thumbnail(desktop, "a")))
@@ -419,13 +439,11 @@ class PhotoEngineTest {
     @Test
     fun theListenerRunsWhileADesktopFollowsAndAWhileAfter() = runTest {
         val engine = engine()
-        val desktop = PhotoDesktop()
-        engine.list(desktop)
-        val follower = backgroundScope.launch { engine.follow(desktop) {} }
+        val subscription = backgroundScope.launch { engine.subscribe(PhotoDesktop(), {}, {}) }
         runCurrent()
         assertEquals(1, library.listeners)
 
-        follower.cancel()
+        subscription.cancel()
         advanceTimeBy(PhotoEngine.KEEP_LISTENING_MILLIS - 1)
         runCurrent()
         assertEquals(1, library.listeners)
@@ -460,5 +478,21 @@ class PhotoEngineTest {
         runCurrent()
 
         assertEquals(listOf("c"), sent.single().second)
+    }
+
+    @Test
+    fun everyChangeOfAvailabilityIsReportedInOrder() = runTest {
+        val engine = engine()
+        val changes = mutableListOf<PhotoAvailability>()
+        backgroundScope.launch { engine.availabilityChanges.collect { changes += it } }
+        runCurrent()
+
+        engine.setAvailability(PhotoAvailability.DISABLED)
+        engine.setAvailability(PhotoAvailability.DISABLED)
+        engine.setAvailability(PhotoAvailability.READY)
+        runCurrent()
+
+        assertEquals(listOf(PhotoAvailability.DISABLED, PhotoAvailability.READY), changes)
+        assertEquals(PhotoAvailability.READY, engine.availability.value)
     }
 }

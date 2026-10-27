@@ -20,9 +20,12 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
@@ -40,7 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /** The engine's answer to one of a desktop's requests. */
 sealed interface PhotoAnswer {
-    /** The list for a `PhotoListReply`; the desktop is now subscribed to it. */
+    /** The list for a `PhotoListReply`; the desktop is subscribed to it. */
     data class Listed(val photos: List<Photo>) : PhotoAnswer
 
     data class Thumbnail(val message: PhotoThumbnail) : PhotoAnswer
@@ -85,8 +88,8 @@ class PhotoDesktop {
 /**
  * The phone's side of the photos feature (docs/protocol.md, "Photos").
  *
- * A desktop asks for the list with [list], which subscribes it, and
- * [follow] then keeps it current with `PhotoListChanged`. It fetches
+ * A desktop asks for the list with [subscribe], which answers it and then
+ * keeps it current with `PhotoListChanged`. It fetches
  * thumbnails with [thumbnail] and the original files with [data], and only
  * for the photos of the list it was last sent: any other id is
  * `NOT_FOUND`, as is a photo deleted since. Each [PhotoDesktop] holds that
@@ -104,14 +107,31 @@ class PhotoDesktop {
 class PhotoEngine(
     scope: CoroutineScope,
     private val library: PhotoLibrary,
-    /** Whether the photos can be shared now: the user's switch and the permission. */
-    val availability: StateFlow<PhotoAvailability>,
+    /** Whether the photos can be shared at first: the user's switch and the permission. */
+    initialAvailability: PhotoAvailability,
     keepListeningMillis: Long = KEEP_LISTENING_MILLIS,
     private val intervalMillis: Long = CHANGE_INTERVAL_MILLIS,
     retryMillis: Long = RETRY_MILLIS,
     private val busyRetryMillis: Long = BUSY_RETRY_MILLIS,
     private val onFailure: (Throwable) -> Unit = {},
 ) {
+    private val _availability = MutableStateFlow(initialAvailability)
+
+    /** Whether the photos can be shared now, for `FeatureStatus`. */
+    val availability: StateFlow<PhotoAvailability> = _availability.asStateFlow()
+
+    private val _availabilityChanges = MutableSharedFlow<PhotoAvailability>(
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
+    /**
+     * Every change of [availability], in order, from the moment a collector
+     * subscribes: a change away from `READY` and back is two, which the
+     * desktop answers by asking for the list again.
+     */
+    val availabilityChanges: SharedFlow<PhotoAvailability> = _availabilityChanges.asSharedFlow()
+
     private val refreshes = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     // The replay ends with the listener: a list from before then may be stale.
@@ -132,6 +152,15 @@ class PhotoEngine(
     private val thumbnailsWaiting = AtomicInteger()
     private val dataWaiting = AtomicInteger()
 
+    /** The user's switch or the permission changed. */
+    fun setAvailability(availability: PhotoAvailability) {
+        synchronized(_availability) {
+            if (_availability.value == availability) return
+            _availability.value = availability
+            _availabilityChanges.tryEmit(availability)
+        }
+    }
+
     /**
      * Loads the list again for the desktops that follow it, for a change the
      * platform does not report, such as the user picking other photos for
@@ -142,25 +171,9 @@ class PhotoEngine(
     }
 
     /**
-     * Answers [desktop]'s `PhotoListRequest`: the current list, which it may
-     * fetch from from now on, or why not.
-     */
-    suspend fun list(desktop: PhotoDesktop): PhotoAnswer {
-        refusal()?.let { return it }
-        val photos = try {
-            checked(library.photos(MAX_PHOTOS))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            onFailure(e)
-            return refused(ErrorCode.ERROR_CODE_INTERNAL, "The phone could not list its photos: ${e.javaClass.simpleName}")
-        }
-        desktop.start(photos)
-        return PhotoAnswer.Listed(photos)
-    }
-
-    /**
-     * Keeps [desktop] current after its [list]: [send] gets each new list,
+     * Answers [desktop]'s `PhotoListRequest` and keeps it current: [reply]
+     * gets the list, or why not. After a list, the desktop may fetch the
+     * photos of the list it was last sent, and [changed] gets each new list,
      * at most one every [intervalMillis] counted from the last one the
      * desktop got, starting with the reply. A change in the meantime
      * replaces the one waiting, so only the newest goes out, and nothing goes
@@ -168,12 +181,26 @@ class PhotoEngine(
      *
      * Returns when the feature leaves `READY` or the desktop asks for the
      * list again, and ends the subscription then, as when cancelled: the
-     * desktop may fetch nothing until it asks again. Throws what [send]
-     * throws.
+     * desktop may fetch nothing until it asks again. Throws what [reply] and
+     * [changed] throw.
      */
-    suspend fun follow(desktop: PhotoDesktop, send: suspend (List<Photo>) -> Unit) {
-        var sent = desktop.current() ?: return
+    suspend fun subscribe(
+        desktop: PhotoDesktop,
+        reply: suspend (PhotoAnswer) -> Unit,
+        changed: suspend (List<Photo>) -> Unit,
+    ) {
+        refusal()?.let { return reply(it) }
+        val photos = try {
+            checked(library.photos(MAX_PHOTOS))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            onFailure(e)
+            return reply(refused(ErrorCode.ERROR_CODE_INTERNAL, "The phone could not list its photos: ${e.javaClass.simpleName}"))
+        }
+        var sent = desktop.start(photos)
         try {
+            reply(PhotoAnswer.Listed(photos))
             coroutineScope {
                 // Subscribed for as long as the desktop follows, so the listener stays on between updates.
                 val latest = lists.stateIn(this, SharingStarted.Eagerly, null)
@@ -185,7 +212,7 @@ class PhotoEngine(
                         // Before sending: the desktop may fetch a new photo as soon as it sees it.
                         if (!desktop.replace(sent, update)) break
                         sent = update
-                        send(next)
+                        changed(next)
                     }
                 }
                 val leftReady = launch { availability.first { it != PhotoAvailability.READY } }
