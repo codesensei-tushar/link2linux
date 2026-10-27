@@ -236,6 +236,23 @@ impl StatusDriver {
         switched
     }
 
+    /// See [`StatusService::next_deadline`].
+    #[must_use]
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.service.next_deadline()
+    }
+
+    /// See [`StatusService::tick`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when the session fails.
+    pub async fn tick(&mut self, session: &mut PhoneSession) -> Result<(), SessionError> {
+        let ticked = self.service.tick(session, Instant::now()).await;
+        self.publish();
+        ticked
+    }
+
     /// See [`StatusService::session_ended`].
     pub fn session_ended(&mut self) {
         self.service.session_ended();

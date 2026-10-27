@@ -208,7 +208,11 @@ impl Features {
     /// transfer kept too long.
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
-        [self.files.next_deadline(), self.ring.next_deadline()]
+        [
+            self.files.next_deadline(),
+            self.ring.next_deadline(),
+            self.status.next_deadline(),
+        ]
             .into_iter()
             .flatten()
             .min()
@@ -217,8 +221,14 @@ impl Features {
     /// The time [`Self::next_deadline`] named has come. `session` is `None`
     /// between sessions.
     pub async fn tick(&mut self, session: Option<&mut PhoneSession>) {
-        if let Err(error) = self.files.tick(session).await {
+        let mut session = session;
+        if let Err(error) = self.files.tick(session.as_deref_mut()).await {
             tracing::debug!(%error, "files could not go on");
+        }
+        if let Some(session) = session
+            && let Err(error) = self.status.tick(session).await
+        {
+            tracing::debug!(%error, "the phone's status could not be asked for again");
         }
         self.ring.tick(Instant::now());
     }
