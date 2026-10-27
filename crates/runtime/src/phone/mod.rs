@@ -142,6 +142,16 @@ pub struct PhoneBoard {
 }
 
 impl PhoneBoard {
+    /// Whether this board's task is the phone's current one: the phone is
+    /// still paired, and no newer task opened a board for it. Other
+    /// per-phone state, such as calls, writes only while it is.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        lock(&self.boards.boards)
+            .get(&self.device_id)
+            .is_some_and(|board| board.owner == self.owner)
+    }
+
     /// Whether the user shows the phones' status on this desktop.
     #[must_use]
     pub fn is_shown(&self) -> bool {

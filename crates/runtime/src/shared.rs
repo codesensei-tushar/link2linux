@@ -38,7 +38,7 @@ use crate::notify::dto::{self, MirroredNotification, NotificationEvent};
 use crate::notify::{DriverFactory, Presenter};
 use crate::pairing::PairingCtl;
 use crate::paths::{DataDir, desktop_name};
-use crate::phone::{PhoneBoards, RingDriver, StatusDriver};
+use crate::phone::{PhoneBoard, PhoneBoards, RingDriver, StatusDriver};
 use crate::view::{Device, DeviceStatus, EventSink, StartupError};
 
 /// How the runtime starts.
@@ -396,14 +396,15 @@ impl Core {
                 self.presenter.clone(),
             ),
             status: StatusDriver::new(phone_board.clone()),
-            ring: RingDriver::new(phone_board),
-            calls: CallsDriver::new(record.id.clone(), self.calls.clone()),
+            ring: RingDriver::new(phone_board.clone()),
+            calls: CallsDriver::new(record.id.clone(), self.calls.clone(), phone_board.clone()),
         };
         self.calls.set_phones(self.phone_list());
         self.handle.spawn(forward_changes(
             self.clone(),
             record.id.clone(),
             board,
+            phone_board,
             features.notifications.subscribe(),
         ));
         let inbox = Inbox {
@@ -639,12 +640,16 @@ async fn forward_changes(
     core: Arc<Core>,
     device_id: String,
     board: Arc<Mutex<BTreeMap<String, MirroredNotification>>>,
+    owner: PhoneBoard,
     mut changes: tokio::sync::broadcast::Receiver<link2linux_core::notifications::Change>,
 ) {
     loop {
         match changes.recv().await {
             Ok(change) => {
-                core.calls.notification_changed(&device_id, &change);
+                // A replaced task's late changes leave the calls alone.
+                if owner.is_current() {
+                    core.calls.notification_changed(&device_id, &change);
+                }
                 let event = dto::event(&change);
                 {
                     let mut board = lock(&board);

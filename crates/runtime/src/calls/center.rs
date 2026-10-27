@@ -81,10 +81,9 @@ pub(crate) struct Center {
     window: Option<PairingWindow>,
     /// Each phone's call notifications, by key.
     notes: HashMap<String, BTreeMap<String, CallNotification>>,
-    /// How many sessions each phone has: its call notifications count
-    /// only while it has one. A count, not a flag, as a replaced
-    /// session may end after its successor started.
-    sessions: HashMap<String, usize>,
+    /// The phones with a session: their call notifications count only
+    /// while they have one.
+    sessions: HashSet<String>,
     /// When each shown call became active, for its timer.
     active_since: HashMap<String, i64>,
     problems: HashMap<String, CallProblem>,
@@ -121,7 +120,7 @@ impl Center {
             choices,
             window: None,
             notes: HashMap::new(),
-            sessions: HashMap::new(),
+            sessions: HashSet::new(),
             active_since: HashMap::new(),
             problems: HashMap::new(),
             connecting: HashSet::new(),
@@ -291,7 +290,7 @@ impl Center {
         let notes: Vec<CallNotification> = self
             .notes
             .get(&phone.id)
-            .filter(|_| self.sessions.get(&phone.id).is_some_and(|n| *n > 0))
+            .filter(|_| self.sessions.contains(&phone.id))
             .map(|notes| notes.values().cloned().collect())
             .unwrap_or_default();
         merge(gateway, &notes)
@@ -313,14 +312,12 @@ impl Center {
 
     /// A session with phone `device_id` started.
     pub fn session_started(&mut self, device_id: &str) {
-        *self.sessions.entry(device_id.to_owned()).or_default() += 1;
+        self.sessions.insert(device_id.to_owned());
     }
 
     /// A session with phone `device_id` ended.
     pub fn session_ended(&mut self, device_id: &str) {
-        if let Some(count) = self.sessions.get_mut(device_id) {
-            *count = count.saturating_sub(1);
-        }
+        self.sessions.remove(device_id);
     }
 
     /// Whether notification `key` of phone `device_id` is a call

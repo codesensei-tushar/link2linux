@@ -407,10 +407,6 @@ fn call_notifications_count_only_while_the_phone_has_a_session() {
     let mut center = ready(vec![], vec![]);
     center.set_note("p1", "k1", Some(ringing_note("k1", "Anna")));
     assert_eq!(center.calls_of(&phones[0], &phones).len(), 1);
-    // A new connection replaces the old one: the old session ends last.
-    center.session_started("p1");
-    center.session_ended("p1");
-    assert_eq!(center.calls_of(&phones[0], &phones).len(), 1);
     center.session_ended("p1");
     assert!(center.calls_of(&phones[0], &phones).is_empty());
     assert!(center.has_note("p1", "k1"));

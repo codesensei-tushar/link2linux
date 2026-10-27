@@ -139,7 +139,8 @@ impl Calls {
 
     /// A session with phone `device_id` started. Its call notifications
     /// count only while it has one: a call that ended while it was away
-    /// would show until the next sync.
+    /// would show until the next sync. Only the phone's current task
+    /// reports this (see [`CallsDriver`]).
     pub fn session_started(&self, device_id: &str) {
         lock(&self.center).session_started(device_id);
         self.nudge.notify_one();
