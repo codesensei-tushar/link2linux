@@ -23,7 +23,6 @@ val Feature.titleRes: Int
     get() = when (this) {
         Feature.PAIRING -> R.string.feature_title_pairing
         Feature.NOTIFICATIONS -> R.string.feature_title_notifications
-        Feature.MESSAGES -> R.string.feature_title_messages
         Feature.CALLS -> R.string.feature_title_calls
         Feature.PHOTOS -> R.string.feature_title_photos
         Feature.FILES -> R.string.feature_title_files
@@ -36,7 +35,6 @@ val Feature.summaryRes: Int
     get() = when (this) {
         Feature.PAIRING -> R.string.feature_summary_pairing
         Feature.NOTIFICATIONS -> R.string.feature_summary_notifications
-        Feature.MESSAGES -> R.string.feature_summary_messages
         Feature.CALLS -> R.string.feature_summary_calls
         Feature.PHOTOS -> R.string.feature_summary_photos
         Feature.FILES -> R.string.feature_summary_files
@@ -49,7 +47,6 @@ val Feature.iconRes: Int
     get() = when (this) {
         Feature.PAIRING -> R.drawable.ic_link
         Feature.NOTIFICATIONS -> R.drawable.ic_notifications
-        Feature.MESSAGES -> R.drawable.ic_chat
         Feature.CALLS -> R.drawable.ic_call
         Feature.PHOTOS -> R.drawable.ic_photo_library
         Feature.FILES -> R.drawable.ic_folder

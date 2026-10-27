@@ -10,7 +10,7 @@ class FeatureTest {
     @Test
     fun wireNamesMatchTheDesktopFeatureNames() {
         assertEquals(
-            listOf("pairing", "notifications", "messages", "calls", "photos", "files", "clipboard", "screen"),
+            listOf("pairing", "notifications", "calls", "photos", "files", "clipboard", "screen"),
             Feature.entries.map(Feature::wireName),
         )
     }
@@ -29,8 +29,13 @@ class FeatureTest {
     }
 
     @Test
-    fun pairingIsNotOptIn() {
-        assertFalse(Feature.PAIRING.isOptIn)
-        assertEquals(Feature.entries - Feature.PAIRING, Feature.optIn)
+    fun everyFeatureButPairingCanBeTurnedOff() {
+        assertFalse(Feature.PAIRING.isSwitchable)
+        assertEquals(Feature.entries - Feature.PAIRING, Feature.switchable)
+    }
+
+    @Test
+    fun onlyFeaturesThatShareNothingStartOn() {
+        assertEquals(listOf(Feature.CALLS), Feature.entries.filter(Feature::isOnByDefault))
     }
 }

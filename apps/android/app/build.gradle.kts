@@ -23,7 +23,6 @@ dependencies {
     implementation(projects.feature.calls)
     implementation(projects.feature.clipboard)
     implementation(projects.feature.files)
-    implementation(projects.feature.messages)
     implementation(projects.feature.notifications)
     implementation(projects.feature.pairing)
     implementation(projects.feature.photos)

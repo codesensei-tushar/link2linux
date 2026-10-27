@@ -16,8 +16,6 @@ import dev.link2linux.android.feature.clipboard.SendClipboardButton
 import dev.link2linux.android.feature.clipboard.clipboardEntry
 import dev.link2linux.android.feature.files.FilesRoute
 import dev.link2linux.android.feature.files.filesEntry
-import dev.link2linux.android.feature.messages.MessagesRoute
-import dev.link2linux.android.feature.messages.messagesEntry
 import dev.link2linux.android.feature.notifications.NotificationsRoute
 import dev.link2linux.android.feature.notifications.notificationsEntry
 import dev.link2linux.android.feature.pairing.PairingRoute
@@ -27,10 +25,9 @@ import dev.link2linux.android.feature.photos.photosEntry
 import dev.link2linux.android.feature.screen.ScreenRoute
 import dev.link2linux.android.feature.screen.screenEntry
 
-/** The route that opens each opt-in feature, in the order the features are listed. */
+/** The route that opens each feature the user can turn on and off, in the order the features are listed. */
 internal val featureRoutes: Map<Feature, NavKey> = linkedMapOf(
     Feature.NOTIFICATIONS to NotificationsRoute,
-    Feature.MESSAGES to MessagesRoute,
     Feature.CALLS to CallsRoute,
     Feature.PHOTOS to PhotosRoute,
     Feature.FILES to FilesRoute,
@@ -59,7 +56,6 @@ fun L2lApp(modifier: Modifier = Modifier) {
                 connectedActions = { SendClipboardButton() },
             )
             notificationsEntry(onBack = goBack)
-            messagesEntry(onBack = goBack)
             callsEntry(onBack = goBack)
             photosEntry(onBack = goBack)
             filesEntry(onBack = goBack)
