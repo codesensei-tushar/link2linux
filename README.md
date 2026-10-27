@@ -4,8 +4,8 @@
 
 **Your Android phone, right on your Linux desktop.**
 
-Notifications, messages, calls, photos, files and your clipboard, shared
-directly between your phone and your computer over your own network.
+Notifications, calls, files and your clipboard, shared directly between
+your phone and your computer over your own network.
 No account. No cloud. Open source.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -21,10 +21,10 @@ No account. No cloud. Open source.
 
 ---
 
-> **Status:** link2linux is in active development and has not had its first
-> release yet. The first release, v0.1.0, ships pairing and notifications.
-> Follow the [releases page](https://github.com/codesensei-tushar/link2linux/releases)
-> to hear when it lands.
+> **Status:** link2linux is in active development. Version 0.2.0 is out as a
+> pre-release, with pairing, notifications, clipboard sharing and file
+> transfer. Get it from the
+> [releases page](https://github.com/codesensei-tushar/link2linux/releases).
 
 ## Why link2linux
 
@@ -42,8 +42,9 @@ your terms.
   The two devices find each other on their own from then on.
 - **Built for Linux.** A native desktop app for GNOME, KDE Plasma and other
   desktops, on Wayland and X11, packaged as .deb, .rpm and AppImage.
-- **You decide what's shared.** Every feature starts switched off, and
-  Android asks for each permission only when you turn that feature on.
+- **You decide what's shared.** Every feature that shares your content
+  starts switched off, and Android asks for each permission only when you
+  turn that feature on.
 - **Open source.** Apache-2.0, all of it: the desktop app, the Android app and
   the protocol.
 
@@ -51,14 +52,13 @@ your terms.
 
 | Feature | What it does | Status |
 |---|---|---|
-| Pairing | Pair with a QR code, or compare a 6-digit code if you have no camera | In progress (v0.1) |
-| Notifications | Phone notifications on your desktop: reply inline, run actions, dismiss on both devices | In progress (v0.1) |
-| Messages | Reply to texts from your keyboard, straight from the notification | Planned (v0.2) |
-| Clipboard | Copy on one device, paste on the other | In progress (v0.2) |
-| Files | Send files both ways with drag and drop or the share sheet | In progress (v0.2) |
-| Photos | Send recent photos to your computer in a couple of taps | Planned (v0.2) |
-| Calls | See who's calling and talk through your computer over Bluetooth | Planned (v0.3) |
-| Phone status | Battery, signal and ring-my-phone | Planned (v0.3) |
+| Pairing | Pair with a QR code, or compare a 6-digit code if you have no camera | Available (v0.1) |
+| Notifications | Phone notifications on your desktop: reply inline, texts included, run actions, dismiss on both devices | Available (v0.1) |
+| Clipboard | Copy on one device, paste on the other | Available (v0.2) |
+| Files | Send files both ways with drag and drop or the share sheet | Available (v0.2) |
+| Calls | See who's calling and talk through your computer over Bluetooth | In progress (v0.3) |
+| Phone status | Battery, signal and ring-my-phone | In progress (v0.3) |
+| Photos | Send recent photos to your computer in a couple of taps | Later |
 | Screen | Mirror your phone in a window on your desktop | Later |
 
 ## How it works
@@ -149,9 +149,9 @@ Found a security issue? Please report it privately as described in
 
 - **v0.1:** QR pairing, automatic reconnection and notifications with reply
   and dismiss sync.
-- **v0.2:** messages, clipboard, files and photos.
+- **v0.2:** clipboard sharing and file transfer.
 - **v0.3:** calls over Bluetooth, phone status and ring-my-phone.
-- **Later:** screen mirroring, ARM64 builds and Flatpak.
+- **Later:** photos, screen mirroring, ARM64 builds and Flatpak.
 
 ## Project structure
 
