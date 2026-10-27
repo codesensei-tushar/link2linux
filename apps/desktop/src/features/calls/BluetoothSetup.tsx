@@ -43,7 +43,9 @@ export function PairingCard({
         <h2 id={titleId} className="calls-setup__title">
           {`Pair ${phoneName} over Bluetooth`}
         </h2>
-        <p className="calls-setup__text">{requestText(pairing.phone, phoneName)}</p>
+        <p className="calls-setup__text">
+          {requestText(pairing.phone, phoneName, pairing.adapterName)}
+        </p>
         <ol className="calls-setup__steps">
           <li>{`On ${phoneName}, open Bluetooth settings and pick “${pairing.adapterName}”.`}</li>
           <li>Check that both devices show the same code, and confirm on each.</li>

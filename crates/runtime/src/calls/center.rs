@@ -638,6 +638,7 @@ fn pairing_view(window: &PairingWindow, now: Instant, now_ms: i64) -> BluetoothP
             PhoneAnswer::Refused(
                 ErrorCode::Unavailable | ErrorCode::Disabled | ErrorCode::Unsupported,
             ) => PairingRequestState::Unavailable,
+            PhoneAnswer::Refused(ErrorCode::NotAllowed) => PairingRequestState::NotAllowed,
             PhoneAnswer::Refused(_) | PhoneAnswer::NoAnswer => PairingRequestState::Failed,
         },
         prompt: window.prompt().map(|prompt| PairingCode {

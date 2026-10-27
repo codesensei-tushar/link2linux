@@ -41,8 +41,8 @@ export const callStateLabel: Record<CallStateView, string> = {
   held: "On hold",
 };
 
-/** What became of asking the phone to pair. */
-export function requestText(state: PairingRequestState, phone: string): string {
+/** What became of asking the phone to pair; `name` is this computer's Bluetooth name. */
+export function requestText(state: PairingRequestState, phone: string, name: string): string {
   switch (state) {
     case "notAsked":
       return `${phone} isn't connected to link2linux right now, so pair from its Bluetooth settings.`;
@@ -52,6 +52,8 @@ export function requestText(state: PairingRequestState, phone: string): string {
       return `${phone} shows a notification to pair. Tap it, or pair from its Bluetooth settings.`;
     case "unavailable":
       return `${phone} can't pair over Bluetooth right now. Check that its Bluetooth is on.`;
+    case "notAllowed":
+      return `${phone} can't show a prompt to pair, maybe because its notifications are blocked. Open Bluetooth settings on ${phone} and pick “${name}”.`;
     case "failed":
       return `Couldn't reach ${phone}, so pair from its Bluetooth settings.`;
   }

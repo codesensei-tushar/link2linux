@@ -145,6 +145,27 @@ describe("CallsPage", () => {
     expect(api.cancelBluetoothPairing).toHaveBeenCalled();
   });
 
+  it("sends the user to the phone's Bluetooth settings when the phone can't prompt", async () => {
+    renderPage({
+      pairing: {
+        deviceId: "phone-1",
+        adapterName: "Desk",
+        adapterAddress: "A0:B1:C2:D3:E4:F5",
+        endsUnixMs: Date.now() + 90_000,
+        phone: "notAllowed",
+        prompt: null,
+      },
+      phones: [phone({ link: { state: "notPaired" } })],
+    });
+    expect(
+      await screen.findByText(
+        "Pixel can't show a prompt to pair, maybe because its notifications are blocked. Open Bluetooth settings on Pixel and pick “Desk”.",
+      ),
+    ).toBeVisible();
+    // Pairing stays open for the code.
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible();
+  });
+
   it("answers and declines a ringing call", async () => {
     const user = userEvent.setup();
     const api = renderPage({ phones: [phone({ calls: [demoCall()] })] });

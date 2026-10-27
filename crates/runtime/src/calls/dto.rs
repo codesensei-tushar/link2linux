@@ -84,6 +84,11 @@ pub enum PairingRequestState {
     Asked,
     /// The phone has no Bluetooth, or turned calls off.
     Unavailable,
+    /// The phone cannot show its prompt to pair, as when the user blocked
+    /// its notifications: the user pairs from the phone's Bluetooth
+    /// settings, picking this computer's Bluetooth name. Pairing stays
+    /// open.
+    NotAllowed,
     /// The phone could not ask its user.
     Failed,
 }

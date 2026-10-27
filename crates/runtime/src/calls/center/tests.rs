@@ -1,6 +1,6 @@
 use link2linux_platform::{GatewayCall, PairingPrompt};
 use link2linux_protocol::v1::{
-    NotificationAction, NotificationActionKind, NotificationCategory, PhoneNotification,
+    ErrorCode, NotificationAction, NotificationActionKind, NotificationCategory, PhoneNotification,
 };
 
 use super::*;
@@ -316,6 +316,25 @@ fn the_pairing_window_runs_until_the_phone_pairs() {
     assert_eq!(center.pairing_done(), Some(("p1".into(), address(PIXEL))));
     assert!(center.window().is_none());
     assert_eq!(center.choices().get("p1"), Some(&address(PIXEL)));
+}
+
+#[test]
+fn a_phone_that_cannot_prompt_leaves_pairing_open() {
+    let phones = phones();
+    let now = Instant::now();
+    let mut center = ready(vec![], vec![]);
+    center.open_window(PairingWindow::open("p1", adapter(true), now));
+    let answers = [
+        (ErrorCode::NotAllowed, PairingRequestState::NotAllowed),
+        (ErrorCode::Unavailable, PairingRequestState::Unavailable),
+        (ErrorCode::InvalidArgument, PairingRequestState::Failed),
+    ];
+    for (code, shown) in answers {
+        center.phone_answered("p1", PhoneAnswer::Refused(code));
+        let pairing = center.status(&phones, now, 0).pairing.unwrap();
+        assert_eq!(pairing.phone, shown);
+        assert_eq!(pairing.adapter_name, "workstation");
+    }
 }
 
 #[test]

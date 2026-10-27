@@ -669,6 +669,13 @@ export type PairingRequestState =
 "asked" | 
 /**  The phone has no Bluetooth, or turned calls off. */
 "unavailable" | 
+/**
+ *  The phone cannot show its prompt to pair, as when the user blocked
+ *  its notifications: the user pairs from the phone's Bluetooth
+ *  settings, picking this computer's Bluetooth name. Pairing stays
+ *  open.
+ */
+"notAllowed" | 
 /**  The phone could not ask its user. */
 "failed";
 
