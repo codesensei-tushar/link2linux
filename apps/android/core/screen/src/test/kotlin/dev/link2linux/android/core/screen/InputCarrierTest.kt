@@ -271,6 +271,17 @@ class InputCarrierTest {
     }
 
     @Test
+    fun endingTheStreamForgetsAPasswordItTyped() = runTest {
+        val password = FakeField("", isPassword = true).also { controller.field = it }
+        assertEquals(ScreenReply.Done, carrier.carryOut(text("secret"), video))
+
+        carrier.forget()
+
+        assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(text("x"), video).code())
+        assertEquals("secret", password.content)
+    }
+
+    @Test
     fun aFieldThatRefusesTheTextIsUnavailable() = runTest {
         controller.field = FakeField("a").apply { accepts = false }
 

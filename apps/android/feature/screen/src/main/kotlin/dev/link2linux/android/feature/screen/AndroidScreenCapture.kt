@@ -142,7 +142,11 @@ internal class AndroidScreenCapture(
             else -> null
         } ?: return false
         next.setQuality(quality)
+        // Start before the display draws into the surface. A picture that arrives first is lost:
+        // the encoder's listener is not told about an image already waiting, and a screen that
+        // does not change again never sends a frame.
         try {
+            next.start()
             val current = display
             if (current == null) {
                 display = projection.createVirtualDisplay(
@@ -167,7 +171,6 @@ internal class AndroidScreenCapture(
         encoder?.release()
         encoder = next
         this.screen = screen
-        next.start()
         return true
     }
 

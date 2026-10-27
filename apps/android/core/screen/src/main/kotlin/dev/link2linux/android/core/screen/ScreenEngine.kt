@@ -331,6 +331,8 @@ class ScreenEngine(
                 val left = inputs.tryReceive().getOrNull() ?: break
                 left.answer(NOT_ACCEPTED)
             }
+            // The worker has finished, so nothing will read the password it typed again.
+            carrier.forget()
         }
 
         /** The desktop asked again: encode as it now asks, under a new format id, starting with a key frame. */
@@ -385,12 +387,12 @@ class ScreenEngine(
             if (data.size > MAX_FRAME_BYTES) {
                 outbox.skipToKeyFrame()
                 quality.lower(at)?.let(capture::setQuality)
-                askForKeyFrame(at)
+                requestKeyFrameSoon(at)
                 return
             }
             if (!rate.take(at)) {
                 outbox.skipToKeyFrame()
-                askForKeyFrame(at)
+                requestKeyFrameSoon(at)
                 return
             }
             val frame = screenFrame {
@@ -406,13 +408,10 @@ class ScreenEngine(
                 }
                 Outbox.Offer.DROPPED -> {
                     quality.lower(at)?.let(capture::setQuality)
-                    askForKeyFrame(at)
+                    requestKeyFrameSoon(at)
                 }
                 // A request the capture missed is repeated, so that a stall never lasts.
-                Outbox.Offer.WAITING -> {
-                    val askedAt = keyFrameAskedAtUs
-                    if (askedAt == null || at - askedAt >= KEY_FRAME_RETRY_US) askForKeyFrame(at)
-                }
+                Outbox.Offer.WAITING -> requestKeyFrameSoon(at)
                 Outbox.Offer.CLOSED -> Unit
             }
         }
@@ -422,6 +421,20 @@ class ScreenEngine(
         }
 
         override fun onFailed() = onEnd(ScreenEndReason.SCREEN_END_REASON_INTERRUPTED)
+
+        /**
+         * Asks the capture for a key frame, at most once a second. Every
+         * dropped or oversized frame wants one, and a capture that answers by
+         * sending the frame again (a still picture) would otherwise be asked
+         * again for that frame, without end.
+         *
+         * Called holding this.
+         */
+        private fun requestKeyFrameSoon(atUs: Long) {
+            val askedAt = keyFrameAskedAtUs
+            if (askedAt != null && atUs - askedAt < KEY_FRAME_RETRY_US) return
+            askForKeyFrame(atUs)
+        }
 
         // Called holding this.
         private fun askForKeyFrame(atUs: Long) {
