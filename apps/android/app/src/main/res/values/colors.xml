@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#00696B</color>
     <!-- The theme's background (core/designsystem Color.kt). -->
     <color name="page_background">#F5F6FA</color>
 </resources>
