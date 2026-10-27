@@ -361,6 +361,7 @@ impl Core {
             record.kind,
             [Feature::Notifications],
         );
+        let phone_board = self.phone.open(&record.id);
         let features = Features {
             notifications: self.drivers.create(&info),
             clipboard: ClipboardService::new(
@@ -374,8 +375,8 @@ impl Core {
                 self.events.clone(),
                 self.presenter.clone(),
             ),
-            status: StatusDriver::new(record.id.clone(), self.phone.clone()),
-            ring: RingDriver::new(record.id.clone(), self.phone.clone()),
+            status: StatusDriver::new(phone_board.clone()),
+            ring: RingDriver::new(phone_board),
         };
         self.handle.spawn(forward_changes(
             self.clone(),

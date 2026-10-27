@@ -34,14 +34,25 @@
   font-size: var(--font-size-xs);
 }
 
+/* Margins rather than a gap: the live region stays in place, empty, while
+   the phone does not ring, and must take no room then. */
 .ring {
-  display: grid;
-  justify-items: start;
-  gap: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .ring__state {
   font-weight: 600;
+}
+
+.ring__state:not(:empty) {
+  margin-bottom: var(--space-1);
+}
+
+.ring__problem,
+.ring__note {
+  margin-top: var(--space-1);
 }
 
 .ring__problem {

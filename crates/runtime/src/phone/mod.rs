@@ -2,14 +2,14 @@
 //!
 //! The core's [`StatusService`] and [`RingService`] apply the protocol's
 //! rules. Each phone's [`StatusDriver`] and [`RingDriver`] run one in its
-//! session loop and put what the UI shows on the [`PhoneBoards`], which
-//! keep it for the snapshots the shell asks for and report each change.
-//! [`dto`] has what the UI receives.
+//! session loop and put what the UI shows on the phone's [`PhoneBoard`].
+//! The [`PhoneBoards`] keep every phone's, for the snapshots the shell asks
+//! for, and report each change. [`dto`] has what the UI receives.
 
 pub mod dto;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use link2linux_core::ring::RingService;
@@ -37,6 +37,9 @@ pub enum PhoneCommand {
 /// What the UI shows of one phone.
 #[derive(Debug, Clone, Default)]
 struct Board {
+    /// The [`PhoneBoard`] that writes it: the drivers of an earlier task
+    /// for the phone, still ending, no longer do.
+    owner: u64,
     status: PhoneStatus,
     ring: RingStatus,
 }
@@ -48,6 +51,7 @@ pub struct PhoneBoards {
     /// The user shows the phones' status on this desktop.
     shown: AtomicBool,
     boards: Mutex<HashMap<String, Board>>,
+    next_owner: AtomicU64,
 }
 
 impl PhoneBoards {
@@ -58,6 +62,27 @@ impl PhoneBoards {
             events,
             shown: AtomicBool::new(shown),
             boards: Mutex::default(),
+            next_owner: AtomicU64::new(0),
+        }
+    }
+
+    /// A new board for phone `id`, which the drivers of its new task write
+    /// to. What the drivers of an earlier task write from then on is
+    /// dropped.
+    #[must_use]
+    pub fn open(self: &Arc<Self>, id: &str) -> PhoneBoard {
+        let owner = self.next_owner.fetch_add(1, Ordering::Relaxed);
+        lock(&self.boards).insert(
+            id.to_owned(),
+            Board {
+                owner,
+                ..Board::default()
+            },
+        );
+        PhoneBoard {
+            boards: self.clone(),
+            device_id: id.to_owned(),
+            owner,
         }
     }
 
@@ -101,48 +126,71 @@ impl PhoneBoards {
             .unwrap_or_default()
     }
 
-    /// Forgets phone `id`, which is no longer paired.
+    /// Forgets phone `id`, which is no longer paired: what its drivers
+    /// write from then on is dropped.
     pub fn forget(&self, id: &str) {
         lock(&self.boards).remove(id);
     }
+}
 
-    /// Records phone `id`'s status, and reports it if it changed. The lock
+/// One phone's board, as its drivers write it.
+#[derive(Clone)]
+pub struct PhoneBoard {
+    boards: Arc<PhoneBoards>,
+    device_id: String,
+    owner: u64,
+}
+
+impl PhoneBoard {
+    /// Whether the user shows the phones' status on this desktop.
+    #[must_use]
+    pub fn is_shown(&self) -> bool {
+        self.boards.is_shown()
+    }
+
+    /// Records the phone's status, and reports it if it changed. The lock
     /// stays held while the sink runs, so snapshots arrive in order.
-    fn set_status(&self, id: &str, status: PhoneStatus) {
-        let mut boards = lock(&self.boards);
-        let board = boards.entry(id.to_owned()).or_default();
-        if board.status != status {
+    fn set_status(&self, status: PhoneStatus) {
+        let mut boards = lock(&self.boards.boards);
+        if let Some(board) = boards.get_mut(&self.device_id)
+            && board.owner == self.owner
+            && board.status != status
+        {
             board.status = status;
-            self.events.phone_status_changed(id, &board.status);
+            self.boards
+                .events
+                .phone_status_changed(&self.device_id, &board.status);
         }
     }
 
-    /// Records ringing phone `id`, and reports it if it changed.
-    fn set_ring(&self, id: &str, ring: RingStatus) {
-        let mut boards = lock(&self.boards);
-        let board = boards.entry(id.to_owned()).or_default();
-        if board.ring != ring {
+    /// Records ringing the phone, and reports it if it changed.
+    fn set_ring(&self, ring: RingStatus) {
+        let mut boards = lock(&self.boards.boards);
+        if let Some(board) = boards.get_mut(&self.device_id)
+            && board.owner == self.owner
+            && board.ring != ring
+        {
             board.ring = ring;
-            self.events.ring_changed(id, &board.ring);
+            self.boards
+                .events
+                .ring_changed(&self.device_id, &board.ring);
         }
     }
 }
 
 /// One phone's status, as its session loop runs it.
 pub struct StatusDriver {
-    device_id: String,
     service: StatusService,
-    boards: Arc<PhoneBoards>,
+    board: PhoneBoard,
 }
 
 impl StatusDriver {
-    /// The driver for phone `device_id`, which shows on `boards`.
+    /// The driver for the phone of `board`, which shows on it.
     #[must_use]
-    pub fn new(device_id: impl Into<String>, boards: Arc<PhoneBoards>) -> Self {
+    pub fn new(board: PhoneBoard) -> Self {
         Self {
-            device_id: device_id.into(),
             service: StatusService::new(),
-            boards,
+            board,
         }
     }
 
@@ -182,10 +230,8 @@ impl StatusDriver {
     ///
     /// Fails when the session fails.
     pub async fn switched(&mut self, session: &mut PhoneSession) -> Result<(), SessionError> {
-        let switched = self
-            .service
-            .set_shown(session, self.boards.is_shown())
-            .await;
+        let shown = self.board.is_shown();
+        let switched = self.service.set_shown(session, shown).await;
         self.publish();
         switched
     }
@@ -197,26 +243,23 @@ impl StatusDriver {
     }
 
     fn publish(&self) {
-        self.boards
-            .set_status(&self.device_id, dto::status(self.service.state()));
+        self.board.set_status(dto::status(self.service.state()));
     }
 }
 
 /// Ringing one phone, as its session loop runs it.
 pub struct RingDriver {
-    device_id: String,
     service: RingService,
-    boards: Arc<PhoneBoards>,
+    board: PhoneBoard,
 }
 
 impl RingDriver {
-    /// The driver for phone `device_id`, which shows on `boards`.
+    /// The driver for the phone of `board`, which shows on it.
     #[must_use]
-    pub fn new(device_id: impl Into<String>, boards: Arc<PhoneBoards>) -> Self {
+    pub fn new(board: PhoneBoard) -> Self {
         Self {
-            device_id: device_id.into(),
             service: RingService::new(),
-            boards,
+            board,
         }
     }
 
@@ -280,7 +323,63 @@ impl RingDriver {
     }
 
     fn publish(&self) {
-        self.boards
-            .set_ring(&self.device_id, dto::ring(self.service.state()));
+        self.board.set_ring(dto::ring(self.service.state()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex as StdMutex;
+
+    use super::*;
+    use crate::view::{Device, PairingState, RingPhase};
+
+    #[derive(Default)]
+    struct Rings(StdMutex<Vec<(String, RingStatus)>>);
+
+    impl EventSink for Rings {
+        fn pairing_changed(&self, _state: &PairingState) {}
+        fn devices_changed(&self, _devices: &[Device]) {}
+        fn ring_changed(&self, device_id: &str, ring: &RingStatus) {
+            self.0.lock().unwrap().push((device_id.to_owned(), *ring));
+        }
+    }
+
+    fn ringing() -> RingStatus {
+        RingStatus {
+            phase: RingPhase::Ringing,
+            blocked: None,
+            ..RingStatus::default()
+        }
+    }
+
+    #[test]
+    fn only_the_newest_task_of_a_phone_writes_its_board() {
+        let sink = Arc::new(Rings::default());
+        let boards = Arc::new(PhoneBoards::new(sink.clone(), true));
+        let old = boards.open("phone");
+        let new = boards.open("phone");
+
+        new.set_ring(ringing());
+        // The old task ends after the new one started: nothing changes.
+        old.set_ring(RingStatus::default());
+        assert_eq!(boards.ring("phone"), ringing());
+        assert_eq!(*sink.0.lock().unwrap(), [("phone".to_owned(), ringing())]);
+
+        // Unpaired: nothing writes it again, and it reads as away.
+        boards.forget("phone");
+        new.set_ring(ringing());
+        assert_eq!(boards.ring("phone"), RingStatus::default());
+        assert_eq!(sink.0.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_status_switch_sets_what_the_desktop_reports() {
+        let boards = PhoneBoards::new(Arc::new(Rings::default()), true);
+        assert_eq!(boards.status_availability(), Availability::Ready);
+        assert!(!boards.set_shown(true));
+        assert!(boards.set_shown(false));
+        assert_eq!(boards.status_availability(), Availability::Disabled);
+        assert_eq!(boards.status("phone"), PhoneStatus::Disconnected);
     }
 }
