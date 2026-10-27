@@ -40,6 +40,7 @@ struct State {
     discoverable: bool,
     discoverable_timeout: u32,
     pairable: bool,
+    pairable_timeout: u32,
     devices: Vec<MockDevice>,
     /// What the agent manager and the devices were asked, in order.
     calls: Vec<String>,
@@ -99,6 +100,7 @@ impl MockObjectManager {
                 value(state.discoverable_timeout),
             );
             adapter.insert("Pairable".to_owned(), value(state.pairable));
+            adapter.insert("PairableTimeout".to_owned(), value(state.pairable_timeout));
             let mut interfaces = Interfaces::new();
             interfaces.insert(ADAPTER.to_owned(), adapter);
             objects.insert(OwnedObjectPath::try_from(HCI0).unwrap(), interfaces);
@@ -190,6 +192,16 @@ impl MockAdapter {
     #[zbus(property)]
     fn set_pairable(&mut self, on: bool) {
         self.0.lock().unwrap().pairable = on;
+    }
+
+    #[zbus(property)]
+    fn pairable_timeout(&self) -> u32 {
+        self.0.lock().unwrap().pairable_timeout
+    }
+
+    #[zbus(property)]
+    fn set_pairable_timeout(&mut self, seconds: u32) {
+        self.0.lock().unwrap().pairable_timeout = seconds;
     }
 
     fn remove_device(&self, device: OwnedObjectPath) {
@@ -312,6 +324,7 @@ fn state(devices: Vec<MockDevice>) -> State {
         discoverable: false,
         discoverable_timeout: 180,
         pairable: true,
+        pairable_timeout: 0,
         devices,
         calls: Vec::new(),
         connect_error: None,
@@ -407,6 +420,8 @@ async fn pairing_opens_for_its_window_and_restores_the_adapter() {
         assert!(!state.discoverable);
         assert!(state.pairable);
         assert_eq!(state.discoverable_timeout, 180);
+        // Pairable already, with no timer: left alone.
+        assert_eq!(state.pairable_timeout, 0);
     }
     assert_eq!(
         m.calls().last().unwrap(),
@@ -419,8 +434,11 @@ async fn pairing_opens_for_its_window_and_restores_the_adapter() {
 
 #[tokio::test]
 async fn an_adapter_that_was_discoverable_stays_so() {
+    // Discoverable for good, as while the desktop's Bluetooth settings are
+    // open, and not pairable.
     let mut before = state(Vec::new());
     before.discoverable = true;
+    before.discoverable_timeout = 0;
     before.pairable = false;
     let m = mock_with(before).await;
     let bluetooth = m.bluetooth();
@@ -433,10 +451,22 @@ async fn an_adapter_that_was_discoverable_stays_so() {
         .open_pairing(Duration::from_secs(120))
         .await
         .unwrap();
+    {
+        let mut state = m.state.lock().unwrap();
+        // BlueZ ends both by itself when the window is up, even if the app
+        // is gone by then.
+        assert_eq!(state.discoverable_timeout, 120);
+        assert_eq!(state.pairable_timeout, 120);
+        assert!(state.pairable);
+        // The window ran out on BlueZ's timer first.
+        state.discoverable = false;
+    }
     bluetooth.close_pairing().await.unwrap();
     let state = m.state.lock().unwrap();
     assert!(state.discoverable);
+    assert_eq!(state.discoverable_timeout, 0);
     assert!(!state.pairable);
+    assert_eq!(state.pairable_timeout, 0);
 }
 
 #[tokio::test]
@@ -504,6 +534,45 @@ async fn the_user_confirms_the_code_before_a_pairing_is_accepted() {
         ),
         "org.bluez.Error.Rejected"
     );
+
+    // Once pairing closed, even the confirmed phone is not let in by the
+    // agent, should BlueZ still ask it.
+    bluetooth.agent.close();
+    assert_eq!(
+        error_of(
+            agent
+                .call::<_, _, ()>("AuthorizeService", &(&phone_path, HANDS_FREE_GATEWAY_UUID))
+                .await
+        ),
+        "org.bluez.Error.Rejected"
+    );
+}
+
+#[tokio::test]
+async fn the_agent_refuses_everything_while_pairing_is_closed() {
+    let m = mock().await;
+    let bluetooth = m.bluetooth();
+    bluetooth
+        .open_pairing(Duration::from_secs(120))
+        .await
+        .unwrap();
+    // Pairing closed, while BlueZ still calls the agent.
+    bluetooth.agent.close();
+    let agent = m.agent().await;
+    let path = ObjectPath::try_from(phone().path()).unwrap();
+    for refused in [
+        agent
+            .call::<_, _, ()>("RequestConfirmation", &(&path, 1u32))
+            .await,
+        agent
+            .call::<_, _, ()>("AuthorizeService", &(&path, HANDS_FREE_GATEWAY_UUID))
+            .await,
+        agent
+            .call::<_, _, ()>("DisplayPasskey", &(&path, 1u32, 0u16))
+            .await,
+    ] {
+        assert_eq!(error_of(refused), "org.bluez.Error.Rejected");
+    }
 }
 
 /// A phone-like device that pairs while pairing is open, by itself.
@@ -663,6 +732,9 @@ async fn pairings_without_a_confirmed_code_are_refused() {
         agent
             .call::<_, _, ()>("DisplayPinCode", &(&path, "0000"))
             .await,
+        agent
+            .call::<_, _, ()>("DisplayPasskey", &(&path, 123_456u32, 0u16))
+            .await,
     ] {
         assert_eq!(error_of(refused), "org.bluez.Error.Rejected");
     }
@@ -816,4 +888,31 @@ async fn reports_changes_that_matter() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn signals_that_keep_coming_do_not_hold_a_change_back() {
+    let m = mock().await;
+    let bluetooth = Arc::new(m.bluetooth());
+    let path = phone().path();
+    let waiting = tokio::spawn({
+        let bluetooth = bluetooth.clone();
+        async move { bluetooth.changed().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    emit(&m.server, &path, DEVICE, "Connected", true).await;
+    // Another app scans: signal strength changes keep coming, closer
+    // together than the burst settles.
+    let scanning = tokio::spawn({
+        let server = m.server.clone();
+        async move {
+            loop {
+                emit(&server, &path, DEVICE, "RSSI", true).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    });
+    let reported = tokio::time::timeout(Duration::from_secs(3), waiting).await;
+    scanning.abort();
+    reported.unwrap().unwrap().unwrap();
 }

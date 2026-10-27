@@ -34,6 +34,8 @@ struct Opened {
     discoverable: bool,
     discoverable_timeout: u32,
     pairable: bool,
+    /// The earlier `PairableTimeout`, when opening pairing changed it.
+    pairable_timeout: Option<u32>,
     /// The devices paired in any way when pairing opened.
     paired: HashSet<BluetoothAddress>,
     /// The devices bonded when pairing opened.
@@ -189,19 +191,35 @@ impl BluezBluetooth {
         let confirmed = self.agent.confirmed();
         self.agent.close();
         let adapter = opened.adapter.as_ref();
-        if !opened.discoverable {
+        // Setting the timeout restarts BlueZ's timer on a discoverable
+        // adapter, which may have run out meanwhile, so Discoverable is set
+        // after it when it was on, and before it when it was off.
+        if opened.discoverable {
+            set(
+                connection,
+                adapter.clone(),
+                ADAPTER,
+                "DiscoverableTimeout",
+                opened.discoverable_timeout,
+            )
+            .await;
+            set(connection, adapter.clone(), ADAPTER, "Discoverable", true).await;
+        } else {
             set(connection, adapter.clone(), ADAPTER, "Discoverable", false).await;
+            set(
+                connection,
+                adapter.clone(),
+                ADAPTER,
+                "DiscoverableTimeout",
+                opened.discoverable_timeout,
+            )
+            .await;
         }
-        set(
-            connection,
-            adapter.clone(),
-            ADAPTER,
-            "DiscoverableTimeout",
-            opened.discoverable_timeout,
-        )
-        .await;
         if !opened.pairable {
-            set(connection, adapter, ADAPTER, "Pairable", false).await;
+            set(connection, adapter.clone(), ADAPTER, "Pairable", false).await;
+        }
+        if let Some(timeout) = opened.pairable_timeout {
+            set(connection, adapter, ADAPTER, "PairableTimeout", timeout).await;
         }
         drop_agent(connection).await;
         self.remove_strangers(connection, &opened, &confirmed).await;
@@ -488,6 +506,7 @@ impl Bluetooth for BluezBluetooth {
         let discoverable = take(&mut properties, "Discoverable").unwrap_or(false);
         let discoverable_timeout = take(&mut properties, "DiscoverableTimeout").unwrap_or(180);
         let pairable = take(&mut properties, "Pairable").unwrap_or(false);
+        let pairable_timeout: u32 = take(&mut properties, "PairableTimeout").unwrap_or(0);
         let info = adapter_info(&mut properties)
             .ok_or_else(|| unavailable(SERVICE, "the adapter reports no address"))?;
         if !info.powered {
@@ -523,11 +542,15 @@ impl Bluetooth for BluezBluetooth {
                 }
             }
         }
+        // A pairable adapter with a timeout may have a timer running that
+        // would end pairing early, so the window's timeout replaces it.
+        let limit_pairable = !pairable || pairable_timeout != 0;
         let earlier = Opened {
             adapter: path.clone(),
             discoverable,
             discoverable_timeout,
             pairable,
+            pairable_timeout: limit_pairable.then_some(pairable_timeout),
             paired,
             bonded: bonded_now,
         };
@@ -545,8 +568,8 @@ impl Bluetooth for BluezBluetooth {
                 manager.call::<_, _, ()>("RequestDefaultAgent", &(&agent,)),
             )
             .await?;
-            // BlueZ ends discoverability by itself when the time is up,
-            // even if this app is gone by then.
+            // BlueZ ends discoverability and pairing by itself when the
+            // time is up, even if this app is gone by then.
             try_set(
                 &connection,
                 path.as_ref(),
@@ -555,6 +578,16 @@ impl Bluetooth for BluezBluetooth {
                 seconds,
             )
             .await?;
+            if limit_pairable {
+                try_set(
+                    &connection,
+                    path.as_ref(),
+                    ADAPTER,
+                    "PairableTimeout",
+                    seconds,
+                )
+                .await?;
+            }
             try_set(&connection, path.as_ref(), ADAPTER, "Pairable", true).await?;
             try_set(&connection, path.as_ref(), ADAPTER, "Discoverable", true).await
         }
