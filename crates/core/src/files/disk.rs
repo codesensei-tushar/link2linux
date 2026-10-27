@@ -149,6 +149,23 @@ pub(crate) fn publish(file: &File, temp: &Path, dir: &Path, name: &str) -> io::R
     ))
 }
 
+/// Saves `data` as a new file in `dir`, named after `name` as a received
+/// file is ([`names::received`]): under a temporary name first, so that no
+/// half-written file ever carries the name, then with [`publish`], which
+/// never replaces a file. The file is not executable. Returns where it
+/// ended up.
+pub(crate) fn save_new(dir: &Path, name: &str, data: &[u8]) -> io::Result<PathBuf> {
+    let temp = dir.join(temp_name(TransferId::random(), 0));
+    let file = create_temp(&temp)?;
+    let saved = file
+        .write_all_at(data, 0)
+        .and_then(|()| publish(&file, &temp, dir, &names::received(name)));
+    if saved.is_err() {
+        drop(fs::remove_file(&temp));
+    }
+    saved
+}
+
 /// Renames `from` to `to`, failing with [`ErrorKind::AlreadyExists`] when
 /// anything is at `to`, even a dangling link.
 fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
@@ -354,6 +371,28 @@ mod tests {
         assert!(!temp.exists());
         let mode = fs::metadata(&saved).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0, "{mode:o}");
+    }
+
+    #[test]
+    fn saved_files_get_a_safe_free_name_and_leave_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("photo.jpg"), b"theirs").unwrap();
+
+        let saved = save_new(dir.path(), "photo.jpg", b"ours").unwrap();
+        let named = save_new(dir.path(), "../.hidden\u{202E}gpj.exe", b"x").unwrap();
+
+        assert_eq!(saved, dir.path().join("photo (1).jpg"));
+        assert_eq!(fs::read(&saved).unwrap(), b"ours");
+        assert_eq!(fs::read(dir.path().join("photo.jpg")).unwrap(), b"theirs");
+        assert_eq!(named, dir.path().join("_.hidden_gpj.exe"));
+        let mode = fs::metadata(&saved).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0, "{mode:o}");
+        let mut names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["_.hidden_gpj.exe", "photo (1).jpg", "photo.jpg"]);
     }
 
     #[test]

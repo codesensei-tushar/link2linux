@@ -51,6 +51,8 @@ pub fn shown_name(name: &str) -> String {
     names::shown(name)
 }
 pub use disk::InstanceLock;
+pub(crate) use disk::save_new;
+pub(crate) use names::received as received_name;
 pub use service::{FileService, IncomingBytes, ServiceError};
 
 /// The most bytes of a file one chunk carries.
