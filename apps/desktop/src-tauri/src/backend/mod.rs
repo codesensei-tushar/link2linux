@@ -15,6 +15,7 @@ pub mod fake;
 pub mod live;
 
 pub use link2linux_runtime::notify::CachedImage;
+pub use link2linux_runtime::screen::{ScreenCodec, ScreenInput, ScreenStatus, ScreenViewer};
 pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, CallsDesktop, CallsStatus, ClipboardMode, ClipboardStatus, Device, DeviceStatus,
@@ -24,6 +25,7 @@ pub use link2linux_runtime::view::{
 };
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// What the desktop shell needs from the pairing and device layer.
 pub trait Backend: Send + Sync {
@@ -192,6 +194,37 @@ pub trait Backend: Send + Sync {
     /// Mutes or unmutes this computer's microphone in a phone's calls.
     fn set_call_muted(&self, _device_id: &str, _muted: bool) -> Result<(), BackendError> {
         Err(BackendError::CallsUnavailable)
+    }
+
+    /// What the UI shows of a phone's screen.
+    fn screen_status(&self, _device_id: &str) -> Result<ScreenStatus, BackendError> {
+        Ok(ScreenStatus::default())
+    }
+    /// Asks a phone to show its screen in `viewer`, in one of `codecs`
+    /// with its longer side at most `max_size` pixels (0: as the phone
+    /// likes). The phone asks its user first; what came of it arrives as a
+    /// new screen status.
+    fn start_screen(
+        &self,
+        _device_id: &str,
+        _codecs: &[ScreenCodec],
+        _max_size: u32,
+        _viewer: Arc<dyn ScreenViewer>,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::NotStarted)
+    }
+    /// Stops showing a phone's screen.
+    fn stop_screen(&self, _device_id: &str) -> Result<(), BackendError> {
+        Ok(())
+    }
+    /// Sends what the user did in the window that shows a phone's screen.
+    fn send_screen_input(&self, _device_id: &str, _input: ScreenInput) -> Result<(), BackendError> {
+        Err(BackendError::NotStarted)
+    }
+    /// Asks a phone for a key frame, because the window could not decode a
+    /// frame or fell behind.
+    fn request_screen_key_frame(&self, _device_id: &str) -> Result<(), BackendError> {
+        Ok(())
     }
 
     /// The desktop app's settings.

@@ -28,7 +28,7 @@ use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 use super::{
     Backend, BackendError, CachedImage, CallsStatus, ClipboardStatus, Device, EventSink,
     FileTransfer, MirroredNotification, PairingMethod, PairingState, PhoneStatus, PhoneTarget,
-    RingStatus, Settings,
+    RingStatus, ScreenCodec, ScreenInput, ScreenStatus, ScreenViewer, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -378,6 +378,33 @@ impl Backend for LiveBackend {
 
     fn stop_ringing(&self, device_id: &str) -> Result<(), BackendError> {
         self.runtime.stop_ringing(device_id)
+    }
+
+    fn screen_status(&self, device_id: &str) -> Result<ScreenStatus, BackendError> {
+        self.runtime.screen_status(device_id)
+    }
+
+    fn start_screen(
+        &self,
+        device_id: &str,
+        codecs: &[ScreenCodec],
+        max_size: u32,
+        viewer: Arc<dyn ScreenViewer>,
+    ) -> Result<(), BackendError> {
+        self.runtime
+            .start_screen(device_id, codecs, max_size, viewer)
+    }
+
+    fn stop_screen(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.stop_screen(device_id)
+    }
+
+    fn send_screen_input(&self, device_id: &str, input: ScreenInput) -> Result<(), BackendError> {
+        self.runtime.send_screen_input(device_id, input)
+    }
+
+    fn request_screen_key_frame(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.request_screen_key_frame(device_id)
     }
 
     fn set_settings(&self, settings: Settings) -> Result<(), BackendError> {

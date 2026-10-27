@@ -44,6 +44,11 @@ fn main() {
         "dial_number",
         "send_call_tones",
         "set_call_muted",
+        "get_screen_status",
+        "start_screen",
+        "stop_screen",
+        "send_screen_input",
+        "request_screen_key_frame",
     ]);
 
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))

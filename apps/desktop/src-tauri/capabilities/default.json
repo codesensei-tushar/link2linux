@@ -46,6 +46,11 @@
     "allow-dial-number",
     "allow-send-call-tones",
     "allow-set-call-muted",
+    "allow-get-screen-status",
+    "allow-start-screen",
+    "allow-stop-screen",
+    "allow-send-screen-input",
+    "allow-request-screen-key-frame",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]
