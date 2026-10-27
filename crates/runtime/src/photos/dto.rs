@@ -60,6 +60,9 @@ pub struct Photo {
     /// Pixels as the photo is shown; 0 when unknown.
     pub width: u32,
     pub height: u32,
+    /// Set when this version was saved during this run of the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved: Option<SavedPhoto>,
 }
 
 /// A photo the user saved.
@@ -69,6 +72,9 @@ pub struct SavedPhoto {
     /// The name it was saved under, which may differ from the phone's when
     /// that was taken.
     pub name: String,
+    /// The folder it went into, such as `Pictures` or `Downloads`. The
+    /// folder's own name, never a full path.
+    pub folder: String,
 }
 
 /// The snapshot of `state` and `photos`.
@@ -95,6 +101,7 @@ pub fn photos(state: PhotosState, photos: &[PhotoInfo]) -> PhonePhotos {
                 modified_unix_ms: photo.modified_unix_ms,
                 width: photo.width,
                 height: photo.height,
+                saved: None,
             })
             .collect(),
     }

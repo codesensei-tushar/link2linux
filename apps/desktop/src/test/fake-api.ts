@@ -139,6 +139,7 @@ export function testPhoto(overrides: Partial<Photo> = {}): Photo {
     modifiedUnixMs: Date.UTC(2026, 9, 27, 9, 30),
     width: 4080,
     height: 3072,
+    saved: null,
     ...overrides,
   };
 }
@@ -447,7 +448,9 @@ export function createFakeApi(): FakeApi {
     photoThumbnail: vi
       .fn<DesktopApi["photoThumbnail"]>()
       .mockResolvedValue(new Blob([Uint8Array.from([0xff, 0xd8, 0xff])], { type: "image/jpeg" })),
-    savePhoto: vi.fn<DesktopApi["savePhoto"]>().mockResolvedValue({ name: "IMG_1.jpg" }),
+    savePhoto: vi
+      .fn<DesktopApi["savePhoto"]>()
+      .mockResolvedValue({ name: "IMG_1.jpg", folder: "Pictures" }),
     openSavedPhoto: vi.fn<DesktopApi["openSavedPhoto"]>().mockResolvedValue(undefined),
     showSavedPhoto: vi.fn<DesktopApi["showSavedPhoto"]>().mockResolvedValue(undefined),
     unpairDevice: vi.fn<DesktopApi["unpairDevice"]>().mockResolvedValue(undefined),

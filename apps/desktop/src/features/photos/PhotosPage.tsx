@@ -5,7 +5,7 @@ import { Button, EmptyState, PageHeader, Spinner, StatusDot } from "@/components
 import { useDevices } from "@/features/pairing/devices-context";
 import type { Device, Photo, SavedPhoto } from "@/lib/api";
 
-import { photosNotice } from "./format";
+import { photoKey, photosNotice } from "./format";
 import { photosMeta } from "./meta";
 import { PhotoGrid } from "./PhotoGrid";
 import { PhotoViewer } from "./PhotoViewer";
@@ -16,8 +16,8 @@ import "./photos.css";
 function PhotoLibrary({ phone }: { phone: Device }) {
   const [state, reload] = usePhotos(phone.id);
   const [openId, setOpenId] = useState<string | null>(null);
-  // What the user saved while the page is open, by photo id.
-  const [saved, setSaved] = useState<Record<string, SavedPhoto>>({});
+  // A save that just finished, before the list event that carries it arrives.
+  const [justSaved, setJustSaved] = useState<Record<string, SavedPhoto>>({});
 
   const listed = state.status === "ready" && state.data.state === "listed" ? state.data.photos : [];
   const open = listed.find((photo) => photo.id === openId);
@@ -70,9 +70,9 @@ function PhotoLibrary({ phone }: { phone: Device }) {
           phone={phone}
           photos={listed}
           photo={open}
-          saved={saved[open.id]}
+          saved={justSaved[photoKey(open)] ?? open.saved ?? undefined}
           onSaved={(photo, result) => {
-            setSaved((before) => ({ ...before, [photo.id]: result }));
+            setJustSaved((before) => ({ ...before, [photoKey(photo)]: result }));
           }}
           onSelect={select}
           onClose={() => {

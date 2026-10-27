@@ -513,6 +513,73 @@ async fn a_photo_that_changes_starts_again_once() {
     assert_eq!(got(receiver).unwrap_err(), PhotoError::Changed);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_change_after_the_list_request_timed_out_is_the_list() {
+    let mut link = Link::connect(&["photos"]).await;
+    link.report(&[("photos", Ready, "")]).await;
+    let (seq, _) = link.request().await;
+
+    let event = link.session.next_event().await.unwrap().unwrap();
+    assert!(matches!(event, SessionEvent::RequestTimedOut { request } if request == seq));
+    link.photos
+        .handle_event(&mut link.session, event)
+        .await
+        .unwrap();
+    assert_eq!(link.photos.state(), PhotosState::Unavailable);
+    assert!(link.photos.next_deadline().is_some());
+
+    link.phone_sends(Payload::PhotoListChanged(PhotoListChanged {
+        photos: vec![photo("a", 1)],
+    }))
+    .await;
+
+    assert_eq!(link.photos.state(), PhotosState::Listed);
+    assert_eq!(link.photos.photos().len(), 1);
+    assert!(link.photos.next_deadline().is_none());
+}
+
+#[tokio::test]
+async fn a_new_version_drops_what_a_fetch_already_holds() {
+    let mut link = Link::listed(vec![photo("a", 1)]).await;
+    let receiver = link.want_photo("a");
+    let first = link.data_requests(1).await;
+    link.answer(first[0].0, chunk(512 * 1024, 1, &[1; 256 * 1024]))
+        .await;
+    let stale = link.data_requests(1).await;
+    assert_eq!(stale[0].1, 256 * 1024);
+
+    link.phone_sends(Payload::PhotoListChanged(PhotoListChanged {
+        photos: vec![photo("a", 2)],
+    }))
+    .await;
+    let again = link.data_requests(1).await;
+    assert_eq!(again[0].1, 0);
+    // The chunk asked for before the photo changed does not finish the fetch.
+    link.answer(stale[0].0, chunk(512 * 1024, 1, &[1; 256 * 1024]))
+        .await;
+    link.answer(again[0].0, chunk(4, 2, b"new!")).await;
+
+    let photo = got(receiver).unwrap();
+    assert_eq!(photo.modified_unix_ms, 2);
+    assert_eq!(&*photo.data, b"new!");
+}
+
+#[tokio::test]
+async fn a_photo_that_leaves_the_list_is_not_fetched() {
+    let mut link = Link::listed(vec![photo("a", 1)]).await;
+    let receiver = link.want_photo("a");
+    let first = link.data_requests(1).await;
+
+    link.phone_sends(Payload::PhotoListChanged(PhotoListChanged {
+        photos: vec![],
+    }))
+    .await;
+
+    assert_eq!(got(receiver).unwrap_err(), PhotoError::NotFound);
+    link.answer(first[0].0, chunk(10, 1, &[1; 10])).await;
+    link.sent_nothing();
+}
+
 #[tokio::test]
 async fn a_short_chunk_fails_the_photo() {
     let mut link = Link::listed(vec![photo("a", 1)]).await;

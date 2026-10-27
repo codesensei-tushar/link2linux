@@ -1,6 +1,8 @@
 //! The runtime the shell holds.
 
-use std::path::PathBuf;
+use std::future::ready;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -545,13 +547,17 @@ impl Runtime {
 
     /// Fetches photo `photo_id` of phone `device_id` and saves it in the
     /// user's Pictures directory, as a received file is saved: under a free
-    /// name, never replacing a file. The future holds no borrow of the
-    /// runtime.
+    /// name, never replacing a file. Saving the same version again, while
+    /// that file is still there, keeps the file that was written. The
+    /// future holds no borrow of the runtime.
     pub fn save_photo(
         &self,
         device_id: &str,
         photo_id: &str,
-    ) -> impl Future<Output = Result<SavedPhoto, BackendError>> + Send + 'static {
+    ) -> Pin<Box<dyn Future<Output = Result<SavedPhoto, BackendError>> + Send>> {
+        if let Some(saved) = self.saved_already(device_id, photo_id) {
+            return Box::pin(ready(Ok(saved)));
+        }
         let (reply, answer) = oneshot::channel();
         let sent = self.send(
             device_id,
@@ -562,14 +568,15 @@ impl Runtime {
         );
         let core = self.core.clone();
         let (device_id, photo_id) = (device_id.to_owned(), photo_id.to_owned());
-        async move {
+        Box::pin(async move {
             sent?;
             let photo = answer
                 .await
                 .map_err(|_| BackendError::PhoneNotConnected)?
                 .map_err(photos::dto::error)?;
+            let file_modified = photo.modified_unix_ms;
             let opener = core.files.opener();
-            let path = core
+            let (path, folder) = core
                 .handle
                 .spawn_blocking(move || {
                     let dir = opener.pictures_dir().map_err(|error| {
@@ -577,10 +584,11 @@ impl Runtime {
                         BackendError::PhotoNotSaved
                     })?;
                     // The error only: its message may name the folder.
-                    link2linux_core::photos::save(&dir, &photo).map_err(|error| {
+                    let path = link2linux_core::photos::save(&dir, &photo).map_err(|error| {
                         tracing::warn!(kind = %error.kind(), "could not save a photo");
                         BackendError::PhotoNotSaved
-                    })
+                    })?;
+                    Ok((path, folder_name(&dir)))
                 })
                 .await
                 .map_err(|_| BackendError::PhotoNotSaved)??;
@@ -588,9 +596,31 @@ impl Runtime {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            core.saved_photos.insert(&device_id, &photo_id, path);
-            Ok(SavedPhoto { name })
-        }
+            core.saved_photos.insert(
+                &device_id,
+                &photo_id,
+                file_modified,
+                path.clone(),
+                &name,
+                &folder,
+            );
+            // The list may still name the version the user saved from,
+            // while the file that arrived is the one the phone has now.
+            if let Some(listed) = core
+                .phone
+                .photos(&device_id)
+                .photos
+                .iter()
+                .find(|listed| listed.id == photo_id)
+                .map(|listed| listed.modified_unix_ms)
+                && listed != file_modified
+            {
+                core.saved_photos
+                    .insert(&device_id, &photo_id, listed, path, &name, &folder);
+            }
+            core.phone.note_saved(&device_id);
+            Ok(SavedPhoto { name, folder })
+        })
     }
 
     /// Opens the photo `photo_id` of phone `device_id` that the user saved
@@ -620,9 +650,7 @@ impl Runtime {
         show: bool,
     ) -> Result<(), BackendError> {
         let path = self
-            .core
-            .saved_photos
-            .get(device_id, photo_id)
+            .saved_path(device_id, photo_id)
             .ok_or(BackendError::NotFound)?;
         let opener = self.core.files.opener();
         self.core.handle.spawn(async move {
@@ -639,6 +667,32 @@ impl Runtime {
             }
         });
         Ok(())
+    }
+
+    /// The save of the version of `photo_id` the page is showing, when the
+    /// file is still there.
+    fn saved_already(&self, device_id: &str, photo_id: &str) -> Option<SavedPhoto> {
+        let modified = self.listed_modified(device_id, photo_id)?;
+        self.core
+            .saved_photos
+            .reusable(device_id, photo_id, modified)
+    }
+
+    /// Where that version was saved.
+    fn saved_path(&self, device_id: &str, photo_id: &str) -> Option<PathBuf> {
+        let modified = self.listed_modified(device_id, photo_id)?;
+        self.core.saved_photos.path(device_id, photo_id, modified)
+    }
+
+    /// `modified_unix_ms` of photo `photo_id` on the list the page shows.
+    fn listed_modified(&self, device_id: &str, photo_id: &str) -> Option<i64> {
+        self.core
+            .phone
+            .photos(device_id)
+            .photos
+            .iter()
+            .find(|photo| photo.id == photo_id)
+            .map(|photo| photo.modified_unix_ms)
     }
 
     fn check_paired(&self, device_id: &str) -> Result<(), BackendError> {
@@ -819,6 +873,16 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// The folder's own name, such as `Pictures` or `Downloads`. A directory
+/// with no name of its own is still called Pictures: the page never shows
+/// a full path.
+fn folder_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Pictures".to_owned())
 }
 
 /// Reads lowercase or uppercase hexadecimal; `None` for anything else.

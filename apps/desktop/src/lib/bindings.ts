@@ -188,7 +188,8 @@ export const commands = {
 	photoThumbnail: (deviceId: string, photoId: string, maxSize: number) => typedError<ArrayBuffer, CommandError>(__TAURI_INVOKE("photo_thumbnail", { deviceId, photoId, maxSize })),
 	/**
 	 *  Fetches a phone's photo and saves it in the user's Pictures folder,
-	 *  under a free name. Resolves with the name it got.
+	 *  under a free name. Resolves with the name it got and the folder it went
+	 *  into. Saving the same version again keeps the file already written.
 	 */
 	savePhoto: (deviceId: string, photoId: string) => typedError<SavedPhoto, CommandError>(__TAURI_INVOKE("save_photo", { deviceId, photoId })),
 	/**  Opens a photo the user saved with the desktop's default application. */
@@ -883,6 +884,8 @@ export type Photo = {
 	/**  Pixels as the photo is shown; 0 when unknown. */
 	width: number,
 	height: number,
+	/**  Set when this version was saved during this run of the app. */
+	saved?: SavedPhoto | null,
 };
 
 /**  What the UI shows of a phone's photos changed. */
@@ -968,6 +971,11 @@ export type SavedPhoto = {
 	 *  that was taken.
 	 */
 	name: string,
+	/**
+	 *  The folder it went into, such as `Pictures` or `Downloads`. The
+	 *  folder's own name, never a full path.
+	 */
+	folder: string,
 };
 
 /**

@@ -236,7 +236,7 @@ describe("PhotosPage", () => {
   it("opens a photo larger, saves it, then opens it or shows it in its folder", async () => {
     const user = userEvent.setup();
     const { api } = renderPage(listed(photos));
-    api.savePhoto.mockResolvedValue({ name: "IMG_3 (1).jpg" });
+    api.savePhoto.mockResolvedValue({ name: "IMG_3 (1).jpg", folder: "Pictures" });
 
     const viewer = await openViewer(user, "IMG_3.jpg");
     expect(within(viewer).getByRole("button", { name: "Close" })).toHaveFocus();
@@ -247,7 +247,7 @@ describe("PhotosPage", () => {
 
     await user.click(within(viewer).getByRole("button", { name: "Save" }));
     expect(api.savePhoto).toHaveBeenCalledWith("phone-1", "3");
-    expect(await within(viewer).findByText("Saved as IMG_3 (1).jpg")).toBeVisible();
+    expect(await within(viewer).findByText("Saved as IMG_3 (1).jpg in Pictures")).toBeVisible();
     expect(within(viewer).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
 
     await user.click(within(viewer).getByRole("button", { name: "Open" }));
@@ -258,7 +258,27 @@ describe("PhotosPage", () => {
     // The page remembers what was saved while it is open.
     await user.click(within(viewer).getByRole("button", { name: "Close" }));
     await user.click(tile("IMG_3.jpg"));
-    expect(screen.getByText("Saved as IMG_3 (1).jpg")).toBeVisible();
+    expect(screen.getByText("Saved as IMG_3 (1).jpg in Pictures")).toBeVisible();
+  });
+
+  it("shows a photo saved earlier in this run as already saved", async () => {
+    const user = userEvent.setup();
+    const [newest, ...rest] = photos;
+    if (!newest) throw new Error("no photo");
+    const { unmount } = renderPage(
+      listed([{ ...newest, saved: { name: "IMG_3 (1).jpg", folder: "Downloads" } }, ...rest]),
+    );
+
+    const viewer = await openViewer(user, "IMG_3.jpg");
+    expect(within(viewer).getByText("Saved as IMG_3 (1).jpg in Downloads")).toBeVisible();
+    expect(within(viewer).getByRole("button", { name: "Open" })).toBeVisible();
+    expect(within(viewer).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    unmount();
+
+    // A new version of the photo was not saved.
+    renderPage(listed([{ ...newest, modifiedUnixMs: newest.modifiedUnixMs + 1 }]));
+    const again = await openViewer(user, "IMG_3.jpg");
+    expect(within(again).getByRole("button", { name: "Save" })).toBeVisible();
   });
 
   it("steps through the photos and closes, letting go of the larger pictures", async () => {

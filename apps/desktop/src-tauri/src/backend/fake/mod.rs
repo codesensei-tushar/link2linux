@@ -630,6 +630,11 @@ mod tests {
         );
         let saved = tauri::async_runtime::block_on(backend.save_photo("demo-1", id)).unwrap();
         assert_eq!(saved.name, listed.photos[0].name);
+        assert_eq!(saved.folder, "Pictures");
+        assert_eq!(
+            backend.photos("demo-1").unwrap().photos[0].saved.as_ref(),
+            Some(&saved)
+        );
         assert_eq!(backend.open_saved_photo("demo-1", id), Ok(()));
         assert_eq!(backend.show_saved_photo("demo-1", id), Ok(()));
     }

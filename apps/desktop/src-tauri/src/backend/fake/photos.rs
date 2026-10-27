@@ -34,8 +34,8 @@ pub struct FakePhotos {
 
 #[derive(Default)]
 struct Saved {
-    /// The name each saved photo got, by phone and photo id.
-    by_photo: HashMap<(String, String), String>,
+    /// What each saved version got, by phone, photo id and modified time.
+    by_photo: HashMap<(String, String, i64), SavedPhoto>,
     /// Every name given out, since all phones save into the same folder.
     names: HashSet<String>,
 }
@@ -53,9 +53,22 @@ impl FakePhotos {
     pub fn list(&self, device: Option<&Device>) -> Result<PhonePhotos, BackendError> {
         let device = device.ok_or(BackendError::NotFound)?;
         Ok(if device.status == DeviceStatus::Connected {
+            let saved = self.lock();
+            let photos = self
+                .photos
+                .iter()
+                .map(|photo| {
+                    let mut photo = photo.clone();
+                    photo.saved = saved
+                        .by_photo
+                        .get(&(device.id.clone(), photo.id.clone(), photo.modified_unix_ms))
+                        .cloned();
+                    photo
+                })
+                .collect();
             PhonePhotos {
                 state: PhotosStatus::Listed,
-                photos: self.photos.clone(),
+                photos,
             }
         } else {
             PhonePhotos::default()
@@ -85,7 +98,8 @@ impl FakePhotos {
 
     /// Pretends to save photo `photo_id` of `device`: it gets its own name,
     /// or a free one when that was given out already, as the real backend
-    /// never replaces a file.
+    /// never replaces a file. Saving the same version again returns the
+    /// name it already has.
     pub fn save(
         &self,
         device: Option<&Device>,
@@ -94,15 +108,25 @@ impl FakePhotos {
         let device = connected(device)?;
         let (_, photo) = self.find(photo_id)?;
         let mut saved = self.lock();
+        let key = (
+            device.id.clone(),
+            photo_id.to_owned(),
+            photo.modified_unix_ms,
+        );
+        if let Some(existing) = saved.by_photo.get(&key) {
+            return Ok(existing.clone());
+        }
         let name = (0..)
             .map(|n| numbered(&photo.name, n))
             .find(|name| !saved.names.contains(name))
             .unwrap_or_default();
         saved.names.insert(name.clone());
-        saved
-            .by_photo
-            .insert((device.id.clone(), photo_id.to_owned()), name.clone());
-        Ok(SavedPhoto { name })
+        let result = SavedPhoto {
+            name,
+            folder: "Pictures".to_owned(),
+        };
+        saved.by_photo.insert(key, result.clone());
+        Ok(result)
     }
 
     /// Succeeds for a photo the user saved: there is nothing to open.
@@ -110,7 +134,8 @@ impl FakePhotos {
         if self
             .lock()
             .by_photo
-            .contains_key(&(device_id.to_owned(), photo_id.to_owned()))
+            .keys()
+            .any(|(device, id, _)| device == device_id && id == photo_id)
         {
             Ok(())
         } else {
@@ -178,6 +203,7 @@ fn demo_photos(newest_unix_ms: i64) -> Vec<Photo> {
                 modified_unix_ms: taken,
                 width,
                 height,
+                saved: None,
             }
         })
         .collect()
@@ -374,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_again_takes_a_free_name_and_only_saved_photos_open() {
+    fn saving_the_same_photo_again_keeps_its_name_and_only_saved_photos_open() {
         let photos = FakePhotos::new(0);
         let connected = device(DeviceStatus::Connected);
         let first = photos.list(Some(&connected)).unwrap().photos[0].clone();
@@ -385,9 +411,11 @@ mod tests {
 
         let saved = photos.save(Some(&connected), &first.id).unwrap();
         assert_eq!(saved.name, first.name);
+        assert_eq!(saved.folder, "Pictures");
         let again = photos.save(Some(&connected), &first.id).unwrap();
-        assert_eq!(again.name, numbered(&first.name, 1));
-        assert!(again.name.ends_with(" (1).jpg"), "{}", again.name);
+        assert_eq!(again, saved);
+        let listed = photos.list(Some(&connected)).unwrap();
+        assert_eq!(listed.photos[0].saved.as_ref(), Some(&saved));
         assert_eq!(photos.saved("phone", &first.id), Ok(()));
         assert_eq!(
             photos.saved("other", &first.id),
