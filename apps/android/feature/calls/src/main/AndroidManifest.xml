@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Optional, Android 12 and later: start pairing with the computer from the pairing
+         notification. Asked for only when the user taps "Allow" on the Calls screen; without it
+         the notification opens Bluetooth settings. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <application>
+        <!-- Opened by the pairing notification; shows nothing itself. Not exported: only the
+             app's own PendingIntents reach it. -->
+        <activity
+            android:name=".PairComputerActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+    </application>
+</manifest>
