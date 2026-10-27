@@ -122,9 +122,12 @@ jobs:
           flatpak-builder $opts --build-only --force-clean --install-deps-from=flathub \
             build $m/dev.link2linux.desktop.yml
           # The runtime must have every library the binary links: a missing
-          # one would only show when someone starts the app.
-          flatpak-builder --run build $m/dev.link2linux.desktop.yml \
+          # one would only show when someone starts the app. Running inside
+          # the build needs a machine id, which the container lacks.
+          [ -s /etc/machine-id ] || tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id
+          flatpak-builder --disable-rofiles-fuse --run build $m/dev.link2linux.desktop.yml \
             ldd /app/bin/link2linux-desktop > libs.txt
+          cat libs.txt
           ! grep 'not found' libs.txt ||
             { echo "::error::The runtime lacks libraries the app links"; exit 1; }
           flatpak-builder $opts --finish-only --repo=repo build $m/dev.link2linux.desktop.yml
