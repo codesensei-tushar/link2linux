@@ -24,7 +24,7 @@ use link2linux_platform::{
 };
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    NotificationActionRequest, NotificationCategory, NotificationDismissRequest, PhoneNotification,
+    NotificationActionRequest, NotificationDismissRequest, PhoneNotification,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::broadcast;
@@ -33,6 +33,7 @@ use super::images::ImageCache;
 use super::mirror::{Change, Mirror, MirrorError};
 use super::present::{self, Answer};
 use crate::Feature;
+use crate::calls::CallNotification;
 use crate::outbox::{IdempotencyKey, Outbox, OutboxEntry, OutboxError, OutboxStore};
 use crate::session::{Session, SessionError, SessionEvent};
 use crate::sync::SyncCursor;
@@ -548,11 +549,14 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
     }
 }
 
-/// The image a banner shows: the sender's photo, else the app's icon.
+/// Whether the calls feature shows `notification` as a call, so its
+/// banner can make way for the calls feature's own. A call notification
+/// without call actions is not one of them, and keeps its banner.
 fn is_call(notification: &PhoneNotification) -> bool {
-    notification.category() == NotificationCategory::Call
+    CallNotification::of(notification).is_some()
 }
 
+/// The image a banner shows: the sender's photo, else the app's icon.
 fn banner_image(notification: &PhoneNotification) -> Option<&[u8]> {
     [&notification.large_icon, &notification.app_icon]
         .into_iter()
