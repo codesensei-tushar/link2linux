@@ -22,6 +22,8 @@ import dev.link2linux.android.feature.pairing.PairingRoute
 import dev.link2linux.android.feature.pairing.pairingEntry
 import dev.link2linux.android.feature.photos.PhotosRoute
 import dev.link2linux.android.feature.photos.photosEntry
+import dev.link2linux.android.feature.ring.RingRoute
+import dev.link2linux.android.feature.ring.ringEntry
 import dev.link2linux.android.feature.screen.ScreenRoute
 import dev.link2linux.android.feature.screen.screenEntry
 import dev.link2linux.android.feature.status.StatusRoute
@@ -36,6 +38,7 @@ internal val featureRoutes: Map<Feature, NavKey> = linkedMapOf(
     Feature.CLIPBOARD to ClipboardRoute,
     Feature.SCREEN to ScreenRoute,
     Feature.STATUS to StatusRoute,
+    Feature.RING to RingRoute,
 )
 
 /** Root of the UI: one back stack of feature routes, starting at pairing. */
@@ -65,6 +68,7 @@ fun L2lApp(modifier: Modifier = Modifier) {
             clipboardEntry(onBack = goBack)
             screenEntry(onBack = goBack)
             statusEntry(onBack = goBack)
+            ringEntry(onBack = goBack)
         },
     )
 }

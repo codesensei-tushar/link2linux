@@ -8,6 +8,7 @@ dependencies {
     implementation(projects.core.clipboard)
     implementation(projects.core.files)
     implementation(projects.core.notifications)
+    implementation(projects.core.ring)
     implementation(projects.core.status)
     api(projects.core.protocol)
     api(projects.core.security)

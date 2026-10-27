@@ -29,6 +29,7 @@ val Feature.titleRes: Int
         Feature.CLIPBOARD -> R.string.feature_title_clipboard
         Feature.SCREEN -> R.string.feature_title_screen
         Feature.STATUS -> R.string.feature_title_status
+        Feature.RING -> R.string.feature_title_ring
     }
 
 @get:StringRes
@@ -42,6 +43,7 @@ val Feature.summaryRes: Int
         Feature.CLIPBOARD -> R.string.feature_summary_clipboard
         Feature.SCREEN -> R.string.feature_summary_screen
         Feature.STATUS -> R.string.feature_summary_status
+        Feature.RING -> R.string.feature_summary_ring
     }
 
 @get:DrawableRes
@@ -55,6 +57,7 @@ val Feature.iconRes: Int
         Feature.CLIPBOARD -> R.drawable.ic_content_paste
         Feature.SCREEN -> R.drawable.ic_screen_share
         Feature.STATUS -> R.drawable.ic_battery
+        Feature.RING -> R.drawable.ic_ring
     }
 
 /** One row in a list of features: icon, name, one-line summary. */

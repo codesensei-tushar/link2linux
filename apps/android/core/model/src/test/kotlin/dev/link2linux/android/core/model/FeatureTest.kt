@@ -10,7 +10,7 @@ class FeatureTest {
     @Test
     fun wireNamesMatchTheDesktopFeatureNames() {
         assertEquals(
-            listOf("pairing", "notifications", "calls", "photos", "files", "clipboard", "screen", "status"),
+            listOf("pairing", "notifications", "calls", "photos", "files", "clipboard", "screen", "status", "ring"),
             Feature.entries.map(Feature::wireName),
         )
     }
@@ -36,6 +36,6 @@ class FeatureTest {
 
     @Test
     fun onlyFeaturesThatShareNothingStartOn() {
-        assertEquals(listOf(Feature.CALLS, Feature.STATUS), Feature.entries.filter(Feature::isOnByDefault))
+        assertEquals(listOf(Feature.CALLS, Feature.STATUS, Feature.RING), Feature.entries.filter(Feature::isOnByDefault))
     }
 }

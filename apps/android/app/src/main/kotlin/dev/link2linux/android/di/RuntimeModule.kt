@@ -11,11 +11,13 @@ import dev.link2linux.android.core.network.features.ClipboardSessionHooks
 import dev.link2linux.android.core.network.features.CompositeSessionHooks
 import dev.link2linux.android.core.network.features.FileSessionHooks
 import dev.link2linux.android.core.network.features.NotificationSessionHooks
+import dev.link2linux.android.core.network.features.RingSessionHooks
 import dev.link2linux.android.core.network.features.StatusSessionHooks
 import dev.link2linux.android.core.network.pairing.SessionHooks
 import dev.link2linux.android.feature.clipboard.ClipboardRuntime
 import dev.link2linux.android.feature.files.FilesRuntime
 import dev.link2linux.android.feature.notifications.NotificationsRuntime
+import dev.link2linux.android.feature.ring.RingRuntime
 import dev.link2linux.android.feature.status.StatusRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,7 @@ internal object RuntimeModule {
         @ApplicationContext context: Context,
         files: FilesRuntime,
         status: StatusRuntime,
+        ring: RingRuntime,
     ): SessionHooks = CompositeSessionHooks(
         NotificationSessionHooks(
             engine = NotificationsRuntime.get(context).engine,
@@ -50,5 +53,6 @@ internal object RuntimeModule {
             // Each session's follower lives as long as the session; the app outlives them all.
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + loggingUncaught("the status sessions")),
         ),
+        RingSessionHooks(ring.engine),
     )
 }

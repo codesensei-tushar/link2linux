@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+  <!-- A phone with vibration bars on each side. -->
+  <path
+      android:fillColor="@android:color/white"
+      android:fillType="evenOdd"
+      android:pathData="M320,120L640,120L640,840L320,840ZM400,200L400,760L560,760L560,200ZM200,280L280,280L280,680L200,680ZM80,360L160,360L160,600L80,600ZM680,280L760,280L760,680L680,680ZM800,360L880,360L880,600L800,600Z"/>
+</vector>

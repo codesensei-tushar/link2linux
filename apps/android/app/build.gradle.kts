@@ -26,6 +26,7 @@ dependencies {
     implementation(projects.feature.notifications)
     implementation(projects.feature.pairing)
     implementation(projects.feature.photos)
+    implementation(projects.feature.ring)
     implementation(projects.feature.screen)
     implementation(projects.feature.status)
 
