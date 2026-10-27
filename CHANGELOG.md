@@ -8,6 +8,52 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-27
+
+Phone status, ring my phone, and calls over Bluetooth.
+
+### Added
+
+- Phone status. The computer shows the phone's battery level, whether it
+  is plugged in, battery saver, its mobile and Wi-Fi signal, and whether it
+  is set to silent, vibrate or Do Not Disturb. The phone shares it without
+  asking for any permission, and nothing in it tells where the phone is.
+  Hide it in the computer's settings, or turn it off on the phone.
+- Ring my phone. "Ring phone" on the computer makes the phone ring at full
+  volume for a minute, even when it is set to silent, until you stop it on
+  either device. It keeps ringing if the connection drops, so you can still
+  find it.
+- Calls. Take and make the phone's calls on the computer, with its
+  microphone and speakers, over Bluetooth. The Calls page pairs the two
+  over Bluetooth with a code you confirm on both, then shows incoming and
+  ongoing calls with answer, decline, hang up and a keypad, and has a dial
+  pad. An incoming call pops up on the computer, naming the caller only
+  when notification text is on, and the phone's own call notification is
+  shown only once. Turn calls off on the computer to keep
+  them on the phone. Media audio stays on the phone.
+
+### Changed
+
+- Phone status, ringing and calls are on from the start on the phone,
+  because they share none of your content. You can turn each one off.
+  Every other feature still starts switched off.
+
+### Removed
+
+- The Messages placeholder pages. Replies to texts already work from their
+  notifications.
+
+### Known limitations
+
+- Calls need PipeWire 1.4 or later with its own Bluetooth backend, as in
+  Ubuntu 26.04; Ubuntu 24.04's PipeWire is too old. The Calls page says so
+  where calls can't work.
+- There is no mute button during a call yet: PipeWire's call control has
+  no mute.
+- Calls, phone status and ringing have not been tried on many phones and
+  Bluetooth adapters yet. Some phones report less status, for example no
+  network generation before Android 11.
+
 ## [0.2.0] - 2026-10-27
 
 Clipboard sharing and file transfer between the phone and the desktop.
@@ -182,7 +228,8 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.0...v0.1.1
