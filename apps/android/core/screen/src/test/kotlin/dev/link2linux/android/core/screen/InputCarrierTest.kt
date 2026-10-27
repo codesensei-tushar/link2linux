@@ -188,7 +188,7 @@ class InputCarrierTest {
         assertEquals("a\n", lines.text)
 
         controller.field = FakeField("a")
-        assertEquals(ErrorCode.ERROR_CODE_UNSUPPORTED, carrier.carryOut(key(ScreenKey.SCREEN_KEY_ENTER), video).code())
+        assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(key(ScreenKey.SCREEN_KEY_ENTER), video).code())
     }
 
     @Test

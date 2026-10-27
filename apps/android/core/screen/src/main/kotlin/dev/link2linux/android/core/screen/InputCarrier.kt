@@ -49,7 +49,8 @@ internal class InputCarrier(private val controller: ScreenController) {
             when {
                 field.canEnter -> if (field.enter()) ScreenReply.Done else unavailable("The text field did not take Enter")
                 field.isMultiLine -> write(field, TextEdits.insert(field.text, field.selectionStart, field.selectionEnd, "\n"))
-                else -> ScreenReply.Refused(ErrorCode.ERROR_CODE_UNSUPPORTED, "The text field has no Enter")
+                // Not UNSUPPORTED, which would say the feature is not active in this session.
+                else -> ScreenReply.Refused(ErrorCode.ERROR_CODE_NOT_ALLOWED, "The text field has no Enter")
             }
         }
         else -> invalid("An unknown key")
