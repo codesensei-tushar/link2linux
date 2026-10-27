@@ -10,6 +10,7 @@ import android.content.Intent
 import android.text.format.Formatter
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
+import dev.link2linux.android.core.common.NotificationIds
 import dev.link2linux.android.core.files.Direction
 import dev.link2linux.android.core.files.FileEngine
 import dev.link2linux.android.core.files.Transfer
@@ -163,7 +164,7 @@ internal class TransferNotifier(private val context: Context, private val engine
 
     private companion object {
         /** Keeps these ids apart from the app's other notifications. */
-        const val TAG = "files"
+        const val TAG = NotificationIds.FILES_TAG
         const val CHANNEL_PROGRESS = "file_transfers"
         const val CHANNEL_DONE = "file_transfers_done"
         const val PROGRESS_MAX = 1000

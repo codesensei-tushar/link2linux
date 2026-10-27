@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import androidx.core.app.NotificationCompat
+import dev.link2linux.android.core.common.NotificationIds
 import dev.link2linux.android.core.ring.RingNotifier
 import dev.link2linux.android.core.designsystem.R as DesignR
 
@@ -49,15 +50,14 @@ internal class RingNotifications(private val context: Context) : RingNotifier {
             .addAction(0, context.getString(R.string.ring_stop), stop)
             .build()
         // Without the notification permission nothing shows; the Ring screen can still stop it.
-        manager?.notify(ID, notification)
+        manager?.notify(NotificationIds.RING, notification)
     }
 
     override fun cancel() {
-        manager?.cancel(ID)
+        manager?.cancel(NotificationIds.RING)
     }
 
     private companion object {
         const val CHANNEL = "ring"
-        const val ID = 1
     }
 }

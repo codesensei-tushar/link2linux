@@ -16,6 +16,7 @@ import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import dev.link2linux.android.MainActivity
 import dev.link2linux.android.R
+import dev.link2linux.android.core.common.NotificationIds
 import dev.link2linux.android.core.data.DesktopConnections
 import dev.link2linux.android.core.data.DesktopListener
 import dev.link2linux.android.core.data.ConnectionPolicy
@@ -222,7 +223,7 @@ class ConnectionService : Service() {
     companion object {
         private const val TAG = "link2linux"
         private const val CHANNEL_ID = "connection"
-        private const val NOTIFICATION_ID = 1
+        private const val NOTIFICATION_ID = NotificationIds.CONNECTION
         private const val LISTEN_RETRY_MILLIS = 10_000L
         private const val SEND_CLIPBOARD_REQUEST = 2
         const val ACTION_STOP = "dev.link2linux.android.action.STOP"
