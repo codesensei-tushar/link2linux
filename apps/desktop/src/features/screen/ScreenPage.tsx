@@ -32,6 +32,11 @@ const H264_MAX_SIZE = 1920;
 const JPEG_MAX_SIZE = 1280;
 /** How long wheel turns add up before they become one swipe, in milliseconds. */
 const WHEEL_GATHER_MS = 80;
+/**
+ * How long typed characters add up before they go as one text, in milliseconds: fewer round
+ * trips, and a password field the phone can fill only while it is empty gets a whole word.
+ */
+const TYPING_GATHER_MS = 250;
 
 const NAV_KEYS: { key: ScreenKey; label: string; icon: typeof ArrowLeft }[] = [
   { key: "back", label: "Back", icon: ArrowLeft },
@@ -74,6 +79,7 @@ function PhoneScreen({ phone }: { phone: Device }) {
   const fellBackRef = useRef(false);
   const gestureRef = useRef<GestureRecorder | null>(null);
   const inputsRef = useRef<Promise<void>>(Promise.resolve());
+  const typedRef = useRef<{ text: string; timer: number } | null>(null);
   const wheelRef = useRef<{ delta: FramePoint; at: FramePoint; timer: number } | null>(null);
 
   const start = (codecs: ScreenCodec[]) => {
@@ -112,6 +118,8 @@ function PhoneScreen({ phone }: { phone: Device }) {
   };
 
   const stop = () => {
+    window.clearTimeout(typedRef.current?.timer);
+    typedRef.current = null;
     if (!startedRef.current) return;
     startedRef.current = false;
     decoderRef.current?.close();
@@ -119,13 +127,35 @@ function PhoneScreen({ phone }: { phone: Device }) {
     void api.stopScreen(phone.id).catch(() => undefined);
   };
 
-  const send = (input: ScreenInput) => {
+  const queue = (input: ScreenInput) => {
     // One after another, so the phone carries them out in the order the user made them.
     inputsRef.current = inputsRef.current
       .then(() => api.sendScreenInput(phone.id, input))
       .catch((reason: unknown) => {
         setError(message(reason));
       });
+  };
+
+  const sendTyped = () => {
+    const typed = typedRef.current;
+    typedRef.current = null;
+    if (!typed) return;
+    window.clearTimeout(typed.timer);
+    queue({ kind: "text", text: typed.text });
+  };
+
+  const send = (input: ScreenInput) => {
+    // Text typed before goes first.
+    sendTyped();
+    queue(input);
+  };
+
+  const type = (text: string) => {
+    const typed = typedRef.current ?? { text: "", timer: 0 };
+    window.clearTimeout(typed.timer);
+    typed.text += text;
+    typed.timer = window.setTimeout(sendTyped, TYPING_GATHER_MS);
+    typedRef.current = typed;
   };
 
   // The stream stops with the page, and with the window.
@@ -212,7 +242,7 @@ function PhoneScreen({ phone }: { phone: Device }) {
   const flushTyping = (field: HTMLTextAreaElement) => {
     const text = field.value;
     field.value = "";
-    if (control && text.length > 0) send({ kind: "text", text });
+    if (control && text.length > 0) type(text);
   };
   const onTypingKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (!control || event.nativeEvent.isComposing) return;

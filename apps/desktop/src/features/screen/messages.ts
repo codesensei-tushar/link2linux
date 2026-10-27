@@ -53,6 +53,8 @@ export function inputProblemText(problem: ScreenInputProblem, phone: string): st
       return `The screen changed before that reached ${phone}. Try again.`;
     case "noTextField":
       return "Tap a text field on the phone's screen first, then type.";
+    case "cannotType":
+      return `That field on ${phone} doesn't take this. A password field takes typing only while it's empty or all selected.`;
     case "failed":
       return `${phone} didn't take that. Try again.`;
   }

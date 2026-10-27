@@ -109,6 +109,9 @@ pub enum ScreenInputProblem {
     ScreenChanged,
     /// No text field has the focus on the phone.
     NoTextField,
+    /// The focused field doesn't take it: a password field the phone can't
+    /// edit, or Enter where the field has no action.
+    CannotType,
     /// The phone refused, or did not answer in time.
     Failed,
 }
@@ -263,6 +266,7 @@ pub fn status(state: ScreenState) -> ScreenStatus {
             InputProblem::ControlOff => ScreenInputProblem::ControlOff,
             InputProblem::ScreenChanged => ScreenInputProblem::ScreenChanged,
             InputProblem::NoTextField => ScreenInputProblem::NoTextField,
+            InputProblem::CannotType => ScreenInputProblem::CannotType,
             InputProblem::Failed => ScreenInputProblem::Failed,
         }),
     }

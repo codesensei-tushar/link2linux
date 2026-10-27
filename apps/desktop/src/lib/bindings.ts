@@ -948,6 +948,11 @@ export type ScreenInputProblem =
 "screenChanged" | 
 /**  No text field has the focus on the phone. */
 "noTextField" | 
+/**
+ *  The focused field doesn't take it: a password field the phone can't
+ *  edit, or Enter where the field has no action.
+ */
+"cannotType" | 
 /**  The phone refused, or did not answer in time. */
 "failed";
 

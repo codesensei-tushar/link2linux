@@ -50,9 +50,10 @@ pub const MAX_TEXT: usize = 4096;
 /// How many frames wait for the viewer at most. At 60 frames per second
 /// that is a tenth of a second of video.
 pub const FRAMES_WAITING: usize = 6;
-/// How many inputs may wait for the phone's answer. A user does not get
-/// that far ahead of a phone that answers.
-const MAX_INPUTS_WAITING: usize = 64;
+/// How many inputs may wait for the phone's answer: the one it carries
+/// out and the 32 it queues behind it. The phone answers more with
+/// `ERROR_CODE_BUSY`, so the desktop drops them itself.
+const MAX_INPUTS_WAITING: usize = 33;
 
 /// How the phone encodes its screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -254,9 +255,20 @@ pub enum InputProblem {
     ScreenChanged,
     /// No text field has the focus on the phone.
     NoTextField,
-    /// The phone refused, gave no answer in time, or the user got too far
-    /// ahead of it.
+    /// The focused field does not take the text or key: a password field
+    /// the phone cannot edit, or Enter where the field has no action.
+    CannotType,
+    /// The phone refused, or gave no answer in time.
     Failed,
+}
+
+/// What an input acts on, which says what the phone's refusal means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Aim {
+    /// The screen: a gesture or a navigation key.
+    Screen,
+    /// The focused text field: text, Backspace or Enter.
+    Field,
 }
 
 /// One point of a gesture.
@@ -415,7 +427,7 @@ pub struct ScreenService {
     stop_asked: Option<u64>,
     stream: Option<Stream>,
     /// The `ScreenInput`s that wait for their answers, oldest first.
-    inputs: VecDeque<u64>,
+    inputs: VecDeque<(u64, Aim)>,
     /// When the desktop last asked for a key frame.
     key_asked_at: Option<Instant>,
     /// When the desktop may ask for the key frame it still waits for.
@@ -608,6 +620,10 @@ impl ScreenService {
             self.input_problem = Some(InputProblem::ControlOff);
             return Ok(());
         };
+        let aim = match input {
+            Input::Text(_) | Input::Key(Key::Backspace | Key::Enter) => Aim::Field,
+            Input::Gesture { .. } | Input::Key(_) => Aim::Screen,
+        };
         let inputs = match input {
             Input::Gesture { format_id, .. } if format_id != format.id => {
                 self.input_problem = Some(InputProblem::ScreenChanged);
@@ -629,18 +645,19 @@ impl ScreenService {
                 .collect(),
         };
         if self.inputs.len() + inputs.len() > MAX_INPUTS_WAITING {
+            // As the phone would answer BUSY: the user sees the phone not
+            // keep up, and needs no word on it.
             tracing::debug!(
                 waiting = self.inputs.len(),
                 "the phone is behind: input dropped"
             );
-            self.input_problem = Some(InputProblem::Failed);
             return Ok(());
         }
         for input in inputs {
             let seq = session.queue_request(Payload::ScreenInput(wire::ScreenInput {
                 input: Some(input),
             }))?;
-            self.inputs.push_back(seq);
+            self.inputs.push_back((seq, aim));
         }
         session.write_queued()
     }
@@ -722,18 +739,21 @@ impl ScreenService {
                 self.stop_asked = None;
                 tracing::debug!("the phone did not answer the screen stop in time");
             }
-            SessionEvent::Reply(reply) if self.inputs.contains(&reply.request) => {
-                self.inputs.retain(|&seq| seq != reply.request);
-                self.input_problem = match reply.into_result() {
-                    Ok(_) => None,
+            SessionEvent::Reply(reply) if self.waiting_input(reply.request).is_some() => {
+                let aim = self.take_input(reply.request);
+                match reply.into_result() {
+                    Ok(_) => self.input_problem = None,
                     Err(error) => {
                         tracing::debug!(code = error.code, "the phone refused an input");
-                        Some(input_problem(&error))
+                        // A busy phone drops the input, which needs no word.
+                        if let Some(problem) = input_problem(&error, aim) {
+                            self.input_problem = Some(problem);
+                        }
                     }
-                };
+                }
             }
-            SessionEvent::RequestTimedOut { request } if self.inputs.contains(&request) => {
-                self.inputs.retain(|&seq| seq != request);
+            SessionEvent::RequestTimedOut { request } if self.waiting_input(request).is_some() => {
+                self.take_input(request);
                 self.input_problem = Some(InputProblem::Failed);
             }
             SessionEvent::Message {
@@ -780,6 +800,22 @@ impl ScreenService {
             other => return Ok(Some(other)),
         }
         Ok(None)
+    }
+
+    /// What the input `seq` acts on, while it waits for its answer.
+    fn waiting_input(&self, seq: u64) -> Option<Aim> {
+        self.inputs
+            .iter()
+            .find(|&&(waiting, _)| waiting == seq)
+            .map(|&(_, aim)| aim)
+    }
+
+    /// Forgets the input `seq`, which got its answer, and says what it
+    /// acted on.
+    fn take_input(&mut self, seq: u64) -> Aim {
+        let aim = self.waiting_input(seq).unwrap_or(Aim::Screen);
+        self.inputs.retain(|&(waiting, _)| waiting != seq);
+        aim
     }
 
     /// When the desktop may ask for the key frame it waits for.
@@ -1054,13 +1090,20 @@ fn start_problem(error: &ErrorReply) -> ScreenProblem {
     }
 }
 
-fn input_problem(error: &ErrorReply) -> InputProblem {
-    match error.code() {
-        ErrorCode::NotAllowed | ErrorCode::Disabled => InputProblem::ControlOff,
-        ErrorCode::Expired => InputProblem::ScreenChanged,
-        ErrorCode::NotFound => InputProblem::NoTextField,
+/// What the phone's refusal of an input that acted on `aim` means for the
+/// user, or `None` for a refusal that needs no word.
+fn input_problem(error: &ErrorReply, aim: Aim) -> Option<InputProblem> {
+    Some(match (error.code(), aim) {
+        // The phone queues only so many inputs, and drops the rest.
+        (ErrorCode::Busy, _) => return None,
+        // A field the phone cannot type into, or Enter where it has no
+        // action, while control is still on.
+        (ErrorCode::NotAllowed | ErrorCode::Unsupported, Aim::Field) => InputProblem::CannotType,
+        (ErrorCode::NotAllowed | ErrorCode::Disabled, _) => InputProblem::ControlOff,
+        (ErrorCode::Expired, _) => InputProblem::ScreenChanged,
+        (ErrorCode::NotFound, _) => InputProblem::NoTextField,
         _ => InputProblem::Failed,
-    }
+    })
 }
 
 /// Why the phone cannot share its screen in `session`, or `None` when it

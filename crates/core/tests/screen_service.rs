@@ -663,6 +663,26 @@ async fn input_goes_to_the_phone_only_while_it_takes_it() {
     link.answer(third, ack()).await;
     assert_eq!(link.screen.state().input_problem, None);
 
+    // A password field the phone cannot edit, and a busy phone.
+    link.screen
+        .input(&mut link.session, Input::Text("p".into()))
+        .unwrap();
+    link.screen
+        .input(&mut link.session, Input::Key(Key::Back))
+        .unwrap();
+    let (typed, _) = link.input().await;
+    let (back, _) = link.input().await;
+    link.answer(typed, refusal(ErrorCode::NotAllowed)).await;
+    assert_eq!(
+        link.screen.state().input_problem,
+        Some(InputProblem::CannotType)
+    );
+    link.answer(back, refusal(ErrorCode::Busy)).await;
+    assert_eq!(
+        link.screen.state().input_problem,
+        Some(InputProblem::CannotType)
+    );
+
     // Control turned off on the phone.
     link.phone_sends(jpeg(1, false)).await;
     link.screen
@@ -691,4 +711,19 @@ async fn an_unanswered_input_fails() {
         link.screen.state().input_problem,
         Some(InputProblem::Failed)
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn input_beyond_what_the_phone_queues_is_dropped_without_a_word() {
+    let (mut link, _viewer) = Link::showing(jpeg(1, true)).await;
+    for _ in 0..34 {
+        link.screen
+            .input(&mut link.session, Input::Key(Key::Home))
+            .unwrap();
+    }
+    for _ in 0..33 {
+        link.input().await;
+    }
+    link.sent_nothing();
+    assert_eq!(link.screen.state().input_problem, None);
 }

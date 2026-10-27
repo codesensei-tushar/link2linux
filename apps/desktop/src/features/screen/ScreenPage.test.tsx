@@ -160,7 +160,7 @@ describe("ScreenPage", () => {
     await userEvent.type(typing, "hi{Backspace}{Enter}");
 
     await waitFor(() => {
-      expect(api.sendScreenInput).toHaveBeenCalledTimes(6);
+      expect(api.sendScreenInput).toHaveBeenCalledTimes(5);
     });
     const sent = api.sendScreenInput.mock.calls.map(([, input]) => input);
     expect(sent[0]).toEqual({
@@ -168,13 +168,32 @@ describe("ScreenPage", () => {
       formatId: 1,
       points: [{ x: 180, y: 390, timeMs: 0 }],
     });
+    // Quick typing goes as one text, before the key that follows it.
     expect(sent.slice(1)).toEqual([
       { kind: "key", key: "back" },
-      { kind: "text", text: "h" },
-      { kind: "text", text: "i" },
+      { kind: "text", text: "hi" },
       { kind: "key", key: "backspace" },
       { kind: "key", key: "enter" },
     ]);
+  });
+
+  it("sends typed text once the typing pauses", async () => {
+    const { api } = await showing();
+    await userEvent.type(screen.getByRole("textbox", { name: "Type on Pixel" }), "ok");
+    expect(api.sendScreenInput).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(api.sendScreenInput).toHaveBeenCalledWith("phone-1", { kind: "text", text: "ok" });
+    });
+    expect(api.sendScreenInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("says when the phone's field doesn't take the typing", async () => {
+    const { api } = await showing();
+    api.emitScreen(
+      "phone-1",
+      testScreen({ phase: "showing", format: jpegFormat, inputProblem: "cannotType" }),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("password field");
   });
 
   it("turns a wheel turn into one swipe", async () => {
