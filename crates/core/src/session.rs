@@ -778,6 +778,23 @@ where
     /// not active, with [`SessionError::Ended`] once the session is over,
     /// and on framing or I/O errors.
     pub async fn send(&mut self, payload: Payload) -> Result<u64, SessionError> {
+        let seq = self.queue_send(payload)?;
+        self.flush().await?;
+        Ok(seq)
+    }
+
+    /// Like [`Session::send`], but without waiting for the message to be
+    /// written: it goes out while [`Session::next_event`] waits for frames,
+    /// or with [`Session::write_queued`].
+    ///
+    /// This is for a side that must not stop reading, such as one that
+    /// takes video from the peer: a peer whose reads wait for its own
+    /// writes could otherwise wait on this side forever.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Session::send`], except that writing happens later.
+    pub fn queue_send(&mut self, payload: Payload) -> Result<u64, SessionError> {
         let rules = rules::of(&payload);
         match payload {
             Payload::Hello(_) => return Err(SessionError::UnexpectedHello),
@@ -790,9 +807,7 @@ where
             _ => {}
         }
         self.check_can_send(rules)?;
-        let seq = self.enqueue(payload)?;
-        self.flush().await?;
-        Ok(seq)
+        self.enqueue(payload)
     }
 
     /// Sends a request and waits for its first answer.

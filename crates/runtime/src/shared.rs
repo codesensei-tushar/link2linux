@@ -39,6 +39,7 @@ use crate::notify::{DriverFactory, Presenter};
 use crate::pairing::PairingCtl;
 use crate::paths::{DataDir, desktop_name};
 use crate::phone::{PhoneBoard, PhoneBoards, RingDriver, StatusDriver};
+use crate::screen::ScreenDriver;
 use crate::view::{Device, DeviceStatus, EventSink, StartupError};
 
 /// How the runtime starts.
@@ -247,6 +248,7 @@ impl Core {
                 Feature::Status,
                 Feature::Ring,
                 Feature::Calls,
+                Feature::Screen,
             ],
         );
         // Before any session, as it cleans up after an earlier run.
@@ -399,6 +401,7 @@ impl Core {
             status: StatusDriver::new(phone_board.clone()),
             ring: RingDriver::new(phone_board.clone()),
             calls: CallsDriver::new(record.id.clone(), self.calls.clone(), phone_board.clone()),
+            screen: ScreenDriver::new(phone_board.clone()),
         };
         self.calls.task_started(&record.id);
         self.calls.set_phones(self.phone_list());

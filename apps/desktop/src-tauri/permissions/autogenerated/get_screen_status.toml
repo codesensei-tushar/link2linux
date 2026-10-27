@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-screen-status"
+description = "Enables the get_screen_status command without any pre-configured scope."
+commands.allow = ["get_screen_status"]
+
+[[permission]]
+identifier = "deny-get-screen-status"
+description = "Denies the get_screen_status command without any pre-configured scope."
+commands.deny = ["get_screen_status"]

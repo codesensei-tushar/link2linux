@@ -66,6 +66,11 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::calls::dial_number,
             commands::calls::send_call_tones,
             commands::calls::set_call_muted,
+            commands::screen::get_screen_status,
+            commands::screen::start_screen,
+            commands::screen::stop_screen,
+            commands::screen::send_screen_input,
+            commands::screen::request_screen_key_frame,
         ])
         .events(collect_events![
             events::PairingChanged,
@@ -76,6 +81,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             events::PhoneStatusChanged,
             events::RingChanged,
             events::CallsChanged,
+            events::ScreenChanged,
             events::FileDrag,
             events::FilesDropped,
         ])

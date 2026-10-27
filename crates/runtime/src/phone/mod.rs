@@ -21,6 +21,7 @@ pub use dto::{PhoneStatus, RingStatus};
 
 use crate::link::lock;
 use crate::notify::PhoneSession;
+use crate::screen::ScreenStatus;
 use crate::view::EventSink;
 
 /// What the user asks of a phone's status or ringing.
@@ -42,6 +43,7 @@ struct Board {
     owner: u64,
     status: PhoneStatus,
     ring: RingStatus,
+    screen: ScreenStatus,
 }
 
 /// What the UI shows of every paired phone's status and ringing, and the
@@ -126,6 +128,15 @@ impl PhoneBoards {
             .unwrap_or_default()
     }
 
+    /// Phone `id`'s screen as the UI shows it.
+    #[must_use]
+    pub fn screen(&self, id: &str) -> ScreenStatus {
+        lock(&self.boards)
+            .get(id)
+            .map(|board| board.screen.clone())
+            .unwrap_or_default()
+    }
+
     /// Forgets phone `id`, which is no longer paired: what its drivers
     /// write from then on is dropped.
     pub fn forget(&self, id: &str) {
@@ -184,6 +195,20 @@ impl PhoneBoard {
             self.boards
                 .events
                 .ring_changed(&self.device_id, &board.ring);
+        }
+    }
+
+    /// Records the phone's screen, and reports it if it changed.
+    pub(crate) fn set_screen(&self, screen: ScreenStatus) {
+        let mut boards = lock(&self.boards.boards);
+        if let Some(board) = boards.get_mut(&self.device_id)
+            && board.owner == self.owner
+            && board.screen != screen
+        {
+            board.screen = screen;
+            self.boards
+                .events
+                .screen_changed(&self.device_id, &board.screen);
         }
     }
 }

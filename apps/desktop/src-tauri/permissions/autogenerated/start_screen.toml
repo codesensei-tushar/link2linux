@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-screen"
+description = "Enables the start_screen command without any pre-configured scope."
+commands.allow = ["start_screen"]
+
+[[permission]]
+identifier = "deny-start-screen"
+description = "Denies the start_screen command without any pre-configured scope."
+commands.deny = ["start_screen"]

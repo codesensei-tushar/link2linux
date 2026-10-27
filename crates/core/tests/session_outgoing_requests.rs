@@ -165,6 +165,23 @@ async fn only_requests_go_through_the_request_methods() {
         matches!(err, SessionError::NotAllowed("NotificationDismissRequest")),
         "{err:?}"
     );
+    let err = session.queue_send(dismiss()).unwrap_err();
+    assert!(
+        matches!(err, SessionError::NotAllowed("NotificationDismissRequest")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_queued_message_goes_out_without_waiting_for_the_write() {
+    let (mut session, mut peer) = notifying().await;
+    let seq = session
+        .queue_send(Payload::Ping(Ping { nonce: 9 }))
+        .unwrap();
+    session.write_queued().unwrap();
+    let frame = peer.next().await.unwrap().unwrap();
+    assert_eq!(frame.seq, seq);
+    assert_eq!(frame.payload, Some(Payload::Ping(Ping { nonce: 9 })));
 }
 
 #[tokio::test]

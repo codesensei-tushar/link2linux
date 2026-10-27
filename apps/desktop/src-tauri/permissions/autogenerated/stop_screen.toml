@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-screen"
+description = "Enables the stop_screen command without any pre-configured scope."
+commands.allow = ["stop_screen"]
+
+[[permission]]
+identifier = "deny-stop-screen"
+description = "Denies the stop_screen command without any pre-configured scope."
+commands.deny = ["stop_screen"]

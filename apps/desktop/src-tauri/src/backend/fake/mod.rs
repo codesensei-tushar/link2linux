@@ -12,6 +12,7 @@ pub mod calls;
 pub mod files;
 pub mod machine;
 pub mod phone;
+pub mod screen;
 pub mod script;
 pub mod support;
 
@@ -27,12 +28,14 @@ use link2linux_runtime::view::{
 
 use super::{
     Backend, BackendError, CallsStatus, Device, EventSink, FileTransfer, PairingMethod,
-    PairingState, PhoneStatus, PhoneTarget, RingStatus, Settings,
+    PairingState, PhoneStatus, PhoneTarget, RingStatus, ScreenCodec, ScreenInput, ScreenStatus,
+    ScreenViewer, Settings,
 };
 
 use calls::{Delays, FakeCalls};
 use files::FakeFiles;
 use phone::FakePhone;
+use screen::{FakeScreen, ScreenDelays};
 
 pub use machine::Machine;
 pub use script::{Changed, Now, Script};
@@ -126,6 +129,7 @@ pub struct FakeBackend {
     timer: Option<JoinHandle<()>>,
     clipboard: Mutex<FakeClipboard>,
     phone: FakePhone,
+    screen: FakeScreen,
     /// The settings, kept in memory only.
     settings: Mutex<Settings>,
 }
@@ -201,6 +205,7 @@ impl FakeBackend {
         let machine = Machine::new(script, desktop_name(), clock.now());
         let files = FakeFiles::new(script, sink.clone(), clock.now().unix_ms);
         let phone = FakePhone::new(sink.clone(), phone::RING_FOR);
+        let screen = FakeScreen::new(sink.clone(), ScreenDelays::real());
         let calls = FakeCalls::new(script, sink.clone(), desktop_name(), Delays::real());
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
@@ -225,6 +230,7 @@ impl FakeBackend {
             timer,
             clipboard: Mutex::default(),
             phone,
+            screen,
             settings: Mutex::default(),
         }
     }
@@ -343,6 +349,29 @@ impl Backend for FakeBackend {
 
     fn stop_ringing(&self, device_id: &str) -> Result<(), BackendError> {
         self.phone.stop(self.device(device_id).as_ref())
+    }
+
+    fn screen_status(&self, device_id: &str) -> Result<ScreenStatus, BackendError> {
+        self.screen.status(self.device(device_id).as_ref())
+    }
+
+    fn start_screen(
+        &self,
+        device_id: &str,
+        codecs: &[ScreenCodec],
+        _max_size: u32,
+        viewer: Arc<dyn ScreenViewer>,
+    ) -> Result<(), BackendError> {
+        self.screen
+            .start(self.device(device_id).as_ref(), codecs, viewer)
+    }
+
+    fn stop_screen(&self, device_id: &str) -> Result<(), BackendError> {
+        self.screen.stop(self.device(device_id).as_ref())
+    }
+
+    fn send_screen_input(&self, device_id: &str, input: ScreenInput) -> Result<(), BackendError> {
+        self.screen.input(self.device(device_id).as_ref(), &input)
     }
 
     fn send_files(&self, device_id: &str, paths: Vec<PathBuf>) -> Result<(), BackendError> {
