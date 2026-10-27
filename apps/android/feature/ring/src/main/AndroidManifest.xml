@@ -4,10 +4,22 @@
     <!-- Vibrate while the phone rings for a computer that looks for it. Granted at install. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Put the alarm volume back after a reboot that came while the phone was ringing. Normal, granted at install. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <application>
         <!-- Stop on the ringing notification; reached only through the app's PendingIntents. -->
         <receiver
             android:name=".RingStopReceiver"
             android:exported="false" />
+
+        <!-- Only the system's boot broadcast, which is not an app's to send. -->
+        <receiver
+            android:name=".AlarmVolumeBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
