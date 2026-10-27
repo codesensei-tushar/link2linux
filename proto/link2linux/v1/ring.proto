@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The ring feature, capability token "ring": the user makes a mislaid phone
+// ring from the desktop, even when the phone is set to silent.
+//
+// docs/protocol.md, "Ring", says how loud and how long the phone rings and
+// how the ringing ends.
+
+// Desktop to phone: start ringing, or keep ringing for another full period
+// if the phone already rings. Answered by an Ack once the phone rings, or by
+// an ErrorReply such as ERROR_CODE_DISABLED or ERROR_CODE_UNAVAILABLE.
+message RingRequest {}
+
+// Desktop to phone: stop ringing. Answered by an Ack, also when the phone
+// does not ring.
+message RingStop {}
+
+// Phone to desktop, one-way: the ringing ended. Sent to each connected
+// desktop that sent a RingRequest for it.
+message RingEnded {
+  RingEndReason reason = 1;
+}
+
+enum RingEndReason {
+  RING_END_REASON_UNSPECIFIED = 0;
+  // The user stopped it on the phone.
+  RING_END_REASON_STOPPED_ON_PHONE = 1;
+  // A desktop sent RingStop: this one or another one.
+  RING_END_REASON_STOPPED_FROM_DESKTOP = 2;
+  // The phone rang for its full period.
+  RING_END_REASON_TIMED_OUT = 3;
+  // The phone could not keep ringing, for example because another app took
+  // the audio or the user turned the feature off.
+  RING_END_REASON_INTERRUPTED = 4;
+}

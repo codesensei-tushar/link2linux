@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The phone status feature, capability token "status": the desktop shows the
+// phone's battery, signal and sound mode.
+//
+// The status lives on the phone. The desktop asks for it once per session
+// with PhoneStatusRequest, and the phone then keeps it current with
+// PhoneStatusChanged until the session ends. docs/protocol.md, "Phone
+// status", says when each is sent.
+
+// Desktop to phone: send the current status, then send each change for the
+// rest of the session. Answered by PhoneStatusReply, or by an ErrorReply
+// such as ERROR_CODE_DISABLED.
+message PhoneStatusRequest {}
+
+// Phone to desktop: the answer to PhoneStatusRequest.
+message PhoneStatusReply {
+  PhoneStatus status = 1;
+}
+
+// Phone to desktop, one-way: the status changed. Sent only after the
+// PhoneStatusReply, and only in a session where the desktop asked.
+message PhoneStatusChanged {
+  PhoneStatus status = 1;
+}
+
+// The phone's complete status. Each one replaces the previous one. A part
+// the phone cannot read is left unset, and the desktop shows nothing for it.
+message PhoneStatus {
+  Battery battery = 1;
+  // The cellular connection the phone's status bar shows first. Unset on a
+  // phone without telephony.
+  Cellular cellular = 2;
+  // Set while the phone is connected to Wi-Fi.
+  Wifi wifi = 3;
+  RingerMode ringer_mode = 4;
+  // Do Not Disturb is on, so the phone holds back some or all of its
+  // sounds and notifications.
+  bool do_not_disturb = 5;
+}
+
+message Battery {
+  // The charge, 0 to 100.
+  uint32 percent = 1;
+  // The phone is plugged in to power, also once the battery is full.
+  bool plugged_in = 2;
+  // Battery saver is on.
+  bool power_saver = 3;
+}
+
+message Cellular {
+  // The signal level, 0 (none) to 4 (full), as the phone's status bar shows
+  // it.
+  uint32 level = 1;
+  CellularNetwork network = 2;
+  // The carrier name the phone shows, at most 64 bytes. Empty when unknown.
+  string operator_name = 3;
+}
+
+enum CellularNetwork {
+  // Unknown, for example because reading it needs a permission the phone
+  // does not ask for.
+  CELLULAR_NETWORK_UNSPECIFIED = 0;
+  // No SIM, no service, or emergency calls only.
+  CELLULAR_NETWORK_NO_SERVICE = 1;
+  CELLULAR_NETWORK_2G = 2;
+  CELLULAR_NETWORK_3G = 3;
+  CELLULAR_NETWORK_4G = 4;
+  CELLULAR_NETWORK_5G = 5;
+}
+
+message Wifi {
+  // The signal level, 0 (none) to 4 (full), as the phone's status bar shows
+  // it.
+  uint32 level = 1;
+}
+
+enum RingerMode {
+  // Unknown.
+  RINGER_MODE_UNSPECIFIED = 0;
+  // Calls and notifications make sound.
+  RINGER_MODE_NORMAL = 1;
+  RINGER_MODE_VIBRATE = 2;
+  RINGER_MODE_SILENT = 3;
+}

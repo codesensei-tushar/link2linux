@@ -2,11 +2,14 @@ syntax = "proto3";
 
 package link2linux.v1;
 
+import "link2linux/v1/calls.proto";
 import "link2linux/v1/clipboard.proto";
 import "link2linux/v1/common.proto";
 import "link2linux/v1/files.proto";
 import "link2linux/v1/notifications.proto";
 import "link2linux/v1/pairing.proto";
+import "link2linux/v1/ring.proto";
+import "link2linux/v1/status.proto";
 
 option java_multiple_files = true;
 option java_package = "dev.link2linux.protocol.v1";
@@ -33,7 +36,7 @@ message Envelope {
   //   30 to 49: pairing;
   //   then a block of 50 per feature, starting with notifications at 100,
   //   messages at 150, calls at 200, photos at 250, files at 300,
-  //   clipboard at 350 and screen at 400.
+  //   clipboard at 350, screen at 400, status at 450 and ring at 500.
   oneof payload {
     Hello hello = 10;
     Ping ping = 11;
@@ -59,12 +62,22 @@ message Envelope {
     NotificationDismissRequest notification_dismiss_request = 104;
     NotificationActionRequest notification_action_request = 105;
 
+    BluetoothPairingRequest bluetooth_pairing_request = 200;
+
     FileOffer file_offer = 300;
     FileAccept file_accept = 301;
     FileChunk file_chunk = 302;
     FileCancel file_cancel = 303;
 
     ClipboardPush clipboard_push = 350;
+
+    PhoneStatusRequest phone_status_request = 450;
+    PhoneStatusReply phone_status_reply = 451;
+    PhoneStatusChanged phone_status_changed = 452;
+
+    RingRequest ring_request = 500;
+    RingStop ring_stop = 501;
+    RingEnded ring_ended = 502;
   }
 }
 

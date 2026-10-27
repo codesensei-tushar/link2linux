@@ -28,11 +28,15 @@ pub enum Feature {
     Clipboard,
     /// The phone's screen shown and controlled on the desktop.
     Screen,
+    /// The phone's battery, signal and sound mode shown on the desktop.
+    Status,
+    /// Making the phone ring from the desktop to find it.
+    Ring,
 }
 
 impl Feature {
     /// Every feature, in a stable order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Notifications,
         Self::Messages,
         Self::Calls,
@@ -40,6 +44,8 @@ impl Feature {
         Self::Files,
         Self::Clipboard,
         Self::Screen,
+        Self::Status,
+        Self::Ring,
     ];
 
     /// The wire name, as sent in `Hello.features`.
@@ -53,6 +59,8 @@ impl Feature {
             Self::Files => "files",
             Self::Clipboard => "clipboard",
             Self::Screen => "screen",
+            Self::Status => "status",
+            Self::Ring => "ring",
         }
     }
 

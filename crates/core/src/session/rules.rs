@@ -38,6 +38,8 @@ pub(crate) enum Expects {
     NotificationSyncBatch,
     /// `FileAccept`.
     FileAccept,
+    /// `PhoneStatusReply`.
+    PhoneStatusReply,
 }
 
 impl Expects {
@@ -53,6 +55,7 @@ impl Expects {
                     Payload::NotificationSyncBatch(_)
                 )
                 | (Self::FileAccept, Payload::FileAccept(_))
+                | (Self::PhoneStatusReply, Payload::PhoneStatusReply(_))
         )
     }
 }
@@ -76,6 +79,9 @@ pub(crate) fn of(payload: &Payload) -> Rules {
     const NOTIFICATIONS: Option<Feature> = Some(Feature::Notifications);
     const FILES: Option<Feature> = Some(Feature::Files);
     const CLIPBOARD: Option<Feature> = Some(Feature::Clipboard);
+    const CALLS: Option<Feature> = Some(Feature::Calls);
+    const STATUS: Option<Feature> = Some(Feature::Status);
+    const RING: Option<Feature> = Some(Feature::Ring);
     let (name, kind, feature) = match payload {
         P::Hello(_) => ("Hello", Control, None),
         P::Ping(_) => ("Ping", Control, None),
@@ -110,11 +116,22 @@ pub(crate) fn of(payload: &Payload) -> Rules {
             Request(Expects::Ack),
             NOTIFICATIONS,
         ),
+        P::BluetoothPairingRequest(_) => ("BluetoothPairingRequest", Request(Expects::Ack), CALLS),
         P::FileOffer(_) => ("FileOffer", Request(Expects::FileAccept), FILES),
         P::FileAccept(_) => ("FileAccept", Reply, FILES),
         P::FileChunk(_) => ("FileChunk", Request(Expects::Ack), FILES),
         P::FileCancel(_) => ("FileCancel", Request(Expects::Ack), FILES),
         P::ClipboardPush(_) => ("ClipboardPush", Request(Expects::Ack), CLIPBOARD),
+        P::PhoneStatusRequest(_) => (
+            "PhoneStatusRequest",
+            Request(Expects::PhoneStatusReply),
+            STATUS,
+        ),
+        P::PhoneStatusReply(_) => ("PhoneStatusReply", Reply, STATUS),
+        P::PhoneStatusChanged(_) => ("PhoneStatusChanged", Event, STATUS),
+        P::RingRequest(_) => ("RingRequest", Request(Expects::Ack), RING),
+        P::RingStop(_) => ("RingStop", Request(Expects::Ack), RING),
+        P::RingEnded(_) => ("RingEnded", Event, RING),
     };
     Rules {
         name,
@@ -132,8 +149,9 @@ pub(crate) fn is_last_answer(answer: &Payload) -> bool {
 #[cfg(test)]
 mod tests {
     use link2linux_protocol::v1::{
-        Ack, ClipboardPush, ErrorReply, FileAccept, ImageData, ImageRequest,
-        NotificationDismissRequest, NotificationSyncBatch,
+        Ack, BluetoothPairingRequest, ClipboardPush, ErrorReply, FileAccept, ImageData,
+        ImageRequest, NotificationDismissRequest, NotificationSyncBatch, PhoneStatusChanged,
+        PhoneStatusReply, PhoneStatusRequest, RingEnded, RingStop,
     };
 
     use super::*;
@@ -154,6 +172,30 @@ mod tests {
         let push = of(&Payload::ClipboardPush(ClipboardPush::default()));
         assert_eq!(push.kind, Kind::Request(Expects::Ack));
         assert_eq!(push.feature, Some(Feature::Clipboard));
+
+        let pairing = of(&Payload::BluetoothPairingRequest(
+            BluetoothPairingRequest::default(),
+        ));
+        assert_eq!(pairing.kind, Kind::Request(Expects::Ack));
+        assert_eq!(pairing.feature, Some(Feature::Calls));
+
+        let status = of(&Payload::PhoneStatusRequest(PhoneStatusRequest {}));
+        assert_eq!(status.kind, Kind::Request(Expects::PhoneStatusReply));
+        assert_eq!(status.feature, Some(Feature::Status));
+
+        let stop = of(&Payload::RingStop(RingStop {}));
+        assert_eq!(stop.kind, Kind::Request(Expects::Ack));
+        assert_eq!(stop.feature, Some(Feature::Ring));
+    }
+
+    #[test]
+    fn status_and_ring_updates_are_events() {
+        let changed = of(&Payload::PhoneStatusChanged(PhoneStatusChanged::default()));
+        assert_eq!(changed.kind, Kind::Event);
+        assert_eq!(changed.feature, Some(Feature::Status));
+        let ended = of(&Payload::RingEnded(RingEnded::default()));
+        assert_eq!(ended.kind, Kind::Event);
+        assert_eq!(ended.feature, Some(Feature::Ring));
     }
 
     #[test]
@@ -188,6 +230,11 @@ mod tests {
         assert!(Expects::FileAccept.allows(&error));
         assert!(!Expects::FileAccept.allows(&ack));
         assert!(!Expects::Ack.allows(&accept));
+        let status = Payload::PhoneStatusReply(PhoneStatusReply::default());
+        assert!(Expects::PhoneStatusReply.allows(&status));
+        assert!(Expects::PhoneStatusReply.allows(&error));
+        assert!(!Expects::PhoneStatusReply.allows(&ack));
+        assert!(!Expects::Ack.allows(&status));
     }
 
     #[test]
