@@ -1,0 +1,200 @@
+.calls {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 44rem;
+}
+
+.calls__heading,
+.calls-setup__title,
+.call__caller {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.calls-setup,
+.calls-setup__body,
+.call__body {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.calls-setup__text,
+.calls-setup__steps {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.calls-setup__steps {
+  padding-left: var(--space-5);
+}
+
+.calls-setup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.calls-setup__hint,
+.calls-link__device,
+.call__detail,
+.call__note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.call__note {
+  margin: 0;
+}
+
+.calls-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.calls-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pairing-prompt {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+}
+
+.pairing-prompt__code {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.calls-picker {
+  display: inline-flex;
+  gap: 2px;
+  justify-self: start;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+
+.calls-picker__option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.calls-picker__option:has(input:checked) {
+  background: var(--color-surface);
+}
+
+.calls-picker__option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.calls-picker__option:has(input:focus-visible) {
+  outline: 2px solid var(--color-focus);
+}
+
+.call--ringing {
+  border-color: var(--color-accent);
+}
+
+.call__who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.call__status {
+  font-variant-numeric: tabular-nums;
+}
+
+.call__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.call__end {
+  color: var(--color-danger);
+}
+
+.dial-pad {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 20rem;
+}
+
+.dial-pad__form {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.dial-pad__number {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.keypad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  max-width: 20rem;
+}
+
+.keypad__key {
+  display: grid;
+  justify-items: center;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.keypad__key:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+}
+
+.keypad__key:focus-visible {
+  outline: 2px solid var(--color-focus);
+}
+
+.keypad__digit {
+  font-size: var(--font-size-lg);
+}
+
+.keypad__letters {
+  min-height: 1em;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+}
