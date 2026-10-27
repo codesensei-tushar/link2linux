@@ -10,6 +10,7 @@ dependencies {
     implementation(projects.core.notifications)
     implementation(projects.core.photos)
     implementation(projects.core.ring)
+    implementation(projects.core.screen)
     implementation(projects.core.status)
     api(projects.core.protocol)
     api(projects.core.security)
