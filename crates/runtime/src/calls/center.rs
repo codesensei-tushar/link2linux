@@ -91,6 +91,8 @@ pub(crate) struct Center {
     /// Bluetooth stack trusts it, which connecting it does.
     confirmed: HashSet<BluetoothAddress>,
     window: Option<PairingWindow>,
+    /// How many windows opened, which tells a window from a later one.
+    windows_opened: u64,
     /// Each phone's call notifications, by key.
     notes: HashMap<String, BTreeMap<String, CallNotification>>,
     /// The phones with a session: their call notifications count only
@@ -135,6 +137,7 @@ impl Center {
             choices,
             confirmed: HashSet::new(),
             window: None,
+            windows_opened: 0,
             notes: HashMap::new(),
             sessions: HashSet::new(),
             phone_ready: HashMap::new(),
@@ -468,6 +471,12 @@ impl Center {
     pub fn open_window(&mut self, window: PairingWindow) {
         self.problems.remove(window.device_id());
         self.window = Some(window);
+        self.windows_opened += 1;
+    }
+
+    /// How many windows opened so far: the latest one's number.
+    pub fn windows_opened(&self) -> u64 {
+        self.windows_opened
     }
 
     /// Closes the window. Returns the prompts that still waited.

@@ -70,6 +70,9 @@ pub struct Calls {
     told: Mutex<HashMap<String, Told>>,
     /// Wakes [`follow`] to read the services again and report.
     nudge: Notify,
+    /// Held while pairing opens or closes at the adapter, so that a close
+    /// meant for one window never lands after a newer window opened.
+    pairing: tokio::sync::Mutex<()>,
     choices_path: PathBuf,
 }
 
@@ -89,7 +92,21 @@ impl Calls {
             reconnected: Mutex::default(),
             told: Mutex::default(),
             nudge: Notify::new(),
+            pairing: tokio::sync::Mutex::new(()),
             choices_path,
+        }
+    }
+
+    /// Closes pairing at the adapter for the window that opened as the
+    /// `opened`-th, unless a newer one opened since: that one replaced it
+    /// at the adapter, and stays open.
+    async fn close_adapter(&self, port: &Arc<dyn CallsPort>, opened: u64) {
+        let _pairing = self.pairing.lock().await;
+        if lock(&self.center).windows_opened() != opened {
+            return;
+        }
+        if let Err(error) = port.close_pairing().await {
+            tracing::debug!(%error, "could not close Bluetooth pairing");
         }
     }
 
@@ -271,6 +288,7 @@ pub(crate) async fn follow(core: Arc<Core>) {
             changed = telephony => telephony_retry = retry_after(changed),
             event = port.next_pairing_event() => pairing_event(&core, &port, event),
             () = sleep_until(deadline) => {
+                let _pairing = calls.pairing.lock().await;
                 let waiting = lock(&calls.center).expire(Instant::now());
                 if let Some(waiting) = waiting {
                     tracing::info!("the Bluetooth pairing window ran out");
@@ -326,7 +344,11 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
             now_unix_ms(),
         );
         let settled = center.settle_choices(&phones);
-        let paired = center.pairing_done();
+        // With the window it closed, to close at the adapter once the
+        // phone is trusted.
+        let paired = center
+            .pairing_done()
+            .map(|done| (done, center.windows_opened()));
         let choices = (settled || paired.is_some()).then(|| center.choices().clone());
         let connect = center.take_connects(&phones);
         // While calls are off, here or on the phone, a phone that connects
@@ -338,9 +360,9 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
     if let Some(choices) = choices {
         calls.save(&choices);
     }
-    if let Some((device_id, address)) = paired {
+    if let Some(((device_id, address), opened)) = paired {
         tracing::info!(%address, "the phone paired over Bluetooth");
-        connect_link(core, port, device_id, address, Connect::Paired);
+        connect_link(core, port, device_id, address, Connect::Paired(opened));
     }
     for (device_id, address) in connect {
         connect_link(core, port, device_id, address, Connect::Auto);
@@ -359,9 +381,10 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
 /// Why the desktop connects a phone's hands-free link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Connect {
-    /// The phone just paired: pairing closes once the phone is trusted,
-    /// so its own connection right after pairing is still let in.
-    Paired,
+    /// The phone just paired in the window that opened as the given one:
+    /// pairing closes once the phone is trusted, so its own connection
+    /// right after pairing is still let in.
+    Paired(u64),
     /// The user asked to.
     User,
     /// The phone connected to the app. A failure is not reported: the
@@ -382,10 +405,8 @@ fn connect_link(
     let port = port.clone();
     core.clone().handle.spawn(async move {
         let result = port.connect_hands_free(address).await;
-        if why == Connect::Paired
-            && let Err(error) = port.close_pairing().await
-        {
-            tracing::debug!(%error, "could not close Bluetooth pairing");
+        if let Connect::Paired(opened) = why {
+            core.calls.close_adapter(&port, opened).await;
         }
         let mut center = lock(&core.calls.center);
         center.set_connecting(&device_id, false);
@@ -509,7 +530,15 @@ fn refuse(port: &Arc<dyn CallsPort>, prompts: &[u64]) {
     }
 }
 
+/// Closes the pairing window, if one is open: refuses the prompts that
+/// still wait, and closes pairing at the adapter.
 async fn close_pairing(core: &Core, port: &Arc<dyn CallsPort>) {
+    let _pairing = core.calls.pairing.lock().await;
+    close_window(core, port).await;
+}
+
+/// As [`close_pairing`], for a caller that holds the pairing lock.
+async fn close_window(core: &Core, port: &Arc<dyn CallsPort>) {
     let waiting = {
         let mut center = lock(&core.calls.center);
         center.window().is_some().then(|| center.close_window())
@@ -575,7 +604,10 @@ pub(crate) fn start_pairing(core: &Arc<Core>, device_id: &str) -> Result<(), Bac
     let core = core.clone();
     let device_id = device_id.to_owned();
     core.clone().handle.spawn(async move {
-        close_pairing(&core, &port).await;
+        // The window opens at the adapter and here as one step: a close
+        // for an earlier window then sees that a newer one opened.
+        let pairing = core.calls.pairing.lock().await;
+        close_window(&core, &port).await;
         match port.open_pairing(PAIRING_WINDOW).await {
             Ok(adapter) => {
                 let window = PairingWindow::open(device_id, adapter, Instant::now());
@@ -586,6 +618,7 @@ pub(crate) fn start_pairing(core: &Arc<Core>, device_id: &str) -> Result<(), Bac
                 lock(&core.calls.center).set_problem(&device_id, Some(CallProblem::PairingFailed));
             }
         }
+        drop(pairing);
         core.calls.nudge.notify_one();
     });
     Ok(())
