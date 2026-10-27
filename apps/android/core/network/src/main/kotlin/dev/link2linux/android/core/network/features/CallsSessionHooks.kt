@@ -25,9 +25,11 @@ fun interface BluetoothPairingPrompt {
      * Asks the user to pair with the desktop adapter [name] at [address]
      * (upper case, `XX:XX:XX:XX:XX:XX`), replacing an earlier prompt, and
      * withdraws the prompt after the desktop's pairing window of
-     * [CallsSessionHooks.PAIRING_WINDOW_MILLIS].
+     * [CallsSessionHooks.PAIRING_WINDOW_MILLIS]. Returns false, with
+     * nothing shown, when the phone cannot ask the user, as when the user
+     * blocked the app's notifications.
      */
-    fun show(name: String, address: String)
+    fun show(name: String, address: String): Boolean
 }
 
 /**
@@ -39,8 +41,8 @@ fun interface BluetoothPairingPrompt {
  * `BluetoothPairingRequest` is answered as the feature's state says while
  * it is not `READY` (`UNAVAILABLE` on a phone without telephony or
  * Bluetooth, `DISABLED` while the user has it off), `INVALID_ARGUMENT` when
- * the name or address is outside the schema's forms, and otherwise `Ack`
- * once [prompt] asked the user to pair.
+ * the name or address is outside the schema's forms, `NOT_ALLOWED` when
+ * [prompt] cannot ask the user, and otherwise `Ack` once it asked.
  */
 class CallsSessionHooks(
     /** The feature's state on this phone. */
@@ -66,16 +68,21 @@ class CallsSessionHooks(
             FeatureAvailability.FEATURE_AVAILABILITY_DISABLED -> ErrorCode.ERROR_CODE_DISABLED to "Calls are turned off on the phone"
             else -> ErrorCode.ERROR_CODE_UNAVAILABLE to "The phone cannot take calls over Bluetooth"
         }
-        if (refusal == null) prompt.show(request.name, request.address.uppercase())
+        val refused = refusal
+            ?: if (prompt.show(request.name, request.address.uppercase())) {
+                null
+            } else {
+                ErrorCode.ERROR_CODE_NOT_ALLOWED to "The phone cannot ask the user to pair: its notifications are blocked"
+            }
         // Posted: the reader never waits for a write.
         session.post {
             replyTo = envelope.seq
-            if (refusal == null) {
+            if (refused == null) {
                 ack = Ack.getDefaultInstance()
             } else {
                 errorReply = errorReply {
-                    code = refusal.first
-                    detail = refusal.second
+                    code = refused.first
+                    detail = refused.second
                 }
             }
         }

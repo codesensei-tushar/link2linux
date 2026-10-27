@@ -5,6 +5,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import dev.link2linux.android.core.common.NotificationIds
 import dev.link2linux.android.core.designsystem.R as DesignR
 
 /**
@@ -21,7 +23,9 @@ internal class PairingNotifier(private val context: Context) {
         manager?.createNotificationChannel(channel)
     }
 
-    fun show(name: String, address: String) {
+    /** Shows the prompt, or returns false when the user blocked the app's notifications or this channel. */
+    fun show(name: String, address: String): Boolean {
+        if (!canShow()) return false
         val open = PendingIntent.getActivity(
             context,
             0,
@@ -39,17 +43,20 @@ internal class PairingNotifier(private val context: Context) {
             .setTimeoutAfter(PAIRING_WINDOW_MILLIS)
             .setContentIntent(open)
             .build()
-        // Without the notification permission nothing shows; the Calls screen opens Bluetooth settings.
-        manager?.notify(ID, notification)
+        manager?.notify(NotificationIds.PAIRING, notification)
+        return true
     }
 
+    private fun canShow(): Boolean =
+        NotificationManagerCompat.from(context).areNotificationsEnabled() &&
+            manager?.getNotificationChannel(CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE
+
     fun cancel() {
-        manager?.cancel(ID)
+        manager?.cancel(NotificationIds.PAIRING)
     }
 
     private companion object {
         const val CHANNEL = "calls-pairing"
-        const val ID = 1
 
         /** How long the computer accepts pairing (docs/protocol.md, "Calls"). */
         const val PAIRING_WINDOW_MILLIS = 2 * 60_000L

@@ -12,12 +12,17 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import dev.link2linux.android.core.ring.AlarmVolume
+import dev.link2linux.android.core.ring.AlarmVolumeGuard
 import dev.link2linux.android.core.ring.RingPlayer
+import dev.link2linux.android.core.ring.SavedVolume
 
 /**
  * Plays the ringtone on the alarm stream, which Android plays also when the
  * ringer is set to vibrate or silent, at the stream's full volume. The
- * volume goes back to what it was when ringing stops.
+ * volume goes back to what it was when ringing stops, or at the next start
+ * of the app if it died meanwhile (see [AlarmVolumeGuard]).
  *
  * The phone does not ring while the audio is in any mode but the normal
  * one, as during a call or while a call rings, or when it cannot take the
@@ -35,9 +40,25 @@ internal class AndroidRingPlayer(context: Context) : RingPlayer {
 
     private var media: MediaPlayer? = null
     private var focus: AudioFocusRequest? = null
-    private var volumeBefore: Int? = null
+    private val volume = AlarmVolumeGuard(
+        object : AlarmVolume {
+            override fun level() = audio?.getStreamVolume(AudioManager.STREAM_ALARM) ?: 0
+
+            override fun max() = audio?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 0
+
+            override fun set(level: Int) {
+                setAlarmVolume(level)
+            }
+        },
+        PreferencesSavedVolume(app),
+    )
     // An AudioManager.OnModeChangedListener from Android 12 on; typed so older versions never load the type.
     private var modeListener: Any? = null
+
+    init {
+        // Nothing rings at the start of the process, so a raised volume left behind is a crash's.
+        volume.repair()
+    }
 
     override fun start(onInterrupted: () -> Unit): Boolean {
         val audio = audio ?: return false
@@ -59,8 +80,7 @@ internal class AndroidRingPlayer(context: Context) : RingPlayer {
             audio.addOnModeChangedListener(ContextCompat.getMainExecutor(app), listener)
             modeListener = listener
         }
-        volumeBefore = audio.getStreamVolume(AudioManager.STREAM_ALARM)
-        setAlarmVolume(audio, audio.getStreamMaxVolume(AudioManager.STREAM_ALARM))
+        volume.raise()
         // Without any ringtone that plays, the phone still vibrates and shows the notification.
         media = TONES.firstNotNullOfOrNull(::play)
         return true
@@ -72,9 +92,8 @@ internal class AndroidRingPlayer(context: Context) : RingPlayer {
             release()
         }
         media = null
+        volume.restore()
         val audio = audio ?: return
-        volumeBefore?.let { setAlarmVolume(audio, it) }
-        volumeBefore = null
         focus?.let(audio::abandonAudioFocusRequest)
         focus = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -100,15 +119,27 @@ internal class AndroidRingPlayer(context: Context) : RingPlayer {
     }
 
     // Do Not Disturb may refuse the change; the phone then rings as loud as the user left it.
-    private fun setAlarmVolume(audio: AudioManager, volume: Int) {
+    private fun setAlarmVolume(volume: Int) {
         try {
-            audio.setStreamVolume(AudioManager.STREAM_ALARM, volume, 0)
+            audio?.setStreamVolume(AudioManager.STREAM_ALARM, volume, 0)
         } catch (e: SecurityException) {
             Log.w(TAG, "Could not set the alarm volume: ${e.javaClass.simpleName}")
         }
     }
 
+    /** The level from before ringing, in its own file and written with `commit` since the process may die right after. */
+    private class PreferencesSavedVolume(context: Context) : SavedVolume {
+        private val prefs = context.getSharedPreferences("ring-volume", Context.MODE_PRIVATE)
+
+        override fun load(): Int? = if (prefs.contains(LEVEL)) prefs.getInt(LEVEL, 0) else null
+
+        override fun save(level: Int) = prefs.edit(commit = true) { putInt(LEVEL, level) }
+
+        override fun clear() = prefs.edit(commit = true) { remove(LEVEL) }
+    }
+
     private companion object {
+        const val LEVEL = "before"
         const val TAG = "link2linux"
 
         val ALARM: AudioAttributes = AudioAttributes.Builder()

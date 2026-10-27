@@ -6,6 +6,7 @@ plugins {
 dependencies {
     // The engine and its interfaces; the session wires them (see FilesRuntime).
     api(projects.core.files)
+    implementation(projects.core.common)
     implementation(projects.core.data)
 
     implementation(libs.androidx.activity.compose)

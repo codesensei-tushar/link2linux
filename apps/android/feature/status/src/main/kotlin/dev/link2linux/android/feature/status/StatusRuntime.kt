@@ -1,6 +1,7 @@
 package dev.link2linux.android.feature.status
 
 import android.content.Context
+import android.util.Log
 import androidx.core.content.edit
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.link2linux.android.core.data.loggingUncaught
@@ -30,7 +31,12 @@ class StatusRuntime @Inject internal constructor(@ApplicationContext context: Co
     /** Whether the user has the feature on: on until turned off. */
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
-    val engine = StatusEngine(scope, AndroidStatusSource(app), enabled)
+    val engine = StatusEngine(
+        scope,
+        AndroidStatusSource(app),
+        enabled,
+        onFailure = { Log.w("link2linux", "The phone status source failed: ${it.javaClass.simpleName}") },
+    )
 
     fun setEnabled(on: Boolean) {
         prefs.edit { putBoolean(ENABLED, on) }

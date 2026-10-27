@@ -61,11 +61,20 @@ internal class AndroidStatusSource(context: Context) : StatusSource {
 
     override fun statuses(): Flow<PhoneStatus> = flow {
         val readings = MutableStateFlow(StatusReadings(telephony = telephony != null))
-        val stops = listOf(
-            watchBroadcasts(readings),
-            watchTelephony(readings),
-            watchWifi(readings),
-        )
+        // One at a time, each on its own: a watcher that fails leaves its part unset, and the
+        // ones registered before it are stopped with the rest.
+        val stops = mutableListOf<() -> Unit>()
+        for ((name, watch) in listOf<Pair<String, (MutableStateFlow<StatusReadings>) -> () -> Unit>>(
+            "broadcasts" to ::watchBroadcasts,
+            "telephony" to ::watchTelephony,
+            "wifi" to ::watchWifi,
+        )) {
+            try {
+                stops += watch(readings)
+            } catch (e: Exception) {
+                Log.w(TAG, "No $name status: ${e.javaClass.simpleName}")
+            }
+        }
         try {
             emitAll(readings.map { it.toStatus() })
         } finally {
@@ -99,7 +108,13 @@ internal class AndroidStatusSource(context: Context) : StatusSource {
         }
         // System broadcasts only, which reach a receiver that is not exported. The battery's is
         // sticky: registering returns the latest one.
-        read(ContextCompat.registerReceiver(app, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED))
+        val sticky = ContextCompat.registerReceiver(app, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        try {
+            read(sticky)
+        } catch (e: Exception) {
+            app.unregisterReceiver(receiver)
+            throw e
+        }
         return { app.unregisterReceiver(receiver) }
     }
 

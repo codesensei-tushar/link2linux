@@ -6,6 +6,7 @@ plugins {
 dependencies {
     // FeatureAvailability; the session wires the feature (see CallsRuntime).
     api(projects.core.protocol)
+    implementation(projects.core.common)
     implementation(projects.core.data)
 
     implementation(libs.androidx.activity.compose)

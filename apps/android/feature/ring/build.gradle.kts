@@ -6,6 +6,7 @@ plugins {
 dependencies {
     // The engine; the session wires it (see RingRuntime).
     api(projects.core.ring)
+    implementation(projects.core.common)
     implementation(projects.core.data)
 
     implementation(libs.androidx.core.ktx)
