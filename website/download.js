@@ -12,12 +12,12 @@
       const url = assets.get(link.dataset.asset);
       if (url) link.href = url;
     }
-    const date = new Date(release.published_at).toLocaleDateString(undefined, { dateStyle: "long" });
     const kind = release.prerelease ? "Pre-release" : "Latest release";
     const releaseText = status?.querySelector("[data-release-text]");
     if (releaseText) {
-      releaseText.textContent = `${kind} ${release.tag_name}, published ${date}.`;
+      releaseText.textContent = `${kind} ${release.tag_name}`;
     }
+    if (status) status.href = release.html_url;
     for (const el of document.querySelectorAll("[data-release-tag]")) {
       el.textContent = release.tag_name;
     }
