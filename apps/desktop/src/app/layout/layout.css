@@ -89,10 +89,18 @@
   font-weight: 600;
 }
 
+/* Settings sits at the bottom of the sidebar, right above the connection card,
+   instead of trailing the feature list after a section-sized gap. */
+.sidebar__footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: auto;
+}
+
 /* Connection status */
 
 .connection {
-  margin-top: auto;
   padding: var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
