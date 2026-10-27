@@ -357,15 +357,20 @@ impl Center {
     /// The phones whose hands-free link to connect now, with their device:
     /// those that want it while calls can be used, whose device is known
     /// and whose link is down. Wishes wait while the services were not
-    /// read yet, and are dropped otherwise.
+    /// read yet, and while Bluetooth or the telephony service is away,
+    /// since the phone connected to the app meanwhile asks only once. They
+    /// are dropped while calls are off here.
     pub fn take_connects(&mut self, phones: &[Phone]) -> Vec<(String, BluetoothAddress)> {
         match self.desktop() {
-            CallsDesktop::Checking => return Vec::new(),
             CallsDesktop::Ready => {}
-            _ => {
+            CallsDesktop::Disabled | CallsDesktop::Unsupported => {
                 self.want_connect.clear();
                 return Vec::new();
             }
+            CallsDesktop::Checking
+            | CallsDesktop::NoAdapter
+            | CallsDesktop::BluetoothOff
+            | CallsDesktop::NoCallControl => return Vec::new(),
         }
         let wanted = std::mem::take(&mut self.want_connect);
         phones

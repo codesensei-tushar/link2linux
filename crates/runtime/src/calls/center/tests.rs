@@ -565,6 +565,43 @@ fn call_notifications_count_only_while_the_phone_has_a_session() {
 }
 
 #[test]
+fn a_link_to_connect_waits_for_bluetooth_but_not_for_calls_turned_on() {
+    let phones = phones();
+    let pixel = || vec![device(PIXEL, "Pixel 8")];
+    let mut center = ready(pixel(), vec![]);
+    let bluetooth_off = Seen {
+        adapter: Some(adapter(false)),
+        ..seen(pixel(), vec![])
+    };
+    feed(&mut center, bluetooth_off.clone(), 0);
+    center.want_connect("p1");
+    assert!(center.take_connects(&phones).is_empty());
+    feed(
+        &mut center,
+        Seen {
+            gateways: None,
+            ..seen(pixel(), vec![])
+        },
+        0,
+    );
+    assert!(center.take_connects(&phones).is_empty());
+    feed(&mut center, seen(pixel(), vec![]), 0);
+    assert_eq!(
+        center.take_connects(&phones),
+        [("p1".to_owned(), address(PIXEL))]
+    );
+    assert!(center.take_connects(&phones).is_empty());
+
+    // Turning calls on asks again; a wish from while they were off does
+    // not linger.
+    center.want_connect("p1");
+    center.set_enabled(false);
+    assert!(center.take_connects(&phones).is_empty());
+    center.set_enabled(true);
+    assert!(center.take_connects(&phones).is_empty());
+}
+
+#[test]
 fn forgetting_a_phone_drops_its_window_and_choice() {
     let mut center = ready(vec![device(PIXEL, "Pixel 8")], vec![]);
     center.settle_choices(&phones());
