@@ -20,6 +20,8 @@ export class FakeVideoDecoder {
   /** What isConfigSupported answers, by codec string; missing ones are supported. */
   static support = new Map<string, boolean>();
   static instances: FakeVideoDecoder[] = [];
+  /** When set, `configure` throws it and leaves the decoder unconfigured. */
+  static configureError: Error | null = null;
 
   static isConfigSupported(config: { codec: string }) {
     return Promise.resolve({ supported: FakeVideoDecoder.support.get(config.codec) ?? true });
@@ -35,6 +37,8 @@ export class FakeVideoDecoder {
   }
 
   configure(config: { codec: string; description?: Uint8Array }) {
+    const error = FakeVideoDecoder.configureError;
+    if (error) throw error;
     this.config = config;
     this.state = "configured";
   }
@@ -63,6 +67,7 @@ export class FakeVideoDecoder {
   static reset() {
     FakeVideoDecoder.support = new Map();
     FakeVideoDecoder.instances = [];
+    FakeVideoDecoder.configureError = null;
   }
 }
 

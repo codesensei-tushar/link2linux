@@ -232,6 +232,35 @@ describe("ScreenPage", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Tap a text field");
   });
 
+  it("sizes the canvas to the frames before any arrive", async () => {
+    await showing();
+    const canvas = screen.getByLabelText("Pixel's screen");
+    expect((canvas as HTMLCanvasElement).width).toBe(360);
+    expect((canvas as HTMLCanvasElement).height).toBe(780);
+  });
+
+  it("closes a frame when drawing it fails", async () => {
+    const close = vi.fn();
+    const { api, env } = await showing();
+    const bitmap = { close, width: 360, height: 780 } as ImageBitmap;
+    vi.spyOn(env, "createImageBitmap").mockResolvedValue(bitmap);
+    drawImage.mockImplementation(() => {
+      throw new Error("draw failed");
+    });
+    api.emitScreenPacket(
+      encodePacket({
+        keyFrame: true,
+        formatId: 1,
+        timestampUs: 0,
+        format: { codec: "jpeg", width: 360, height: 780, config: new Uint8Array(0) },
+        data: new Uint8Array([0xff, 0xd8]),
+      }),
+    );
+    await waitFor(() => {
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("stops the stream when the page closes", async () => {
     const { api, unmount } = await showing();
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
@@ -240,7 +269,43 @@ describe("ScreenPage", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Show Pixel's screen" }));
     unmount();
-    expect(api.stopScreen).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(api.stopScreen).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("stops a start that has not finished when the page closes", async () => {
+    let release: (() => void) | undefined;
+    const { api, unmount } = renderPage();
+    api.startScreen.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Show Pixel's screen" }));
+    expect(api.startScreen).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(api.stopScreen).not.toHaveBeenCalled();
+    release?.();
+    await waitFor(() => {
+      expect(api.stopScreen).toHaveBeenCalledWith("phone-1");
+    });
+  });
+
+  it("does not send a wheel swipe after the page closes", async () => {
+    const { api, unmount } = await showing();
+    vi.useFakeTimers();
+    fireEvent.wheel(screen.getByLabelText("Pixel's screen"), {
+      deltaY: 30,
+      clientX: 90,
+      clientY: 195,
+    });
+    unmount();
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(api.sendScreenInput).not.toHaveBeenCalled();
   });
 
   it("says why the stream ended or cannot start", async () => {

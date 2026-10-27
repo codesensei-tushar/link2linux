@@ -168,7 +168,12 @@ export class ScreenDecoder {
           frame.close();
           return;
         }
-        this.options.draw(frame, width, height);
+        try {
+          // The drawer closes the frame, including when drawing throws.
+          this.options.draw(frame, width, height);
+        } catch {
+          // A frame that cannot be drawn must not fail the decoder.
+        }
       },
       error: () => {
         // A decoder that failed is closed: the next key frame starts a new one.
@@ -185,6 +190,13 @@ export class ScreenDecoder {
         optimizeForLatency: true,
       });
     } catch {
+      // configure() failing leaves the decoder unusable. Drop it, or the
+      // callback cycle keeps it, and wait for a key frame.
+      try {
+        video.close();
+      } catch {
+        // Closed already.
+      }
       this.dropToKeyFrame();
       return null;
     }
@@ -205,18 +217,31 @@ export class ScreenDecoder {
   }
 
   private decodeJpeg(data: Uint8Array<ArrayBuffer>, width: number, height: number): void {
-    // Every JPEG frame stands alone, so one that comes while two decode is skipped.
-    if (this.jpegDecoding >= MAX_JPEG_DECODING) return;
+    // Every JPEG frame stands alone, so one that comes while two decode is
+    // skipped. The phone is still asked for a key frame, as when any frame
+    // is dropped.
+    if (this.jpegDecoding >= MAX_JPEG_DECODING) {
+      this.askKeyFrame();
+      return;
+    }
     this.jpegDecoding += 1;
     const formatId = this.format?.id;
     this.env.createImageBitmap(new Blob([data], { type: "image/jpeg" })).then(
       (bitmap) => {
         this.jpegDecoding -= 1;
-        if (this.closed || this.format?.id !== formatId) bitmap.close();
-        else this.options.draw(bitmap, width, height);
+        if (this.closed || this.format?.id !== formatId) {
+          bitmap.close();
+          return;
+        }
+        try {
+          this.options.draw(bitmap, width, height);
+        } catch {
+          // The drawer closes the bitmap, including when drawing throws.
+        }
       },
       () => {
         this.jpegDecoding -= 1;
+        this.askKeyFrame();
       },
     );
   }

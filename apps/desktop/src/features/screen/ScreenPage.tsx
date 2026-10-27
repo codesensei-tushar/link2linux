@@ -2,6 +2,7 @@ import { ArrowLeft, Bell, Circle, MonitorUp, Smartphone, Square, X } from "lucid
 import {
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -52,12 +53,15 @@ function drawOn(
   width: number,
   height: number,
 ): void {
-  if (canvas) {
-    if (canvas.width !== width) canvas.width = width;
-    if (canvas.height !== height) canvas.height = height;
-    canvas.getContext("2d")?.drawImage(picture, 0, 0, width, height);
+  try {
+    if (canvas) {
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+      canvas.getContext("2d")?.drawImage(picture, 0, 0, width, height);
+    }
+  } finally {
+    picture.close();
   }
-  picture.close();
 }
 
 function message(reason: unknown): string {
@@ -81,6 +85,31 @@ function PhoneScreen({ phone }: { phone: Device }) {
   const inputsRef = useRef<Promise<void>>(Promise.resolve());
   const typedRef = useRef<{ text: string; timer: number } | null>(null);
   const wheelRef = useRef<{ delta: FramePoint; at: FramePoint; timer: number } | null>(null);
+  // Starts and stops run one at a time, and a newer one drops an older one
+  // that has not been sent yet. A stop then cannot land before the start
+  // the user just asked for, or after they asked to start again.
+  const generation = useRef(0);
+  const tail = useRef(Promise.resolve());
+  const mounted = useRef(true);
+  const frameWidth = status?.format?.width;
+  const frameHeight = status?.format?.height;
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    // The canvas's own pixels are the frames', so its box keeps their shape
+    // before the first one is drawn. Clicks are mapped from that box.
+    if (!canvas || frameWidth === undefined || frameHeight === undefined) return;
+    if (canvas.width !== frameWidth) canvas.width = frameWidth;
+    if (canvas.height !== frameHeight) canvas.height = frameHeight;
+  }, [frameWidth, frameHeight]);
+
+  const enqueue = (gen: number, work: () => Promise<void>) => {
+    const run = () => (generation.current === gen ? work() : Promise.resolve());
+    tail.current = tail.current.then(run, run).then(
+      () => undefined,
+      () => undefined,
+    );
+  };
 
   const start = (codecs: ScreenCodec[]) => {
     decoderRef.current?.close();
@@ -108,26 +137,43 @@ function PhoneScreen({ phone }: { phone: Device }) {
     startedRef.current = true;
     setError(null);
     const maxSize = codecs.includes("h264") ? H264_MAX_SIZE : JPEG_MAX_SIZE;
-    api
-      .startScreen(phone.id, codecs, maxSize, (packet) => {
-        decoder.push(packet);
-      })
-      .catch((reason: unknown) => {
-        setError(message(reason));
-      });
+    const gen = ++generation.current;
+    enqueue(gen, () =>
+      api
+        .startScreen(phone.id, codecs, maxSize, (packet) => {
+          decoder.push(packet);
+        })
+        .then(
+          () => undefined,
+          (reason: unknown) => {
+            if (mounted.current && generation.current === gen) setError(message(reason));
+          },
+        ),
+    );
   };
 
   const stop = () => {
     window.clearTimeout(typedRef.current?.timer);
     typedRef.current = null;
+    const wheel = wheelRef.current;
+    wheelRef.current = null;
+    if (wheel) window.clearTimeout(wheel.timer);
+    gestureRef.current = null;
     if (!startedRef.current) return;
     startedRef.current = false;
     decoderRef.current?.close();
     decoderRef.current = null;
-    void api.stopScreen(phone.id).catch(() => undefined);
+    const gen = ++generation.current;
+    enqueue(gen, () =>
+      api.stopScreen(phone.id).then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
   };
 
   const queue = (input: ScreenInput) => {
+    if (!startedRef.current) return;
     // One after another, so the phone carries them out in the order the user made them.
     inputsRef.current = inputsRef.current
       .then(() => api.sendScreenInput(phone.id, input))
@@ -168,6 +214,7 @@ function PhoneScreen({ phone }: { phone: Device }) {
     };
     window.addEventListener("pagehide", hide);
     return () => {
+      mounted.current = false;
       window.removeEventListener("pagehide", hide);
       hide();
     };
