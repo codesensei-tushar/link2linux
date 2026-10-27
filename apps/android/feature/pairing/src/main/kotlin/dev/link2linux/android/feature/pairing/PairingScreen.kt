@@ -96,7 +96,7 @@ internal data class PairingActions(
 @Preview
 @Composable
 private fun HomePreview() {
-    L2lTheme(dynamicColor = false) {
+    L2lTheme {
         PairingScreen(
             uiState = PairingUiState(emptyList(), PairingScreenState.Home, null, connectionEnabled = true, connected = emptyList()),
             features = Feature.switchable,

@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,17 +59,17 @@ val Feature.iconRes: Int
         Feature.RING -> R.drawable.ic_ring
     }
 
-/** One row in a list of features: icon, name, one-line summary. */
+/** One row in a card listing features: icon tile, name, one-line summary. */
 @Composable
 fun FeatureListItem(
     feature: Feature,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    ListItem(
+    L2lListItem(
         headlineContent = { Text(stringResource(feature.titleRes)) },
         supportingContent = { Text(stringResource(feature.summaryRes)) },
-        leadingContent = { Icon(painterResource(feature.iconRes), contentDescription = null) },
+        leadingContent = { IconTile(painterResource(feature.iconRes)) },
         trailingContent = { Icon(painterResource(R.drawable.ic_chevron_right), contentDescription = null) },
         modifier = modifier.clickable(onClick = onClick),
     )
