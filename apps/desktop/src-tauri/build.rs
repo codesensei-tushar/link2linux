@@ -49,6 +49,11 @@ fn main() {
         "stop_screen",
         "send_screen_input",
         "request_screen_key_frame",
+        "list_photos",
+        "photo_thumbnail",
+        "save_photo",
+        "open_saved_photo",
+        "show_saved_photo",
     ]);
 
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))

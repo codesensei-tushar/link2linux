@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-saved-photo"
+description = "Enables the show_saved_photo command without any pre-configured scope."
+commands.allow = ["show_saved_photo"]
+
+[[permission]]
+identifier = "deny-show-saved-photo"
+description = "Denies the show_saved_photo command without any pre-configured scope."
+commands.deny = ["show_saved_photo"]

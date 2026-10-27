@@ -11,7 +11,7 @@ use tauri_specta::Event;
 
 use crate::backend::{
     CallsStatus, ClipboardStatus, Device, EventSink, FileTransferEvent, NotificationEvent,
-    PairingState, PhoneStatus, RingStatus, ScreenStatus,
+    PairingState, PhonePhotos, PhoneStatus, RingStatus, ScreenStatus,
 };
 
 /// The pairing step changed.
@@ -69,6 +69,14 @@ pub struct RingChanged {
 pub struct ScreenChanged {
     pub device_id: String,
     pub screen: ScreenStatus,
+}
+
+/// What the UI shows of a phone's photos changed.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct PhotosChanged {
+    pub device_id: String,
+    pub photos: PhonePhotos,
 }
 
 /// Files are dragged over the window (`over`), or not anymore.
@@ -151,6 +159,14 @@ impl EventSink for TauriSink {
         let _ = ScreenChanged {
             device_id: device_id.to_owned(),
             screen: screen.clone(),
+        }
+        .emit(&self.app);
+    }
+
+    fn photos_changed(&self, device_id: &str, photos: &PhonePhotos) {
+        let _ = PhotosChanged {
+            device_id: device_id.to_owned(),
+            photos: photos.clone(),
         }
         .emit(&self.app);
     }

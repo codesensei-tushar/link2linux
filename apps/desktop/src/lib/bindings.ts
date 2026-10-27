@@ -173,6 +173,28 @@ export const commands = {
 	 *  frame or fell behind. It drops frames until the key frame comes.
 	 */
 	requestScreenKeyFrame: (deviceId: string) => typedError<null, CommandError>(__TAURI_INVOKE("request_screen_key_frame", { deviceId })),
+	/**
+	 *  A phone's recent photos, newest first, and whether they can be shown.
+	 *  Later changes arrive as `PhotosChanged` events: subscribe first, then
+	 *  call this.
+	 */
+	listPhotos: (deviceId: string) => typedError<PhonePhotos, CommandError>(__TAURI_INVOKE("list_photos", { deviceId })),
+	/**
+	 *  A thumbnail of a phone's photo, at most `max_size` pixels (64 to 2048)
+	 *  on its longest side: the bytes of a JPEG, PNG or WebP image. The desktop
+	 *  keeps the thumbnails it fetched in memory, so asking again for the same
+	 *  size is quick.
+	 */
+	photoThumbnail: (deviceId: string, photoId: string, maxSize: number) => typedError<ArrayBuffer, CommandError>(__TAURI_INVOKE("photo_thumbnail", { deviceId, photoId, maxSize })),
+	/**
+	 *  Fetches a phone's photo and saves it in the user's Pictures folder,
+	 *  under a free name. Resolves with the name it got.
+	 */
+	savePhoto: (deviceId: string, photoId: string) => typedError<SavedPhoto, CommandError>(__TAURI_INVOKE("save_photo", { deviceId, photoId })),
+	/**  Opens a photo the user saved with the desktop's default application. */
+	openSavedPhoto: (deviceId: string, photoId: string) => typedError<null, CommandError>(__TAURI_INVOKE("open_saved_photo", { deviceId, photoId })),
+	/**  Shows a photo the user saved in its folder. */
+	showSavedPhoto: (deviceId: string, photoId: string) => typedError<null, CommandError>(__TAURI_INVOKE("show_saved_photo", { deviceId, photoId })),
 };
 
 /** Events */
@@ -185,6 +207,7 @@ export const events = {
 	notificationChanged: makeEvent<NotificationChanged, NotificationChanged>("notification-changed"),
 	pairingChanged: makeEvent<PairingChanged, PairingChanged>("pairing-changed"),
 	phoneStatusChanged: makeEvent<PhoneStatusChanged, PhoneStatusChanged>("phone-status-changed"),
+	photosChanged: makeEvent<PhotosChanged, PhotosChanged>("photos-changed"),
 	ringChanged: makeEvent<RingChanged, RingChanged>("ring-changed"),
 	screenChanged: makeEvent<ScreenChanged, ScreenChanged>("screen-changed"),
 	transferChanged: makeEvent<TransferChanged, TransferChanged>("transfer-changed"),
@@ -460,7 +483,7 @@ export type CommandError = {
 	message: string,
 };
 
-export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted" | "folderNotSendable" | "fileUnreadable" | "tooManyFiles" | "filesOff" | "callsUnavailable" | "callsNotConnected" | "notDialable" | "callsOffOnPhone";
+export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted" | "folderNotSendable" | "fileUnreadable" | "tooManyFiles" | "filesOff" | "callsUnavailable" | "callsNotConnected" | "notDialable" | "callsOffOnPhone" | "phoneNotConnected" | "photosNotShared" | "photoGone" | "photoTooLarge" | "photoNotFetched" | "photoNotSaved";
 
 export type ConversationMessageInfo = {
 	/**  Empty for messages the phone's user sent. */
@@ -785,6 +808,16 @@ export type PhoneCellular = {
 	operatorName: string | null,
 };
 
+/**  What the desktop shows of a phone's photos. */
+export type PhonePhotos = {
+	state: PhotosStatus,
+	/**
+	 *  The phone's recent photos, newest first, while the state is
+	 *  `listed`.
+	 */
+	photos: Photo[],
+};
+
 /**  What the desktop shows of a phone's status. */
 export type PhoneStatus = 
 /**
@@ -833,6 +866,47 @@ export type PhoneWifi = {
 	/**  Signal bars, 0 to 4. */
 	level: number | null,
 };
+
+/**  One photo on the phone. */
+export type Photo = {
+	/**  The phone's name for it, which the commands take. */
+	id: string,
+	/**  Its file name, safe to show. */
+	name: string,
+	/**  Such as `image/jpeg`; empty when unknown. */
+	mimeType: string,
+	/**  Bytes. */
+	size: number,
+	takenUnixMs: number,
+	/**  Changes with each new version of the photo. */
+	modifiedUnixMs: number,
+	/**  Pixels as the photo is shown; 0 when unknown. */
+	width: number,
+	height: number,
+};
+
+/**  What the UI shows of a phone's photos changed. */
+export type PhotosChanged = {
+	deviceId: string,
+	photos: PhonePhotos,
+};
+
+/**  Whether the phone's photos can be shown, and why not. */
+export type PhotosStatus = 
+/**  The phone's list is here. */
+"listed" | 
+/**  Connected, and the list is on its way. */
+"waiting" | 
+/**  The user has photos turned off on the phone. */
+"turnedOff" | 
+/**  The user has to let the app on the phone read the photos. */
+"permissionRequired" | 
+/**  The phone does not share its photos right now. */
+"unavailable" | 
+/**  The phone's app is too old to share photos. */
+"unsupported" | 
+/**  The phone is not connected. */
+"disconnected";
 
 /**  What the UI shows of ringing a phone changed. */
 export type RingChanged = {
@@ -886,6 +960,15 @@ export type RingStatus = {
 
 /**  Whether calls and notifications make sound on the phone. */
 export type RingerMode = "normal" | "vibrate" | "silent";
+
+/**  A photo the user saved. */
+export type SavedPhoto = {
+	/**
+	 *  The name it was saved under, which may differ from the phone's when
+	 *  that was taken.
+	 */
+	name: string,
+};
 
 /**
  *  What the UI shows of a phone's screen changed. The frames themselves go

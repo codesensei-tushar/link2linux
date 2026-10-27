@@ -12,6 +12,7 @@ pub mod calls;
 pub mod files;
 pub mod machine;
 pub mod phone;
+pub mod photos;
 pub mod screen;
 pub mod script;
 pub mod support;
@@ -28,13 +29,14 @@ use link2linux_runtime::view::{
 
 use super::{
     Backend, BackendError, CallsStatus, Device, EventSink, FileTransfer, PairingMethod,
-    PairingState, PhoneStatus, PhoneTarget, RingStatus, ScreenCodec, ScreenInput, ScreenStatus,
-    ScreenViewer, Settings,
+    PairingState, Pending, PhonePhotos, PhoneStatus, PhoneTarget, RingStatus, SavedPhoto,
+    ScreenCodec, ScreenInput, ScreenStatus, ScreenViewer, Settings,
 };
 
 use calls::{Delays, FakeCalls};
 use files::FakeFiles;
 use phone::FakePhone;
+use photos::FakePhotos;
 use screen::{FakeScreen, ScreenDelays};
 
 pub use machine::Machine;
@@ -130,6 +132,7 @@ pub struct FakeBackend {
     clipboard: Mutex<FakeClipboard>,
     phone: FakePhone,
     screen: FakeScreen,
+    photos: FakePhotos,
     /// The settings, kept in memory only.
     settings: Mutex<Settings>,
 }
@@ -206,6 +209,7 @@ impl FakeBackend {
         let files = FakeFiles::new(script, sink.clone(), clock.now().unix_ms);
         let phone = FakePhone::new(sink.clone(), phone::RING_FOR);
         let screen = FakeScreen::new(sink.clone(), ScreenDelays::real());
+        let photos = FakePhotos::new(clock.now().unix_ms);
         let calls = FakeCalls::new(script, sink.clone(), desktop_name(), Delays::real());
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
@@ -231,6 +235,7 @@ impl FakeBackend {
             clipboard: Mutex::default(),
             phone,
             screen,
+            photos,
             settings: Mutex::default(),
         }
     }
@@ -372,6 +377,35 @@ impl Backend for FakeBackend {
 
     fn send_screen_input(&self, device_id: &str, input: ScreenInput) -> Result<(), BackendError> {
         self.screen.input(self.device(device_id).as_ref(), &input)
+    }
+
+    fn photos(&self, device_id: &str) -> Result<PhonePhotos, BackendError> {
+        self.photos.list(self.device(device_id).as_ref())
+    }
+
+    fn photo_thumbnail(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+        _max_size: u32,
+    ) -> Pending<Arc<[u8]>> {
+        let thumbnail = self
+            .photos
+            .thumbnail(self.device(device_id).as_ref(), photo_id);
+        Box::pin(std::future::ready(thumbnail))
+    }
+
+    fn save_photo(&self, device_id: &str, photo_id: &str) -> Pending<SavedPhoto> {
+        let saved = self.photos.save(self.device(device_id).as_ref(), photo_id);
+        Box::pin(std::future::ready(saved))
+    }
+
+    fn open_saved_photo(&self, device_id: &str, photo_id: &str) -> Result<(), BackendError> {
+        self.photos.saved(device_id, photo_id)
+    }
+
+    fn show_saved_photo(&self, device_id: &str, photo_id: &str) -> Result<(), BackendError> {
+        self.photos.saved(device_id, photo_id)
     }
 
     fn send_files(&self, device_id: &str, paths: Vec<PathBuf>) -> Result<(), BackendError> {
@@ -572,5 +606,31 @@ mod tests {
         alone.send_clipboard().unwrap();
         let problem = alone.clipboard().problem.unwrap();
         assert_eq!(problem.kind, ClipboardProblemKind::NoPhone);
+    }
+
+    #[test]
+    fn the_connected_demo_phone_shows_photos_that_can_be_saved() {
+        use link2linux_runtime::view::PhotosStatus;
+        let backend = FakeBackend::new(Script::Demo, Arc::new(Recorder::default()));
+        let listed = backend.photos("demo-1").unwrap();
+        assert_eq!(listed.state, PhotosStatus::Listed);
+        assert_eq!(
+            backend.photos("demo-2").unwrap().state,
+            PhotosStatus::Disconnected
+        );
+        assert_eq!(backend.photos("nobody"), Err(BackendError::NotFound));
+
+        let id = &listed.photos[0].id;
+        let thumbnail =
+            tauri::async_runtime::block_on(backend.photo_thumbnail("demo-1", id, 256)).unwrap();
+        assert!(thumbnail.starts_with(b"\x89PNG"));
+        assert_eq!(
+            backend.open_saved_photo("demo-1", id),
+            Err(BackendError::NotFound)
+        );
+        let saved = tauri::async_runtime::block_on(backend.save_photo("demo-1", id)).unwrap();
+        assert_eq!(saved.name, listed.photos[0].name);
+        assert_eq!(backend.open_saved_photo("demo-1", id), Ok(()));
+        assert_eq!(backend.show_saved_photo("demo-1", id), Ok(()));
     }
 }

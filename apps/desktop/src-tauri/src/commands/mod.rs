@@ -18,6 +18,7 @@ pub mod files;
 pub mod notifications;
 pub mod pairing;
 pub mod phone;
+pub mod photos;
 pub mod screen;
 pub mod settings;
 
@@ -51,6 +52,12 @@ pub enum CommandErrorCode {
     CallsNotConnected,
     NotDialable,
     CallsOffOnPhone,
+    PhoneNotConnected,
+    PhotosNotShared,
+    PhotoGone,
+    PhotoTooLarge,
+    PhotoNotFetched,
+    PhotoNotSaved,
 }
 
 impl From<BackendError> for CommandError {
@@ -69,6 +76,12 @@ impl From<BackendError> for CommandError {
             BackendError::CallsNotConnected => CommandErrorCode::CallsNotConnected,
             BackendError::NotDialable => CommandErrorCode::NotDialable,
             BackendError::CallsOffOnPhone => CommandErrorCode::CallsOffOnPhone,
+            BackendError::PhoneNotConnected => CommandErrorCode::PhoneNotConnected,
+            BackendError::PhotosNotShared => CommandErrorCode::PhotosNotShared,
+            BackendError::PhotoGone => CommandErrorCode::PhotoGone,
+            BackendError::PhotoTooLarge => CommandErrorCode::PhotoTooLarge,
+            BackendError::PhotoNotFetched => CommandErrorCode::PhotoNotFetched,
+            BackendError::PhotoNotSaved => CommandErrorCode::PhotoNotSaved,
         };
         Self {
             code,

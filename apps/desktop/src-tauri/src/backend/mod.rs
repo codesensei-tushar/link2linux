@@ -20,12 +20,19 @@ pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, CallsDesktop, CallsStatus, ClipboardMode, ClipboardStatus, Device, DeviceStatus,
     DiscoveredPhone, EventSink, FileTransfer, FileTransferEvent, MirroredNotification,
-    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneStatus, PhoneTarget,
-    QrImage, RingStatus, StartupError,
+    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhonePhotos, PhoneStatus,
+    PhoneTarget, Photo, PhotosStatus, QrImage, RingStatus, SavedPhoto, StartupError,
 };
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+
+/// The answer to a request that takes a while, such as a photo the phone
+/// has to send. It holds no borrow of the backend, so a command awaits it
+/// after letting go of the app state.
+pub type Pending<T> = Pin<Box<dyn Future<Output = Result<T, BackendError>> + Send>>;
 
 /// What the desktop shell needs from the pairing and device layer.
 pub trait Backend: Send + Sync {
@@ -225,6 +232,33 @@ pub trait Backend: Send + Sync {
     /// frame or fell behind.
     fn request_screen_key_frame(&self, _device_id: &str) -> Result<(), BackendError> {
         Ok(())
+    }
+    /// A phone's recent photos, and whether they can be shown.
+    fn photos(&self, _device_id: &str) -> Result<PhonePhotos, BackendError> {
+        Ok(PhonePhotos::default())
+    }
+    /// A thumbnail of a phone's photo, at most `max_size` pixels on its
+    /// longest side: the encoded image, JPEG, PNG or WebP.
+    fn photo_thumbnail(
+        &self,
+        _device_id: &str,
+        _photo_id: &str,
+        _max_size: u32,
+    ) -> Pending<Arc<[u8]>> {
+        Box::pin(std::future::ready(Err(BackendError::NotStarted)))
+    }
+    /// Fetches a phone's photo and saves it in the user's Pictures folder,
+    /// under a free name.
+    fn save_photo(&self, _device_id: &str, _photo_id: &str) -> Pending<SavedPhoto> {
+        Box::pin(std::future::ready(Err(BackendError::NotStarted)))
+    }
+    /// Opens a photo the user saved with the desktop's default application.
+    fn open_saved_photo(&self, _device_id: &str, _photo_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Shows a photo the user saved in its folder.
+    fn show_saved_photo(&self, _device_id: &str, _photo_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
     }
 
     /// The desktop app's settings.
