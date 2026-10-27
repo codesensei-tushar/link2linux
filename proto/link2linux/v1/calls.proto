@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The calls feature, capability token "calls": the user takes and makes the
+// phone's calls on the desktop, with the desktop's microphone and speakers.
+//
+// Call audio and call control travel over Bluetooth, with the phone as the
+// audio gateway of the Hands-Free Profile and the desktop as the hands-free
+// unit. The phone's OS and the desktop's Bluetooth and audio stacks run
+// that link, not these messages. The session only helps the user pair the
+// two devices over Bluetooth. docs/protocol.md, "Calls", has the rest.
+
+// Desktop to phone: the desktop accepts Bluetooth pairing for the next 2
+// minutes, under this name and address. The phone helps the user pair with
+// it. Answered by an Ack once the phone has asked the user, or by an
+// ErrorReply such as ERROR_CODE_INVALID_ARGUMENT or ERROR_CODE_UNAVAILABLE.
+message BluetoothPairingRequest {
+  // The desktop adapter's Bluetooth name, 1 to 248 bytes, as nearby
+  // devices see it.
+  string name = 1;
+  // The desktop adapter's public Bluetooth address, six two-digit
+  // hexadecimal numbers separated by colons, such as "00:1A:7D:DA:71:13".
+  string address = 2;
+}

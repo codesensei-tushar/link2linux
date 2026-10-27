@@ -23,8 +23,11 @@ no relay: the two devices talk to each other directly or not at all.
 - [Message patterns](#message-patterns)
 - [Errors](#errors)
 - [Notifications](#notifications)
+- [Calls](#calls)
 - [Files](#files)
 - [Clipboard](#clipboard)
+- [Phone status](#phone-status)
+- [Ring](#ring)
 - [Security considerations](#security-considerations)
 - [Versioning](#versioning)
 - [Message index](#message-index)
@@ -957,7 +960,7 @@ and all of Goodbye.
 sender's build implements:
 
 - a feature name: `notifications`, `messages`, `calls`, `photos`, `files`,
-  `clipboard` or `screen`;
+  `clipboard`, `screen`, `status` or `ring`;
 - an optional part of a feature, written `feature.option`. Version 1
   defines none; later versions add options this way instead of changing
   the meaning of existing messages.
@@ -1389,6 +1392,75 @@ bytes, and treats a longer `key` or `group` as a protocol error. It also
 keeps at most 1000 notifications per phone, and ignores new ones past
 that.
 
+## Calls
+
+Capability token `calls`. The user takes and makes the phone's calls on
+the desktop, with the desktop's microphone and speakers.
+
+Android lets only the phone's dialer app handle calls and their audio, so
+calls do not travel over the session. They use Bluetooth instead: the phone
+is the audio gateway of the Hands-Free Profile (HFP), as it is for a car
+kit or a headset, and the desktop is the hands-free unit. The phone's OS
+and the desktop's Bluetooth and audio stacks carry the audio, the caller's
+number, and the answer, hang-up and dial commands. The session's part is
+to help the user pair the two devices over Bluetooth.
+
+The feature needs no permission. The phone keeps it on until the user turns
+it off, because it shares nothing by itself: the user still pairs over
+Bluetooth and confirms the pairing on both devices. The phone reports it
+`UNAVAILABLE` when it has no telephony or no Bluetooth, and `DISABLED`
+while its user has it turned off. The desktop reports it `UNAVAILABLE` when
+it has no Bluetooth adapter or its audio system offers no hands-free call
+control, and `DISABLED` while its user has turned off calls on the desktop.
+
+### Pairing over Bluetooth
+
+- The desktop looks for the phone among the Bluetooth devices it is paired
+  with. When more than one could be the phone, the user picks it once, and
+  the desktop keeps the choice for that phone.
+- When the phone is not among them, the user starts pairing on the
+  desktop. The desktop accepts Bluetooth pairing for 2 minutes, makes its
+  adapter discoverable for that time, and sends `BluetoothPairingRequest`
+  with its adapter's name and address.
+- The phone answers `INVALID_ARGUMENT` to a name or address outside the
+  forms the schema gives, and `UNAVAILABLE` when it has no Bluetooth.
+  Otherwise it asks the user to pair, for example with a notification that
+  opens the system's Bluetooth pairing screen, or that starts pairing with
+  `address` itself where the user allowed the phone app to, and answers
+  `Ack`. It withdraws the prompt after 2 minutes.
+- Both devices show a 6-digit code while they pair, and the user confirms
+  on each that the codes match (Bluetooth numeric comparison). The desktop
+  accepts a pairing only inside the window the user opened and only after
+  the user confirmed the code on the desktop. The session does not carry
+  the code: the phone app cannot read it.
+- Once paired, the desktop marks the phone as trusted in its Bluetooth
+  stack and connects the hands-free profile. It does not connect the
+  phone's media audio on its own, so the phone's music and videos keep
+  playing on the phone.
+
+### Calls on the desktop
+
+- While the hands-free link is up, the desktop shows incoming calls with
+  the caller's number, and the caller's name when the phone sends one over
+  Bluetooth. It offers answer, decline, hang up, a dial pad for numbers and
+  tones, and mute. Answering on the desktop brings the call's audio to the
+  desktop.
+- The phone's incoming-call notification still arrives through
+  [Notifications](#notifications), with the caller's name and its answer
+  and decline actions. A desktop that sees one call from both sides shows
+  it once. It answers and declines over Bluetooth while the hands-free link
+  is up, so that the audio comes to the desktop, and through the
+  notification's actions otherwise, which leaves the audio on the phone.
+- When the user turns calls off on the desktop, the desktop disconnects
+  the hands-free profile, so the phone keeps its calls to itself.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| `BluetoothPairingRequest.name` | 1 to 248 bytes |
+| Pairing window | 2 minutes |
+
 ## Files
 
 Capability token `files`. The user sends files from one device to the
@@ -1518,7 +1590,7 @@ Version 1 shares plain text only.
 
 The feature needs no permission. Each side reports it `DISABLED` while its
 user has it turned off there. The phone keeps it off until the user turns
-it on, like its other features.
+it on.
 
 ### Sharing a copy
 
@@ -1592,11 +1664,100 @@ The sender keeps pushes few and in order:
 | `text` | 1 byte to 256 KiB |
 | Pushes waiting for an answer | 1 per peer |
 
+## Phone status
+
+Capability token `status`. The desktop shows the phone's battery, signal
+and sound mode.
+
+The feature needs no permission. The phone keeps it on until the user turns
+it off, because it shares only what the phone's status bar shows, and
+reports it `DISABLED` while its user has it turned off. The desktop reports
+it `DISABLED` while its user has hidden the phone's status.
+
+### Following the status
+
+- Whenever `status` becomes active and `READY` on both sides, the desktop
+  sends `PhoneStatusRequest`. The phone answers `PhoneStatusReply` with its
+  current status.
+- That request subscribes the desktop to changes. Until the session ends or
+  the feature leaves `READY` on either side, the phone sends
+  `PhoneStatusChanged` when something in its status changes. When the
+  feature becomes `READY` again, the desktop asks again.
+- Each status is complete and replaces the previous one, so a lost update
+  is repaired by the next one.
+- The phone sends at most one `PhoneStatusChanged` every 5 seconds to each
+  desktop. A change made in the meantime replaces the update still
+  waiting, and the newest status goes out when the 5 seconds have passed.
+  It sends nothing when no field changed.
+- When the session ends or the feature leaves `READY`, the desktop stops
+  showing the status as current.
+
+### Content
+
+- `battery.percent` is 0 to 100. `plugged_in` is set while the phone is
+  connected to power, also when the battery is full.
+- `cellular.level` and `wifi.level` are 0 to 4, the bars the phone's status
+  bar shows. `cellular.network` is the generation the status bar shows,
+  such as 5G for a 5G connection anchored on 4G.
+- `operator_name` is at most 64 bytes. The phone shortens a longer name at
+  a character boundary.
+- The status carries nothing that gives away where the phone is: no Wi-Fi
+  network name and no cell identity.
+- The desktop shows a value out of range (a percent over 100, a level over
+  4) or a name over 64 bytes as unknown.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| `operator_name` | 64 bytes |
+| `PhoneStatusChanged` | 1 every 5 seconds per desktop |
+
+## Ring
+
+Capability token `ring`. The user makes the phone ring from the desktop to
+find it, even when the phone is set to silent.
+
+The feature needs no permission. The phone keeps it on until the user turns
+it off, because a phone gets mislaid without warning and a feature that had
+to be turned on first would seldom be on when it is needed. The phone
+reports it `DISABLED` while its user has it turned off. The desktop only
+sends requests, and reports the feature `READY`.
+
+### Ringing
+
+- On `RingRequest`, the phone starts ringing and answers `Ack`. It plays a
+  ringtone at full volume, also when its ringer is set to vibrate or
+  silent, vibrates, and shows a notification that names the desktop and
+  has a button to stop. It restores its volume once ringing ends.
+- The phone rings for 1 minute. A `RingRequest` while it rings, from any
+  desktop, starts the minute again and gets an `Ack`.
+- Ringing ends when the user stops it on the phone, when a desktop sends
+  `RingStop`, when the minute is over, or when the phone cannot go on, for
+  example because a call started. It does not end with the session: a
+  phone that loses its connection while it rings keeps ringing, since that
+  is when the user is looking for it.
+- When ringing ends, the phone sends `RingEnded` with the reason to each
+  connected desktop that sent a `RingRequest` for it.
+- `RingStop` gets an `Ack`, also when the phone does not ring.
+- The phone answers `UNAVAILABLE` when it cannot ring right now, for
+  example during a call.
+- The desktop shows the phone as ringing, with a button to stop it, from
+  the `Ack` until `RingEnded` arrives, the session ends, or a minute
+  passes.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| Ringing | 1 minute per request |
+
 ## Security considerations
 
 ### What is protected
 
-Notification content, messages, call data, files and clipboard content;
+Notification content, messages, call data, files, clipboard content and
+the phone's status;
 the ability to act as the user on the other device (send replies, dismiss
 notifications); and the user's privacy on the network (where the phone is,
 and which devices belong together).
@@ -1731,6 +1892,11 @@ from the desktop app's data. The desktop app narrows what it leaves open:
   sends its `Hello` (device id, name and features) before the desktop has
   proven anything, as the desktop does when it dials to pair. A host on the
   network can learn them this way while SAS mode is on.
+- While the user pairs the devices over Bluetooth for calls, the desktop's
+  adapter is discoverable for 2 minutes, so nearby devices see its
+  Bluetooth name and address.
+- The phone's status leaves out where the phone is: no Wi-Fi network name
+  and no cell identity.
 
 ### Implementation requirements
 
@@ -1756,6 +1922,8 @@ The rules that matter most for security, gathered in one place:
 10. Keep private keys and presence keys out of logs and backups.
 11. Never use a received file name as a path, and never let a received
     file overwrite another file.
+12. Accept Bluetooth pairing only inside the window the user opened, and
+    only after the user confirmed the code on the desktop.
 
 ## Versioning
 
@@ -1773,7 +1941,7 @@ The rules that matter most for security, gathered in one place:
 - Envelope payload numbers are grouped: 10 to 29 for session messages and
   shared replies, 30 to 49 for pairing, and a block of 50 per feature from
   100: notifications 100, messages 150, calls 200, photos 250, files 300,
-  clipboard 350, screen 400.
+  clipboard 350, screen 400, status 450, ring 500.
 - Behavior depends on the negotiated major version and the active tokens,
   never on `Hello.app_version`.
 
@@ -1802,8 +1970,15 @@ The rules that matter most for security, gathered in one place:
 | 103 | `NotificationRemoved` | phone to desktop | event |
 | 104 | `NotificationDismissRequest` | desktop to phone | outbox request: `Ack` |
 | 105 | `NotificationActionRequest` | desktop to phone | outbox request: `Ack` |
+| 200 | `BluetoothPairingRequest` | desktop to phone | request: `Ack` |
 | 300 | `FileOffer` | both | request: `FileAccept` |
 | 301 | `FileAccept` | both | reply |
 | 302 | `FileChunk` | both | request: `Ack` |
 | 303 | `FileCancel` | both | request: `Ack` |
 | 350 | `ClipboardPush` | both | request: `Ack` |
+| 450 | `PhoneStatusRequest` | desktop to phone | request: `PhoneStatusReply` |
+| 451 | `PhoneStatusReply` | phone to desktop | reply |
+| 452 | `PhoneStatusChanged` | phone to desktop | event |
+| 500 | `RingRequest` | desktop to phone | request: `Ack` |
+| 501 | `RingStop` | desktop to phone | request: `Ack` |
+| 502 | `RingEnded` | phone to desktop | event |
