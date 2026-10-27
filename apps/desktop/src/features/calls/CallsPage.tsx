@@ -87,19 +87,36 @@ function CallsView({ status }: { status: CallsStatus }) {
   const [chosen, setChosen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const phones = status.phones;
-  // Unless the user picked one, the phone with a call comes first, then the
-  // one being paired.
+  // Unless the user picked one, the phone being paired comes first. Calls show
+  // for every phone, so one arriving must not move the selection.
   const phone =
     phones.find((p) => p.deviceId === chosen) ??
-    phones.find((p) => p.calls.length > 0) ??
     phones.find((p) => p.deviceId === status.pairing?.deviceId) ??
     phones[0];
 
-  // An error belongs to the phone it came from, so drop it when another is shown.
-  const [errorPhone, setErrorPhone] = useState(phone?.deviceId);
-  if (errorPhone !== phone?.deviceId) {
-    setErrorPhone(phone?.deviceId);
+  // Drop an error when the user picks another phone. It is not tied to the
+  // selected phone, since call cards of every phone report errors here.
+  const [errorChosen, setErrorChosen] = useState(chosen);
+  if (errorChosen !== chosen) {
+    setErrorChosen(chosen);
     setError(null);
+  }
+
+  // Cards keep the place they were first shown at, so answering a call doesn't
+  // move it. A call seen for the first time goes on top when it is ringing and
+  // to the end otherwise.
+  const [ranks, setRanks] = useState({ byKey: new Map<string, number>(), lo: 0, hi: 0 });
+  const entries = phones.flatMap((p) =>
+    p.calls.map((call) => ({ key: `${p.deviceId}:${call.id}`, phone: p, call })),
+  );
+  const fresh = entries.filter((e) => !ranks.byKey.has(e.key));
+  if (fresh.length > 0) {
+    const byKey = new Map(ranks.byKey);
+    const ringing = fresh.filter((e) => isRinging(e.call));
+    const rest = fresh.filter((e) => !isRinging(e.call));
+    ringing.forEach((e, i) => byKey.set(e.key, ranks.lo - ringing.length + i));
+    rest.forEach((e, i) => byKey.set(e.key, ranks.hi + 1 + i));
+    setRanks({ byKey, lo: ranks.lo - ringing.length, hi: ranks.hi + rest.length });
   }
 
   const errorCallout = error && (
@@ -123,28 +140,26 @@ function CallsView({ status }: { status: CallsStatus }) {
   }
 
   const pairing = status.pairing?.deviceId === phone.deviceId ? status.pairing : null;
-  // Every phone's calls stay on top of the page, ringing ones first, so a call
-  // can be answered whichever phone is selected. A call keeps its place in the
-  // list when it is answered, so its card isn't rebuilt under the user.
+  // Every phone's calls stay on top of the page, so a call can be answered
+  // whichever phone is selected.
   const named = phones.length > 1;
-  const calls = phones
-    .flatMap((p) => p.calls.map((call) => ({ phone: p, call })))
-    .sort((a, b) => Number(isRinging(b.call)) - Number(isRinging(a.call)));
+  const rank = (key: string) => ranks.byKey.get(key) ?? Infinity;
+  const calls = [...entries].sort((a, b) => rank(a.key) - rank(b.key));
 
   return (
     <>
       <div className="sr-only" aria-live="polite">
         {calls
           .filter(({ call }) => isRinging(call))
-          .map(({ phone: p, call }) => (
-            <p key={`${p.deviceId}:${call.id}`}>
+          .map(({ key, phone: p, call }) => (
+            <p key={key}>
               {`Incoming call from ${call.name || call.number || "an unknown caller"}${named ? ` on ${p.phoneName}` : ""}`}
             </p>
           ))}
       </div>
-      {calls.map(({ phone: p, call }) => (
+      {calls.map(({ key, phone: p, call }) => (
         <CallCard
-          key={`${p.deviceId}:${call.id}`}
+          key={key}
           deviceId={p.deviceId}
           phoneName={named ? p.phoneName : undefined}
           call={call}

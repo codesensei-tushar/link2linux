@@ -67,7 +67,15 @@ export function CallCard({
   }, [buttons]);
   const act = (action: () => Promise<void>) => {
     hadFocus.current = section.current?.contains(document.activeElement) ?? false;
-    run(action);
+    // A failed action leaves the buttons as they are, so the effect above
+    // never clears the flag. A successful one changes them, but its status
+    // can arrive after the answer, so only a failure clears it here.
+    run(() =>
+      action().catch((reason: unknown) => {
+        hadFocus.current = false;
+        throw reason;
+      }),
+    );
   };
 
   return (
