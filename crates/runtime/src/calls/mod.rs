@@ -505,6 +505,8 @@ fn phone_of(core: &Core, device_id: &str) -> Result<(Phone, Vec<Phone>), Backend
 /// hands-free links are disconnected; turned on, they are connected.
 pub(crate) fn set_enabled(core: &Core, enabled: bool) {
     let calls = &core.calls;
+    // Not under the center's lock: the phones' lock comes first.
+    let phones = lock(&calls.phones).clone();
     {
         let mut center = lock(&calls.center);
         if center.is_enabled() == enabled {
@@ -512,7 +514,7 @@ pub(crate) fn set_enabled(core: &Core, enabled: bool) {
         }
         center.set_enabled(enabled);
         if enabled {
-            for phone in lock(&calls.phones).iter() {
+            for phone in &phones {
                 center.want_connect(&phone.id);
             }
         }
