@@ -267,8 +267,107 @@ describe("CallsPage", () => {
     expect(number).toHaveValue("");
   });
 
-  it("shows the phone with a call first, and the others on request", async () => {
+  it("keeps the selected phone and typed number when a call arrives elsewhere", async () => {
     const user = userEvent.setup();
+    const api = renderPage({
+      phones: [phone({ deviceId: "phone-1" }), phone({ deviceId: "phone-2", phoneName: "Galaxy" })],
+    });
+    await user.type(await screen.findByLabelText("Number"), "123");
+    api.emitCalls(
+      testCallsStatus({
+        phones: [
+          phone({ deviceId: "phone-1" }),
+          phone({ deviceId: "phone-2", phoneName: "Galaxy", calls: [demoCall()] }),
+        ],
+      }),
+    );
+    await screen.findByRole("region", { name: "Call with Anna Müller" });
+    expect(screen.getByRole("radio", { name: "Pixel" })).toBeChecked();
+    expect(screen.getByLabelText("Number")).toHaveValue("123");
+  });
+
+  it("keeps cards in place when a ringing call is answered", async () => {
+    const api = renderPage({
+      phones: [
+        phone({
+          deviceId: "phone-1",
+          phoneName: "Pixel",
+          calls: [active({ id: "a", name: "Old" })],
+        }),
+        phone({ deviceId: "phone-2", phoneName: "Galaxy" }),
+      ],
+    });
+    await screen.findByRole("region", { name: "Call with Old" });
+    api.emitCalls(
+      testCallsStatus({
+        phones: [
+          phone({
+            deviceId: "phone-1",
+            phoneName: "Pixel",
+            calls: [active({ id: "a", name: "Old" })],
+          }),
+          phone({ deviceId: "phone-2", phoneName: "Galaxy", calls: [demoCall({ name: "New" })] }),
+        ],
+      }),
+    );
+    await screen.findByRole("region", { name: "Call with New" });
+    const names = () =>
+      screen
+        .getAllByRole("region")
+        .map((r) => r.getAttribute("aria-label"))
+        .filter((label) => label?.startsWith("Call with"));
+    expect(names()).toEqual(["Call with New", "Call with Old"]);
+    api.emitCalls(
+      testCallsStatus({
+        phones: [
+          phone({
+            deviceId: "phone-1",
+            phoneName: "Pixel",
+            calls: [active({ id: "a", name: "Old" })],
+          }),
+          phone({ deviceId: "phone-2", phoneName: "Galaxy", calls: [active({ name: "New" })] }),
+        ],
+      }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
+    });
+    expect(names()).toEqual(["Call with New", "Call with Old"]);
+  });
+
+  it("keeps an error from a call card when the shown phone changes by itself", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.hangUpCall.mockRejectedValueOnce(new Error("Nope"));
+    const two = (calls: CallView[]) => [
+      phone({ deviceId: "phone-1", phoneName: "Pixel", link: { state: "notPaired" } }),
+      phone({ deviceId: "phone-2", phoneName: "Galaxy", calls }),
+    ];
+    renderPage({ phones: two([active()]) }, api);
+    await user.click(await screen.findByRole("button", { name: "Hang up" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Nope");
+    api.emitCalls(testCallsStatus({ phones: two([]) }));
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "Call with Anna Müller" })).toBeNull();
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Nope");
+  });
+
+  it("doesn't pull focus into a card after its action failed", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.answerCall.mockRejectedValueOnce(new Error("Nope"));
+    renderPage({ phones: [phone({ calls: [demoCall()] })] }, api);
+    await user.click(await screen.findByRole("button", { name: "Answer" }));
+    await screen.findByRole("alert");
+    const input = screen.getByLabelText("Number");
+    await user.click(input);
+    api.emitCalls(testCallsStatus({ phones: [phone({ calls: [active()] })] }));
+    await screen.findByRole("button", { name: "Hang up" });
+    expect(input).toHaveFocus();
+  });
+
+  it("shows every phone's calls whichever phone is selected", async () => {
     renderPage({
       phones: [
         phone({ deviceId: "phone-1", phoneName: "Pixel", link: { state: "notPaired" } }),
@@ -276,9 +375,7 @@ describe("CallsPage", () => {
       ],
     });
     expect(await screen.findByRole("region", { name: "Call with Anna Müller" })).toBeVisible();
-    expect(screen.getByRole("radio", { name: "Galaxy, has a call" })).toBeChecked();
-
-    await user.click(screen.getByRole("radio", { name: "Pixel" }));
+    expect(screen.getByRole("radio", { name: "Galaxy, has a call" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Pair Pixel over Bluetooth" })).toBeVisible();
     // The call stays answerable, labelled with its phone.
     expect(screen.getByRole("region", { name: "Call with Anna Müller" })).toHaveTextContent(
@@ -406,7 +503,7 @@ describe("CallsPage", () => {
   });
 
   it("stops offering the pairing code once the window is over", async () => {
-    renderPage({
+    const api = renderPage({
       pairing: {
         deviceId: "phone-1",
         adapterName: "Desk",
@@ -418,8 +515,11 @@ describe("CallsPage", () => {
       phones: [phone({ link: { state: "notPaired" } })],
     });
     expect(await screen.findByText("The pairing window has closed.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Yes, it matches" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "No" })).toBeDisabled();
+    const yes = screen.getByRole("button", { name: "Yes, it matches" });
+    expect(yes).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "No" })).toHaveAttribute("aria-disabled", "true");
+    await userEvent.setup().click(yes);
+    expect(api.confirmBluetoothCode).not.toHaveBeenCalled();
   });
 
   it("keeps the dial pad's delete button and focus when the number empties", async () => {

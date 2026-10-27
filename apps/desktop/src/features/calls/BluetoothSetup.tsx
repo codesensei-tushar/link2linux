@@ -22,6 +22,8 @@ function PairingPrompt({
   onConfirm: (matches: boolean) => void;
 }) {
   const yes = useRef<HTMLButtonElement>(null);
+  // The buttons use aria-disabled, so they keep keyboard focus while busy.
+  const idle = !closed && !busy;
   // The prompt appears on its own, so put keyboard users on the decision.
   useEffect(() => {
     yes.current?.focus();
@@ -43,18 +45,18 @@ function PairingPrompt({
           ref={yes}
           variant="primary"
           icon={Check}
-          disabled={closed || busy}
+          aria-disabled={!idle}
           onClick={() => {
-            onConfirm(true);
+            if (idle) onConfirm(true);
           }}
         >
           Yes, it matches
         </Button>
         <Button
           icon={X}
-          disabled={closed || busy}
+          aria-disabled={!idle}
           onClick={() => {
-            onConfirm(false);
+            if (idle) onConfirm(false);
           }}
         >
           No

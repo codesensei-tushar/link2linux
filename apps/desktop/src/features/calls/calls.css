@@ -198,3 +198,9 @@
   color: var(--color-text-subtle);
   font-size: var(--font-size-xs);
 }
+
+/* The pairing buttons stay focusable while they do nothing. */
+.pairing-prompt .button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
