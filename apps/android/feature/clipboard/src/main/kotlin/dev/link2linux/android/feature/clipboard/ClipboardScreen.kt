@@ -7,30 +7,36 @@ import android.content.Context
 import android.graphics.drawable.Icon
 import android.os.Build
 import androidx.annotation.RequiresApi
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.link2linux.android.core.clipboard.ConnectedDesktop
+import dev.link2linux.android.core.designsystem.R as DesignR
+import dev.link2linux.android.core.designsystem.component.L2lCallout
+import dev.link2linux.android.core.designsystem.component.L2lDivider
+import dev.link2linux.android.core.designsystem.component.L2lListItem
+import dev.link2linux.android.core.designsystem.component.L2lOutlinedButton
+import dev.link2linux.android.core.designsystem.component.L2lSection
+import dev.link2linux.android.core.designsystem.component.L2lSectionHeader
+import dev.link2linux.android.core.designsystem.component.L2lTextButton
 import dev.link2linux.android.core.designsystem.component.L2lTopAppBar
+import dev.link2linux.android.core.designsystem.component.Tone
 import dev.link2linux.android.core.designsystem.component.titleRes
 import dev.link2linux.android.core.model.Feature
-import dev.link2linux.android.core.designsystem.R as DesignR
 
 /** Settings of the clipboard feature, and a way to send the clipboard. */
 @Composable
@@ -69,7 +75,7 @@ fun SendClipboardButton(modifier: Modifier = Modifier) {
     val enabled by runtime.enabled.collectAsStateWithLifecycle()
     val desktops by runtime.engine.connected.collectAsStateWithLifecycle()
     if (!enabled || desktops.isEmpty()) return
-    OutlinedButton(
+    L2lOutlinedButton(
         onClick = { sendClipboard(context, runtime) },
         modifier = modifier
             .fillMaxWidth()
@@ -117,53 +123,59 @@ internal fun ClipboardContent(
     ) { padding ->
         LazyColumn(contentPadding = padding) {
             item {
-                ListItem(
-                    headlineContent = { Text(stringResource(R.string.clipboard_toggle_title)) },
-                    supportingContent = { Text(stringResource(R.string.clipboard_toggle_summary)) },
-                    trailingContent = { Switch(checked = enabled, onCheckedChange = onEnabled) },
-                )
+                L2lSection {
+                    L2lListItem(
+                        headlineContent = { Text(stringResource(R.string.clipboard_toggle_title)) },
+                        supportingContent = { Text(stringResource(R.string.clipboard_toggle_summary)) },
+                        trailingContent = { Switch(checked = enabled, onCheckedChange = onEnabled) },
+                    )
+                }
             }
             if (enabled) {
                 item {
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.clipboard_send_title)) },
-                        supportingContent = {
-                            Text(
-                                if (desktops.isEmpty()) {
-                                    stringResource(R.string.clipboard_send_none)
-                                } else {
-                                    stringResource(R.string.clipboard_send_to, desktops.joinToString(", ") { it.name })
-                                },
-                            )
-                        },
-                        trailingContent = {
-                            TextButton(onClick = onSend, enabled = desktops.isNotEmpty()) {
-                                Text(stringResource(R.string.clipboard_send_action))
-                            }
-                        },
-                    )
-                }
-                if (onAddTile != null) {
-                    item {
-                        ListItem(
-                            headlineContent = { Text(stringResource(R.string.clipboard_add_tile_title)) },
-                            supportingContent = { Text(stringResource(R.string.clipboard_add_tile_summary)) },
+                    L2lSection {
+                        L2lListItem(
+                            headlineContent = { Text(stringResource(R.string.clipboard_send_title)) },
+                            supportingContent = {
+                                Text(
+                                    if (desktops.isEmpty()) {
+                                        stringResource(R.string.clipboard_send_none)
+                                    } else {
+                                        stringResource(R.string.clipboard_send_to, desktops.joinToString(", ") { it.name })
+                                    },
+                                )
+                            },
                             trailingContent = {
-                                TextButton(onClick = onAddTile) { Text(stringResource(R.string.clipboard_add_tile_action)) }
+                                L2lTextButton(onClick = onSend, enabled = desktops.isNotEmpty()) {
+                                    Text(stringResource(R.string.clipboard_send_action))
+                                }
                             },
                         )
+                        if (onAddTile != null) {
+                            L2lDivider()
+                            L2lListItem(
+                                headlineContent = { Text(stringResource(R.string.clipboard_add_tile_title)) },
+                                supportingContent = { Text(stringResource(R.string.clipboard_add_tile_summary)) },
+                                trailingContent = {
+                                    L2lTextButton(onClick = onAddTile) { Text(stringResource(R.string.clipboard_add_tile_action)) }
+                                },
+                            )
+                        }
                     }
                 }
                 item {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    ListItem(
-                        headlineContent = {
-                            Text(stringResource(R.string.clipboard_how_title), style = MaterialTheme.typography.titleMedium)
-                        },
-                        supportingContent = { Text(stringResource(R.string.clipboard_how_body)) },
+                    L2lSectionHeader(stringResource(R.string.clipboard_how_title))
+                    L2lCallout(
+                        text = stringResource(R.string.clipboard_how_body),
+                        tone = Tone.Accent,
+                        icon = painterResource(DesignR.drawable.ic_content_paste),
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp)
+                            .padding(bottom = 8.dp),
                     )
                 }
             }
+            item { Spacer(Modifier.height(16.dp)) }
         }
     }
 }

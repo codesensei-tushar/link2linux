@@ -6,16 +6,15 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,6 +22,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -30,7 +30,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.link2linux.android.core.designsystem.R as DesignR
+import dev.link2linux.android.core.designsystem.component.L2lCallout
+import dev.link2linux.android.core.designsystem.component.L2lSectionHeader
+import dev.link2linux.android.core.designsystem.component.L2lDivider
+import dev.link2linux.android.core.designsystem.component.L2lListItem
+import dev.link2linux.android.core.designsystem.component.L2lSection
+import dev.link2linux.android.core.designsystem.component.L2lTextButton
 import dev.link2linux.android.core.designsystem.component.L2lTopAppBar
+import dev.link2linux.android.core.designsystem.component.StatusBadge
+import dev.link2linux.android.core.designsystem.component.Tone
 import dev.link2linux.android.core.designsystem.component.titleRes
 import dev.link2linux.android.core.model.Feature
 import kotlinx.coroutines.flow.StateFlow
@@ -105,59 +114,60 @@ internal fun PhotosContent(
     ) { padding ->
         LazyColumn(contentPadding = padding) {
             item {
-                ListItem(
-                    headlineContent = { Text(stringResource(R.string.photos_toggle_title)) },
-                    supportingContent = { Text(stringResource(R.string.photos_toggle_summary)) },
-                    trailingContent = {
-                        Switch(
-                            checked = enabled,
-                            onCheckedChange = { on ->
-                                // Explain before Android asks for the permission.
-                                if (on && access == PhotoAccess.NONE) showRationale = true else onEnable(on)
-                            },
-                        )
-                    },
-                )
-            }
-            if (enabled) {
-                item {
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.photos_access_title)) },
-                        supportingContent = {
-                            Text(
-                                stringResource(
-                                    when (access) {
-                                        PhotoAccess.ALL -> R.string.photos_access_all
-                                        PhotoAccess.SELECTED -> R.string.photos_access_selected
-                                        PhotoAccess.NONE -> R.string.photos_access_missing
-                                    },
-                                ),
+                L2lSection {
+                    L2lListItem(
+                        headlineContent = { Text(stringResource(R.string.photos_toggle_title)) },
+                        supportingContent = { Text(stringResource(R.string.photos_toggle_summary)) },
+                        trailingContent = {
+                            Switch(
+                                checked = enabled,
+                                onCheckedChange = { on ->
+                                    // Explain before Android asks for the permission.
+                                    if (on && access == PhotoAccess.NONE) showRationale = true else onEnable(on)
+                                },
                             )
                         },
-                        trailingContent = {
-                            when (access) {
-                                PhotoAccess.SELECTED -> TextButton(onClick = onAsk) {
-                                    Text(stringResource(R.string.photos_access_pick))
-                                }
-                                // Once refused, Android may not ask again; its settings page always can.
-                                PhotoAccess.NONE -> TextButton(onClick = if (denied) onOpenAppSettings else onAsk) {
-                                    Text(stringResource(if (denied) R.string.photos_open_settings else R.string.photos_access_allow))
-                                }
-                                PhotoAccess.ALL -> Unit
-                            }
-                        },
                     )
+                    if (enabled) {
+                        L2lDivider()
+                        L2lListItem(
+                            headlineContent = { Text(stringResource(R.string.photos_access_title)) },
+                            supportingContent = {
+                                when (access) {
+                                    PhotoAccess.ALL -> StatusBadge(
+                                        text = stringResource(R.string.photos_access_all),
+                                        tone = Tone.Success,
+                                    )
+                                    PhotoAccess.SELECTED -> Text(stringResource(R.string.photos_access_selected))
+                                    PhotoAccess.NONE -> Text(stringResource(R.string.photos_access_missing))
+                                }
+                            },
+                            trailingContent = {
+                                when (access) {
+                                    PhotoAccess.SELECTED -> L2lTextButton(onClick = onAsk) {
+                                        Text(stringResource(R.string.photos_access_pick))
+                                    }
+                                    // Once refused, Android may not ask again; its settings page always can.
+                                    PhotoAccess.NONE -> L2lTextButton(onClick = if (denied) onOpenAppSettings else onAsk) {
+                                        Text(stringResource(if (denied) R.string.photos_open_settings else R.string.photos_access_allow))
+                                    }
+                                    PhotoAccess.ALL -> Unit
+                                }
+                            },
+                        )
+                    }
                 }
             }
+            item { L2lSectionHeader(text = stringResource(R.string.photos_shared_title)) }
             item {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                ListItem(
-                    headlineContent = {
-                        Text(stringResource(R.string.photos_shared_title), style = MaterialTheme.typography.titleMedium)
-                    },
-                    supportingContent = { Text(stringResource(R.string.photos_shared_body)) },
+                L2lCallout(
+                    text = stringResource(R.string.photos_shared_body),
+                    tone = Tone.Accent,
+                    icon = painterResource(DesignR.drawable.ic_photo_library),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
+            item { Spacer(Modifier.height(16.dp)) }
         }
     }
 
@@ -167,13 +177,13 @@ internal fun PhotosContent(
             title = { Text(stringResource(R.string.photos_rationale_title)) },
             text = { Text(stringResource(R.string.photos_rationale_body)) },
             confirmButton = {
-                TextButton(onClick = {
+                L2lTextButton(onClick = {
                     showRationale = false
                     onEnable(true)
                 }) { Text(stringResource(R.string.photos_continue)) }
             },
             dismissButton = {
-                TextButton(onClick = { showRationale = false }) { Text(stringResource(R.string.photos_not_now)) }
+                L2lTextButton(onClick = { showRationale = false }) { Text(stringResource(R.string.photos_not_now)) }
             },
         )
     }

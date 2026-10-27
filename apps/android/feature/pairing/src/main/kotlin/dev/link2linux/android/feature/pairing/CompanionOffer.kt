@@ -7,9 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -21,6 +19,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.link2linux.android.core.designsystem.component.L2lButton
+import dev.link2linux.android.core.designsystem.component.L2lCallout
+import dev.link2linux.android.core.designsystem.component.L2lOutlinedButton
+import dev.link2linux.android.core.designsystem.component.StatusBadge
+import dev.link2linux.android.core.designsystem.component.Tone
 
 /**
  * After a pairing with a computer that advertises over Bluetooth: offers to
@@ -69,20 +72,28 @@ internal fun CompanionOffer(bluetoothAddress: String, pairedAt: Long, modifier: 
             OfferStep.WORKING -> R.string.feature_pairing_companion_working
             else -> R.string.feature_pairing_companion_body
         }
-        Text(
-            text = stringResource(body),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
+        when (step) {
+            OfferStep.DONE -> L2lCallout(
+                text = stringResource(body),
+                tone = Tone.Success,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OfferStep.WORKING -> StatusBadge(text = stringResource(body), tone = Tone.Accent)
+            OfferStep.NOT_FOUND, OfferStep.UNAVAILABLE -> L2lCallout(
+                text = stringResource(body),
+                tone = Tone.Warning,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            else -> L2lCallout(text = stringResource(body), modifier = Modifier.fillMaxWidth())
+        }
         if (step == OfferStep.ASK || step == OfferStep.NOT_FOUND) {
-            Button(
+            L2lButton(
                 onClick = { model.permission?.let(permission::launch) ?: model.begin(bluetoothAddress) },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(stringResource(R.string.feature_pairing_companion_action)) }
         }
         if (step != OfferStep.DONE && step != OfferStep.WORKING) {
-            OutlinedButton(onClick = model::skip, modifier = Modifier.fillMaxWidth()) {
+            L2lOutlinedButton(onClick = model::skip, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_companion_skip))
             }
         }

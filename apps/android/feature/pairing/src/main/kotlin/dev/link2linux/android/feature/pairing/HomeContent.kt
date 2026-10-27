@@ -8,19 +8,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +31,17 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import dev.link2linux.android.core.designsystem.component.EmptyState
 import dev.link2linux.android.core.designsystem.component.FeatureListItem
+import dev.link2linux.android.core.designsystem.component.IconTile
+import dev.link2linux.android.core.designsystem.component.L2lButton
+import dev.link2linux.android.core.designsystem.component.L2lCard
+import dev.link2linux.android.core.designsystem.component.L2lDivider
+import dev.link2linux.android.core.designsystem.component.L2lListItem
+import dev.link2linux.android.core.designsystem.component.L2lOutlinedButton
+import dev.link2linux.android.core.designsystem.component.L2lSection
+import dev.link2linux.android.core.designsystem.component.L2lSectionHeader
+import dev.link2linux.android.core.designsystem.component.L2lTextButton
+import dev.link2linux.android.core.designsystem.component.StatusBadge
+import dev.link2linux.android.core.designsystem.component.Tone
 import dev.link2linux.android.core.model.Feature
 import dev.link2linux.android.core.model.PairedDevice
 import dev.link2linux.android.core.designsystem.R as DesignR
@@ -65,7 +73,7 @@ internal fun HomeContent(
             item { PairActions(actions) }
         }
         if (!devices.isNullOrEmpty()) {
-            item { SectionHeader(stringResource(R.string.feature_pairing_computers_header)) }
+            item { L2lSectionHeader(stringResource(R.string.feature_pairing_computers_header)) }
             if (uiState.connected.isNotEmpty()) {
                 item {
                     Text(
@@ -74,36 +82,58 @@ internal fun HomeContent(
                             uiState.connected.joinToString(", ") { it.device.name },
                         ),
                         style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        // Lined up with the section title above it.
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp),
                     )
                 }
                 item { connectedActions() }
             }
             items(devices, key = { it.fingerprint.toHex() }) { paired ->
-                ListItem(
-                    headlineContent = { Text(paired.device.name) },
-                    supportingContent = {
-                        val connected = uiState.connected.any { it.fingerprint == paired.fingerprint }
-                        Text(stringResource(if (connected) R.string.feature_pairing_connected else R.string.feature_pairing_paired))
-                    },
-                    leadingContent = { Icon(painterResource(DesignR.drawable.ic_devices), contentDescription = null) },
-                    trailingContent = {
-                        TextButton(onClick = { unpairing = paired }) {
-                            Text(stringResource(R.string.feature_pairing_unpair))
-                        }
-                    },
-                )
+                val connected = uiState.connected.any { it.fingerprint == paired.fingerprint }
+                L2lCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                ) {
+                    L2lListItem(
+                        headlineContent = { Text(paired.device.name) },
+                        leadingContent = { IconTile(painterResource(DesignR.drawable.ic_devices)) },
+                        supportingContent = {
+                            StatusBadge(
+                                text = stringResource(
+                                    if (connected) R.string.feature_pairing_connected else R.string.feature_pairing_paired,
+                                ),
+                                tone = if (connected) Tone.Success else Tone.Neutral,
+                            )
+                        },
+                        trailingContent = {
+                            L2lTextButton(onClick = { unpairing = paired }) {
+                                Text(stringResource(R.string.feature_pairing_unpair))
+                            }
+                        },
+                    )
+                }
             }
         }
         if (devices != null) {
-            item { ConnectionRow(uiState.connectionEnabled, actions.onSetConnection) }
-        }
-        if (features.isNotEmpty()) {
-            item { SectionHeader(stringResource(R.string.feature_pairing_features_header)) }
-            items(features, key = Feature::wireName) { feature ->
-                FeatureListItem(feature = feature, onClick = { onOpenFeature(feature) })
+            item {
+                L2lSection {
+                    ConnectionRow(uiState.connectionEnabled, actions.onSetConnection)
+                }
             }
         }
+        if (features.isNotEmpty()) {
+            item {
+                L2lSection(title = stringResource(R.string.feature_pairing_features_header)) {
+                    features.forEachIndexed { index, feature ->
+                        FeatureListItem(feature = feature, onClick = { onOpenFeature(feature) })
+                        if (index < features.lastIndex) L2lDivider()
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(16.dp)) }
     }
 
     unpairing?.let { device ->
@@ -112,13 +142,13 @@ internal fun HomeContent(
             title = { Text(stringResource(R.string.feature_pairing_unpair_title, device.device.name)) },
             text = { Text(stringResource(R.string.feature_pairing_unpair_body)) },
             confirmButton = {
-                TextButton(onClick = {
+                L2lTextButton(onClick = {
                     actions.onUnpair(device)
                     unpairing = null
                 }) { Text(stringResource(R.string.feature_pairing_unpair)) }
             },
             dismissButton = {
-                TextButton(onClick = { unpairing = null }) { Text(stringResource(R.string.feature_pairing_cancel)) }
+                L2lTextButton(onClick = { unpairing = null }) { Text(stringResource(R.string.feature_pairing_cancel)) }
             },
         )
     }
@@ -132,23 +162,13 @@ private fun PairActions(actions: PairingActions) {
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        Button(onClick = actions.onScan, modifier = Modifier.fillMaxWidth()) {
+        L2lButton(onClick = actions.onScan, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.feature_pairing_scan_action))
         }
-        OutlinedButton(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
+        L2lOutlinedButton(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.feature_pairing_sas_action))
         }
     }
-}
-
-@Composable
-private fun SectionHeader(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp),
-    )
 }
 
 @Composable
@@ -158,7 +178,7 @@ private fun ConnectionRow(enabled: Boolean, onSet: (Boolean) -> Unit) {
         // The service runs either way; a refusal only hides its notification.
         onSet(true)
     }
-    ListItem(
+    L2lListItem(
         headlineContent = { Text(stringResource(R.string.feature_pairing_connection_title)) },
         supportingContent = { Text(stringResource(R.string.feature_pairing_connection_body)) },
         trailingContent = {

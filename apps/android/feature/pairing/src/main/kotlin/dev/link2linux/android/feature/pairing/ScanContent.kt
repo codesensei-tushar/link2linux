@@ -14,9 +14,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,6 +31,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import dev.link2linux.android.core.designsystem.component.L2lButton
+import dev.link2linux.android.core.designsystem.component.L2lCallout
+import dev.link2linux.android.core.designsystem.component.L2lOutlinedButton
+import dev.link2linux.android.core.designsystem.component.Tone
 
 private enum class CameraStep { RATIONALE, DENIED }
 
@@ -64,12 +66,13 @@ internal fun ScanContent(
         granted && cameraFailed -> CameraMessage(
             title = stringResource(R.string.feature_pairing_camera_unavailable_title),
             body = stringResource(R.string.feature_pairing_camera_unavailable_body),
+            calloutTone = Tone.Warning,
             modifier = modifier.padding(padding),
         ) {
-            Button(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
+            L2lButton(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_sas_action))
             }
-            OutlinedButton(onClick = { cameraFailed = false }, modifier = Modifier.fillMaxWidth()) {
+            L2lOutlinedButton(onClick = { cameraFailed = false }, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_try_again))
             }
         }
@@ -77,13 +80,13 @@ internal fun ScanContent(
             Text(
                 text = stringResource(R.string.feature_pairing_scan_title),
                 style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
             )
-            Text(
+            L2lCallout(
                 text = stringResource(R.string.feature_pairing_scan_body),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
             )
             QrScanner(
                 onCode = actions.onScanned,
@@ -94,7 +97,7 @@ internal fun ScanContent(
                     .padding(16.dp),
             )
             scanError?.let {
-                Text(
+                L2lCallout(
                     text = stringResource(
                         if (it == ScanError.UPDATE_THE_APP) {
                             R.string.feature_pairing_scan_error_update
@@ -102,36 +105,39 @@ internal fun ScanContent(
                             R.string.feature_pairing_scan_error_invalid
                         },
                     ),
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                    tone = Tone.Danger,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
         }
         step == CameraStep.RATIONALE -> CameraMessage(
             title = stringResource(R.string.feature_pairing_camera_title),
             body = stringResource(R.string.feature_pairing_camera_rationale),
+            calloutTone = Tone.Accent,
             modifier = modifier.padding(padding),
         ) {
-            Button(onClick = { request.launch(Manifest.permission.CAMERA) }, modifier = Modifier.fillMaxWidth()) {
+            L2lButton(onClick = { request.launch(Manifest.permission.CAMERA) }, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_camera_allow))
             }
-            OutlinedButton(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
+            L2lOutlinedButton(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_sas_action))
             }
         }
         else -> CameraMessage(
             title = stringResource(R.string.feature_pairing_camera_denied_title),
             body = stringResource(R.string.feature_pairing_camera_denied_body),
+            calloutTone = Tone.Warning,
             modifier = modifier.padding(padding),
         ) {
-            Button(onClick = { openAppSettings(context) }, modifier = Modifier.fillMaxWidth()) {
+            L2lButton(onClick = { openAppSettings(context) }, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_camera_settings))
             }
-            OutlinedButton(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
+            L2lOutlinedButton(onClick = actions.onPairWithoutCamera, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_sas_action))
             }
-            OutlinedButton(onClick = { step = CameraStep.RATIONALE }, modifier = Modifier.fillMaxWidth()) {
+            L2lOutlinedButton(onClick = { step = CameraStep.RATIONALE }, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.feature_pairing_try_again))
             }
         }
@@ -142,24 +148,25 @@ internal fun ScanContent(
 private fun CameraMessage(
     title: String,
     body: String,
+    calloutTone: Tone,
     modifier: Modifier,
     buttons: @Composable () -> Unit,
 ) {
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
     ) {
         Text(text = title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-        Text(
-            text = body,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        buttons()
+        L2lCallout(text = body, tone = calloutTone, modifier = Modifier.fillMaxWidth())
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            buttons()
+        }
     }
 }
 

@@ -11,7 +11,7 @@ import androidx.camera.core.SurfaceRequest
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.lifecycle.awaitInstance
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
@@ -104,7 +103,7 @@ internal fun QrScanner(onCode: (String) -> Unit, onUnavailable: () -> Unit, modi
         }
     }
 
-    Box(modifier.clip(RoundedCornerShape(16.dp))) {
+    Box(modifier.clip(MaterialTheme.shapes.large)) {
         surfaceRequest?.let { CameraXViewfinder(surfaceRequest = it, modifier = Modifier) }
     }
 }

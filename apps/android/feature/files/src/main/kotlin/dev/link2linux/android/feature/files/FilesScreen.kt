@@ -11,21 +11,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +40,16 @@ import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.link2linux.android.core.designsystem.component.L2lButton
+import dev.link2linux.android.core.designsystem.component.L2lCard
+import dev.link2linux.android.core.designsystem.component.L2lDivider
+import dev.link2linux.android.core.designsystem.component.L2lListItem
+import dev.link2linux.android.core.designsystem.component.L2lSection
+import dev.link2linux.android.core.designsystem.component.L2lSectionHeader
+import dev.link2linux.android.core.designsystem.component.L2lTextButton
 import dev.link2linux.android.core.designsystem.component.L2lTopAppBar
+import dev.link2linux.android.core.designsystem.component.StatusBadge
+import dev.link2linux.android.core.designsystem.component.Tone
 import dev.link2linux.android.core.designsystem.component.titleRes
 import dev.link2linux.android.core.files.Direction
 import dev.link2linux.android.core.files.FilePeer
@@ -144,72 +151,82 @@ internal fun FilesContent(
     ) { padding ->
         LazyColumn(contentPadding = padding) {
             item {
-                ListItem(
-                    headlineContent = { Text(stringResource(R.string.files_toggle_title)) },
-                    supportingContent = { Text(stringResource(R.string.files_toggle_summary)) },
-                    trailingContent = {
-                        Switch(
-                            checked = enabled,
-                            onCheckedChange = { on ->
-                                // Explain before Android asks for storage access.
-                                if (on && !storageGranted) showRationale = true else onEnable(on)
-                            },
-                        )
-                    },
-                )
-            }
-            if (enabled && StorageAccess.needsPermission) {
-                item {
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.files_storage_title)) },
-                        supportingContent = {
-                            Text(stringResource(if (storageGranted) R.string.files_storage_granted else R.string.files_storage_missing))
-                        },
+                L2lSection {
+                    L2lListItem(
+                        headlineContent = { Text(stringResource(R.string.files_toggle_title)) },
+                        supportingContent = { Text(stringResource(R.string.files_toggle_summary)) },
                         trailingContent = {
-                            if (!storageGranted) {
-                                // Once refused, Android may not ask again; its settings page always can.
-                                TextButton(onClick = if (storageDenied) onOpenAppSettings else onAllowStorage) {
-                                    Text(stringResource(if (storageDenied) R.string.files_open_settings else R.string.files_storage_allow))
-                                }
-                            }
+                            Switch(
+                                checked = enabled,
+                                onCheckedChange = { on ->
+                                    // Explain before Android asks for storage access.
+                                    if (on && !storageGranted) showRationale = true else onEnable(on)
+                                },
+                            )
                         },
                     )
+                    if (enabled && StorageAccess.needsPermission) {
+                        L2lDivider()
+                        L2lListItem(
+                            headlineContent = { Text(stringResource(R.string.files_storage_title)) },
+                            supportingContent = {
+                                if (storageGranted) {
+                                    StatusBadge(
+                                        text = stringResource(R.string.files_storage_granted),
+                                        tone = Tone.Success,
+                                    )
+                                } else {
+                                    Text(stringResource(R.string.files_storage_missing))
+                                }
+                            },
+                            trailingContent = {
+                                if (!storageGranted) {
+                                    // Once refused, Android may not ask again; its settings page always can.
+                                    L2lTextButton(onClick = if (storageDenied) onOpenAppSettings else onAllowStorage) {
+                                        Text(stringResource(if (storageDenied) R.string.files_open_settings else R.string.files_storage_allow))
+                                    }
+                                }
+                            },
+                        )
+                    }
                 }
             }
             if (enabled) {
                 item {
                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        Button(onClick = onSend, enabled = hasDesktops, modifier = Modifier.fillMaxWidth()) {
+                        L2lButton(onClick = onSend, enabled = hasDesktops, modifier = Modifier.fillMaxWidth()) {
                             Text(stringResource(R.string.files_send))
                         }
                         Text(
                             text = stringResource(if (hasDesktops) R.string.files_saved_in_downloads else R.string.files_pair_first),
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 8.dp),
                         )
                     }
                 }
             }
-            item {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                ListItem(
-                    headlineContent = {
-                        Text(stringResource(R.string.files_recent_title), style = MaterialTheme.typography.titleMedium)
-                    },
-                )
-            }
+            item { L2lSectionHeader(text = stringResource(R.string.files_recent_title)) }
             if (transfers.isEmpty()) {
                 item {
                     Text(
                         text = stringResource(R.string.files_recent_empty),
                         style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
             }
             items(transfers, key = { it.key.toString() }) { transfer ->
-                TransferRow(transfer, onCancel = onCancel, onOpen = onOpen, onDismiss = onDismiss)
+                L2lCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                ) {
+                    TransferRow(transfer, onCancel = onCancel, onOpen = onOpen, onDismiss = onDismiss)
+                }
             }
+            item { Spacer(Modifier.height(16.dp)) }
         }
     }
 
@@ -219,13 +236,13 @@ internal fun FilesContent(
             title = { Text(stringResource(R.string.files_storage_rationale_title)) },
             text = { Text(stringResource(R.string.files_storage_rationale_body)) },
             confirmButton = {
-                TextButton(onClick = {
+                L2lTextButton(onClick = {
                     showRationale = false
                     onEnable(true)
                 }) { Text(stringResource(R.string.files_continue)) }
             },
             dismissButton = {
-                TextButton(onClick = { showRationale = false }) { Text(stringResource(R.string.files_not_now)) }
+                L2lTextButton(onClick = { showRationale = false }) { Text(stringResource(R.string.files_not_now)) }
             },
         )
     }
@@ -239,7 +256,7 @@ private fun TransferRow(
     onDismiss: (TransferKey) -> Unit,
 ) {
     val incoming = transfer.key.direction == Direction.INCOMING
-    ListItem(
+    L2lListItem(
         headlineContent = { Text(TransferText.names(transfer).resolve()) },
         supportingContent = {
             Column {
@@ -260,13 +277,13 @@ private fun TransferRow(
         },
         trailingContent = {
             when {
-                !transfer.state.isFinished -> TextButton(onClick = { onCancel(transfer.key) }) {
+                !transfer.state.isFinished -> L2lTextButton(onClick = { onCancel(transfer.key) }) {
                     Text(stringResource(R.string.files_cancel))
                 }
-                incoming && transfer.saved.isNotEmpty() -> TextButton(onClick = { onOpen(transfer) }) {
+                incoming && transfer.saved.isNotEmpty() -> L2lTextButton(onClick = { onOpen(transfer) }) {
                     Text(stringResource(R.string.files_open))
                 }
-                else -> TextButton(onClick = { onDismiss(transfer.key) }) { Text(stringResource(R.string.files_remove)) }
+                else -> L2lTextButton(onClick = { onDismiss(transfer.key) }) { Text(stringResource(R.string.files_remove)) }
             }
         },
     )
@@ -285,10 +302,17 @@ internal fun DesktopChooser(
         text = {
             Column {
                 desktops.forEach { choice ->
-                    ListItem(
+                    L2lListItem(
                         headlineContent = { Text(choice.peer.name) },
                         supportingContent = {
-                            Text(stringResource(if (choice.connected) R.string.files_desktop_connected else R.string.files_desktop_away))
+                            if (choice.connected) {
+                                StatusBadge(
+                                    text = stringResource(R.string.files_desktop_connected),
+                                    tone = Tone.Success,
+                                )
+                            } else {
+                                Text(stringResource(R.string.files_desktop_away))
+                            }
                         },
                         modifier = Modifier.clickable { onChoose(choice.peer) },
                     )
@@ -296,7 +320,7 @@ internal fun DesktopChooser(
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.files_cancel)) } },
+        dismissButton = { L2lTextButton(onClick = onDismiss) { Text(stringResource(R.string.files_cancel)) } },
     )
 }
 
