@@ -1011,8 +1011,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   min-width: 0;
 }
 
+.dl-card-head .type-h3,
 .dl-card-head .dl-sub {
-  margin-top: 0;
+  margin: 0;
 }
 
 .dl-icon-tile {
@@ -1039,7 +1040,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 
 .pkg-table {
-  margin-top: var(--space-5);
+  margin: var(--space-5) 0 0;
   border-top: 1px solid var(--border);
   padding-top: var(--space-4);
   display: grid;
