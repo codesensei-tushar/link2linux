@@ -17,6 +17,13 @@ internal object Gestures {
     /** How long a tap, a gesture of one point, touches the screen. */
     const val TAP_MILLIS = 40L
 
+    /**
+     * The shortest rest that splits a touch. The desktop samples the mouse
+     * every frame or so, and a hand that pauses for a frame or two while it
+     * drags has not meant to stop.
+     */
+    const val MIN_REST_MILLIS = 100L
+
     /** Why [points] are out of range, apart from where they lie, or null when they are in range. */
     fun shapeError(points: List<ScreenPoint>): String? = when {
         points.isEmpty() -> "A gesture without points"
@@ -34,33 +41,45 @@ internal object Gestures {
     /**
      * The strokes that carry [points] out on the screen, mapped from the
      * frames of [video]. The touch is split where the finger rests at one
-     * point and where it starts moving again, so that a long press before a
-     * drag lasts as long as the desktop's user held it. Points in range, as
-     * [shapeError] and [inFrame] check.
+     * point for [MIN_REST_MILLIS] or more, and where it starts moving again,
+     * so that a long press before a drag lasts as long as the desktop's user
+     * held it. A shorter rest among moves only slows the move down, and
+     * stays in its stroke. Points in range, as [shapeError] and [inFrame]
+     * check.
      */
     fun strokes(points: List<ScreenPoint>, video: VideoFormat): List<Stroke> {
         val map = Mapping(video)
-        val strokes = ArrayList<Stroke>()
-        var current = arrayListOf(points[0])
-        var startedAt = 0L
-        var resting: Boolean? = null
+        val runs = ArrayList<Run>()
         for ((a, b) in points.zipWithNext()) {
-            val moves = a.x != b.x || a.y != b.y
+            val rests = a.x == b.x && a.y == b.y
             // The same point at the same time adds nothing.
-            if (!moves && time(a) == time(b)) continue
-            val rests = !moves
-            if (resting != null && resting != rests) {
-                strokes += Stroke(current.map(map::onScreen), (time(a) - startedAt).coerceAtLeast(1))
-                current = arrayListOf(a)
-                startedAt = time(a)
+            if (rests && time(a) == time(b)) continue
+            val last = runs.lastOrNull()
+            if (last != null && last.rests == rests) {
+                if (!rests) last.points += b
+                last.endMs = time(b)
+            } else {
+                runs += Run(rests, if (rests) arrayListOf(a) else arrayListOf(a, b), time(a), time(b))
             }
-            resting = rests
-            if (moves) current += b
         }
-        if (resting == null) return listOf(Stroke(listOf(map.onScreen(points[0])), TAP_MILLIS))
-        strokes += Stroke(current.map(map::onScreen), (time(points.last()) - startedAt).coerceAtLeast(1))
-        return strokes
+        if (runs.isEmpty()) return listOf(Stroke(listOf(map.onScreen(points[0])), TAP_MILLIS))
+        val strokes = ArrayList<Run>()
+        for (run in runs) {
+            val rests = run.rests && (runs.size == 1 || run.endMs - run.startMs >= MIN_REST_MILLIS)
+            val last = strokes.lastOrNull()
+            if (last != null && !last.rests && !rests) {
+                // Runs share the point where one ends and the next starts.
+                last.points += run.points.drop(1)
+                last.endMs = run.endMs
+            } else {
+                strokes += Run(rests, run.points.toMutableList(), run.startMs, run.endMs)
+            }
+        }
+        return strokes.map { Stroke(it.points.map(map::onScreen), (it.endMs - it.startMs).coerceAtLeast(1)) }
     }
+
+    /** A part of the touch where the finger moves along [points], or rests at the first. */
+    private class Run(val rests: Boolean, val points: MutableList<ScreenPoint>, val startMs: Long, var endMs: Long)
 
     /**
      * From the frames' pixels to the screen's. The frames show the whole

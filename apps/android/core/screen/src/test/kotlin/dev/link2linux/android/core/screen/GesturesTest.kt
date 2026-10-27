@@ -88,6 +88,34 @@ class GesturesTest {
     }
 
     @Test
+    fun aShortPauseWhileDraggingStaysInTheStroke() {
+        val strokes = Gestures.strokes(listOf(point(10, 10), point(20, 10, 50), point(20, 10, 149), point(30, 10, 200)), video)
+
+        assertEquals(listOf(Stroke(listOf(at(21f, 21f), at(41f, 21f), at(61f, 21f)), 200)), strokes)
+    }
+
+    @Test
+    fun aShortRestBeforeOrAfterAMoveIsPartOfIt() {
+        assertEquals(
+            listOf(Stroke(listOf(at(21f, 21f), at(41f, 21f)), 150)),
+            Gestures.strokes(listOf(point(10, 10), point(10, 10, 50), point(20, 10, 100), point(20, 10, 150)), video),
+        )
+    }
+
+    @Test
+    fun aShortPressAloneIsAPressOfItsLength() {
+        assertEquals(listOf(Stroke(listOf(at(21f, 21f)), 80)), Gestures.strokes(listOf(point(10, 10), point(10, 10, 80)), video))
+    }
+
+    @Test
+    fun aRestOfTheShortestLengthSplitsTheTouch() {
+        val strokes = Gestures.strokes(listOf(point(10, 10), point(20, 10, 50), point(20, 10, 150), point(30, 10, 200)), video)
+
+        assertEquals(3, strokes.size)
+        assertEquals(listOf(50L, Gestures.MIN_REST_MILLIS, 50L), strokes.map { it.durationMillis })
+    }
+
+    @Test
     fun aMoveWithoutTimeStillTakesAMoment() {
         assertEquals(listOf(Stroke(listOf(at(21f, 21f), at(41f, 21f)), 1)), Gestures.strokes(listOf(point(10, 10), point(20, 10)), video))
     }
