@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-bluetooth-device"
+description = "Enables the choose_bluetooth_device command without any pre-configured scope."
+commands.allow = ["choose_bluetooth_device"]
+
+[[permission]]
+identifier = "deny-choose-bluetooth-device"
+description = "Denies the choose_bluetooth_device command without any pre-configured scope."
+commands.deny = ["choose_bluetooth_device"]

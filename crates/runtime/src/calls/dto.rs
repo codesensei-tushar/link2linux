@@ -52,7 +52,8 @@ pub struct BluetoothPairing {
     pub adapter_name: String,
     /// The desktop's Bluetooth address.
     pub adapter_address: String,
-    /// When the window closes, in milliseconds since the Unix epoch.
+    /// When the window closes (Unix time, milliseconds).
+    #[specta(type = specta_typescript::Number)]
     pub ends_unix_ms: i64,
     /// What the phone made of the request to pair.
     pub phone: PairingRequestState,
@@ -189,8 +190,9 @@ pub struct CallView {
     pub can_hang_up: bool,
     /// Touch tones can be sent in it.
     pub can_send_tones: bool,
-    /// When the call became active, in milliseconds since the Unix epoch,
-    /// for its timer.
+    /// When the call became active (Unix time, milliseconds), for its
+    /// timer.
+    #[specta(type = Option<specta_typescript::Number>)]
     pub active_since_unix_ms: Option<i64>,
 }
 

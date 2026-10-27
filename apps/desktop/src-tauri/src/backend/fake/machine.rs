@@ -76,7 +76,7 @@ impl Machine {
             next_id: 1,
             next_offer_seed: 1,
         };
-        if script == Script::Demo {
+        if script.has_demo_phones() {
             let day = 86_400_000;
             machine.devices = vec![
                 demo_device(
@@ -400,7 +400,11 @@ impl Machine {
         let svg = QrImage(qr::svg(&uri).unwrap_or_default());
         let scan = matches!(
             self.script,
-            Script::Success | Script::Demo | Script::Declined | Script::WrongCode
+            Script::Success
+                | Script::Demo
+                | Script::IncomingCall
+                | Script::Declined
+                | Script::WrongCode
         );
         self.phase = Phase::Qr {
             svg,

@@ -259,6 +259,7 @@ fn script_names_round_trip() {
         ("not-found", Script::NotFound),
         ("declined", Script::Declined),
         ("demo", Script::Demo),
+        ("incoming-call", Script::IncomingCall),
     ] {
         assert_eq!(Script::parse(name), Some(script));
     }

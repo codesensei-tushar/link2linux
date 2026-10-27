@@ -26,9 +26,9 @@ use link2linux_runtime::paths::{DataDir, desktop_name, runtime_images_dir};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
-    Backend, BackendError, CachedImage, ClipboardStatus, Device, EventSink, FileTransfer,
-    MirroredNotification, PairingMethod, PairingState, PhoneStatus, PhoneTarget, RingStatus,
-    Settings,
+    Backend, BackendError, CachedImage, CallsStatus, ClipboardStatus, Device, EventSink,
+    FileTransfer, MirroredNotification, PairingMethod, PairingState, PhoneStatus, PhoneTarget,
+    RingStatus, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -265,6 +265,54 @@ impl Backend for LiveBackend {
 
     fn notification_image(&self, device_id: &str, sha256: &str) -> Option<CachedImage> {
         self.runtime.notification_image(device_id, sha256)
+    }
+
+    fn calls(&self) -> CallsStatus {
+        self.runtime.calls()
+    }
+
+    fn start_bluetooth_pairing(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.start_bluetooth_pairing(device_id)
+    }
+
+    fn cancel_bluetooth_pairing(&self) {
+        self.runtime.cancel_bluetooth_pairing();
+    }
+
+    fn confirm_bluetooth_code(&self, prompt: u32, matches: bool) -> Result<(), BackendError> {
+        self.runtime.confirm_bluetooth_code(prompt, matches)
+    }
+
+    fn choose_bluetooth_device(&self, device_id: &str, address: &str) -> Result<(), BackendError> {
+        self.runtime.choose_bluetooth_device(device_id, address)
+    }
+
+    fn connect_calls(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.connect_calls(device_id)
+    }
+
+    fn answer_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.runtime.answer_call(device_id, call_id)
+    }
+
+    fn decline_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.runtime.decline_call(device_id, call_id)
+    }
+
+    fn hang_up_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.runtime.hang_up_call(device_id, call_id)
+    }
+
+    fn dial(&self, device_id: &str, number: &str) -> Result<(), BackendError> {
+        self.runtime.dial(device_id, number)
+    }
+
+    fn send_tones(&self, device_id: &str, tones: &str) -> Result<(), BackendError> {
+        self.runtime.send_tones(device_id, tones)
+    }
+
+    fn set_call_muted(&self, device_id: &str, muted: bool) -> Result<(), BackendError> {
+        self.runtime.set_call_muted(device_id, muted)
     }
 
     fn settings(&self) -> Settings {

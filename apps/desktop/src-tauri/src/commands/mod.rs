@@ -11,6 +11,7 @@
 //! `capabilities/default.json`.
 
 pub mod app;
+pub mod calls;
 pub mod clipboard;
 pub mod devices;
 pub mod files;

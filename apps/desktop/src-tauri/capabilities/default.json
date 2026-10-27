@@ -34,6 +34,18 @@
     "allow-stop-ringing",
     "allow-get-settings",
     "allow-set-settings",
+    "allow-get-calls-status",
+    "allow-start-bluetooth-pairing",
+    "allow-cancel-bluetooth-pairing",
+    "allow-confirm-bluetooth-code",
+    "allow-choose-bluetooth-device",
+    "allow-connect-calls",
+    "allow-answer-call",
+    "allow-decline-call",
+    "allow-hang-up-call",
+    "allow-dial-number",
+    "allow-send-call-tones",
+    "allow-set-call-muted",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

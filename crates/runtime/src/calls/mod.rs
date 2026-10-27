@@ -21,8 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use link2linux_core::calls::{
-    CallAction, CallNotification, Operation, PAIRING_WINDOW, PairingWindow, PhoneAnswer, are_tones,
-    dialable, operation,
+    CallAction, CallNotification, Operation, PAIRING_WINDOW, PairingWindow, PhoneAnswer, operation,
 };
 use link2linux_core::notifications::Change;
 use link2linux_core::session::Availability;
@@ -32,6 +31,8 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 
 pub use driver::CallsDriver;
+/// The rules for what can be dialed and sent as tones.
+pub use link2linux_core::calls::{are_tones, dialable};
 pub use port::{CallStack, CallsPort};
 
 use center::{ANSWER_KEY, Center, DECLINE_KEY, Phone, Seen};

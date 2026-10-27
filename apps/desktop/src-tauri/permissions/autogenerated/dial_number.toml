@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dial-number"
+description = "Enables the dial_number command without any pre-configured scope."
+commands.allow = ["dial_number"]
+
+[[permission]]
+identifier = "deny-dial-number"
+description = "Denies the dial_number command without any pre-configured scope."
+commands.deny = ["dial_number"]

@@ -23,7 +23,7 @@ pub struct FakeFiles {
 impl FakeFiles {
     pub fn new(script: Script, sink: Arc<dyn EventSink>, now_unix_ms: i64) -> Self {
         let mut transfers = HashMap::new();
-        if script == Script::Demo {
+        if script.has_demo_phones() {
             transfers.insert("demo-1".to_owned(), demo(now_unix_ms));
         }
         Self {

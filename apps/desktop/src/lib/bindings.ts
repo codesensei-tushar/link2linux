@@ -114,10 +114,46 @@ export const commands = {
 	 *  start.
 	 */
 	setSettings: (settings: Settings) => typedError<null, CommandError>(__TAURI_INVOKE("set_settings", { settings })),
+	/**
+	 *  The phones' calls and this computer's part in them: whether it can take
+	 *  calls, Bluetooth pairing, and each phone's link and calls. Later changes
+	 *  arrive as `CallsChanged` events: subscribe first, then call this.
+	 */
+	getCallsStatus: () => __TAURI_INVOKE<CallsStatus>("get_calls_status"),
+	/**
+	 *  Opens Bluetooth pairing with a phone for 2 minutes, and asks the phone
+	 *  to pair.
+	 */
+	startBluetoothPairing: (deviceId: string) => typedError<null, CommandError>(__TAURI_INVOKE("start_bluetooth_pairing", { deviceId })),
+	/**  Closes Bluetooth pairing. */
+	cancelBluetoothPairing: () => __TAURI_INVOKE<void>("cancel_bluetooth_pairing"),
+	/**
+	 *  The user compared the code of pairing prompt `prompt_id`: `matches`
+	 *  says whether both devices show the same one. Pairing goes ahead only
+	 *  when it does.
+	 */
+	confirmBluetoothCode: (promptId: number, matches: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("confirm_bluetooth_code", { promptId, matches })),
+	/**  The user picked the paired Bluetooth device at `address` as the phone's. */
+	chooseBluetoothDevice: (deviceId: string, address: string) => typedError<null, CommandError>(__TAURI_INVOKE("choose_bluetooth_device", { deviceId, address })),
+	/**  Connects the phone's hands-free link with this computer. */
+	connectCalls: (deviceId: string) => typedError<null, CommandError>(__TAURI_INVOKE("connect_calls", { deviceId })),
+	/**  Answers a ringing call. */
+	answerCall: (deviceId: string, callId: string) => typedError<null, CommandError>(__TAURI_INVOKE("answer_call", { deviceId, callId })),
+	/**  Declines a ringing call. */
+	declineCall: (deviceId: string, callId: string) => typedError<null, CommandError>(__TAURI_INVOKE("decline_call", { deviceId, callId })),
+	/**  Ends a call. */
+	hangUpCall: (deviceId: string, callId: string) => typedError<null, CommandError>(__TAURI_INVOKE("hang_up_call", { deviceId, callId })),
+	/**  Calls `number` from the phone, over its hands-free link. */
+	dialNumber: (deviceId: string, number: string) => typedError<null, CommandError>(__TAURI_INVOKE("dial_number", { deviceId, number })),
+	/**  Sends touch tones, such as `1` or `#`, in the phone's active call. */
+	sendCallTones: (deviceId: string, tones: string) => typedError<null, CommandError>(__TAURI_INVOKE("send_call_tones", { deviceId, tones })),
+	/**  Mutes or unmutes this computer's microphone in the phone's calls. */
+	setCallMuted: (deviceId: string, muted: boolean) => typedError<null, CommandError>(__TAURI_INVOKE("set_call_muted", { deviceId, muted })),
 };
 
 /** Events */
 export const events = {
+	callsChanged: makeEvent<CallsChanged, CallsChanged>("calls-changed"),
 	clipboardChanged: makeEvent<ClipboardChanged, ClipboardChanged>("clipboard-changed"),
 	devicesChanged: makeEvent<DevicesChanged, DevicesChanged>("devices-changed"),
 	fileDrag: makeEvent<FileDrag, FileDrag>("file-drag"),
@@ -142,6 +178,141 @@ export type AppInfo = {
 	os: string,
 	/**  CPU architecture, e.g. "x86_64". */
 	arch: string,
+};
+
+/**  A Bluetooth device the phone may be. */
+export type BluetoothChoice = {
+	/**  Its address, `AA:BB:CC:DD:EE:FF`. */
+	address: string,
+	/**  Its Bluetooth name. */
+	name: string,
+};
+
+/**  The pairing window the user opened. */
+export type BluetoothPairing = {
+	/**  The phone it is for. */
+	deviceId: string,
+	/**  The name the phone looks for in its Bluetooth list. */
+	adapterName: string,
+	/**  The desktop's Bluetooth address. */
+	adapterAddress: string,
+	/**  When the window closes (Unix time, milliseconds). */
+	endsUnixMs: number,
+	/**  What the phone made of the request to pair. */
+	phone: PairingRequestState,
+	/**
+	 *  A device that asks to pair and shows a code, for the user to
+	 *  confirm.
+	 */
+	prompt: PairingCode | null,
+};
+
+/**  A phone's hands-free link with this desktop. */
+export type CallLink = 
+/**
+ *  Calls cannot be used on this desktop now; see
+ *  [`CallsStatus::desktop`].
+ */
+{ state: "off" } | 
+/**  The phone is not paired with this desktop over Bluetooth. */
+{ state: "notPaired" } | 
+/**  Several paired devices may be the phone: the user picks one. */
+{ state: "choose"; candidates: BluetoothChoice[] } | 
+/**  Paired, but the hands-free link is down. */
+{ state: "disconnected"; device: BluetoothChoice } | 
+/**  The desktop is connecting the hands-free link. */
+{ state: "connecting"; device: BluetoothChoice } | 
+/**  The hands-free link is up: calls come to this desktop. */
+{ state: "connected"; device: BluetoothChoice; 
+/**  The desktop can mute its microphone in calls. */
+canMute: boolean; muted: boolean };
+
+/**  What went wrong with a phone's calls. */
+export type CallProblem = 
+/**  The hands-free link could not be connected. */
+"connectFailed" | 
+/**  Pairing could not start, as when Bluetooth turned off. */
+"pairingFailed" | 
+/**  The pairing window closed before the phone paired. */
+"pairingTimedOut" | 
+/**  A call command failed, such as dialing. */
+"commandFailed";
+
+/**  Where a call is. */
+export type CallStateView = 
+/**  It rings. */
+"incoming" | 
+/**  It rings while another call is on. */
+"waiting" | 
+/**  An outgoing call is being set up. */
+"dialing" | 
+/**  An outgoing call rings at the other end. */
+"alerting" | "active" | "held";
+
+/**  A call as the calls page shows it. */
+export type CallView = {
+	/**  Identifies the call in the commands that act on it. */
+	id: string,
+	/**  The other party's number, when known. */
+	number: string,
+	/**  The other party's name, when known. */
+	name: string,
+	state: CallStateView,
+	/**
+	 *  The phone app whose call it is, for calls of apps other than the
+	 *  phone's dialer, which come only as a notification.
+	 */
+	appName: string | null,
+	/**
+	 *  The call's audio is on this desktop when answered here; otherwise
+	 *  it stays on the phone.
+	 */
+	audioHere: boolean,
+	canAnswer: boolean,
+	canDecline: boolean,
+	canHangUp: boolean,
+	/**  Touch tones can be sent in it. */
+	canSendTones: boolean,
+	/**
+	 *  When the call became active (Unix time, milliseconds), for its
+	 *  timer.
+	 */
+	activeSinceUnixMs: number | null,
+};
+
+/**  The phones' calls, or this computer's part in them, changed. */
+export type CallsChanged = CallsStatus;
+
+/**  Whether this desktop can take calls. */
+export type CallsDesktop = 
+/**  It can. */
+"ready" | 
+/**  The user turned calls off on this desktop. */
+"disabled" | 
+/**  This build has no calls for this OS. */
+"unsupported" | 
+/**  The desktop has no Bluetooth adapter. */
+"noAdapter" | 
+/**  Bluetooth is turned off. */
+"bluetoothOff" | 
+/**
+ *  The desktop's audio system offers no hands-free call control: it
+ *  needs PipeWire 1.4 or later with its native Bluetooth backend.
+ */
+"noCallControl" | 
+/**  Still looking. */
+"checking";
+
+/**  Calls on this desktop, as a snapshot. */
+export type CallsStatus = {
+	/**  Whether this desktop can take calls, and why not. */
+	desktop: CallsDesktop,
+	/**  The user's "Use this computer for calls" switch. */
+	enabled: boolean,
+	/**  Bluetooth pairing, while the user pairs a phone. */
+	pairing: BluetoothPairing | null,
+	/**  Every paired phone, in pairing order. */
+	phones: PhoneCalls[],
 };
 
 /**  The cellular generation the phone's status bar shows. */
@@ -259,7 +430,7 @@ export type CommandError = {
 	message: string,
 };
 
-export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted" | "folderNotSendable" | "fileUnreadable" | "tooManyFiles" | "filesOff";
+export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted" | "folderNotSendable" | "fileUnreadable" | "tooManyFiles" | "filesOff" | "callsUnavailable" | "callsNotConnected" | "notDialable";
 
 export type ConversationMessageInfo = {
 	/**  Empty for messages the phone's user sent. */
@@ -443,6 +614,16 @@ export type NotificationVisibilityView = "unspecified" | "public" | "private" | 
 /**  The pairing step changed. */
 export type PairingChanged = PairingState;
 
+/**  A device that asks to pair, with the code both devices show. */
+export type PairingCode = {
+	/**  Identifies the prompt when the user answers it. */
+	id: number,
+	/**  The device's Bluetooth name. */
+	deviceName: string,
+	/**  The six digits. */
+	code: string,
+};
+
 /**  Why pairing did not finish. */
 export type PairingFailure = 
 /**  The phone refused the connection. */
@@ -477,6 +658,19 @@ export type PairingMethod =
 "qrCode" | 
 /**  Both screens show a six-digit code and the user compares them. */
 "sas";
+
+/**  Whether the phone was asked to pair. */
+export type PairingRequestState = 
+/**  Not yet: the phone is not connected, or calls are not ready on it. */
+"notAsked" | 
+/**  Asked; no answer yet. */
+"waiting" | 
+/**  The phone shows its user a prompt to pair. */
+"asked" | 
+/**  The phone has no Bluetooth, or turned calls off. */
+"unavailable" | 
+/**  The phone could not ask its user. */
+"failed";
 
 /**  Where a pairing attempt currently stands. */
 export type PairingState = 
@@ -531,6 +725,18 @@ export type PhoneBattery = {
 	pluggedIn: boolean,
 	/**  Battery saver is on. */
 	powerSaver: boolean,
+};
+
+/**  A paired phone and its calls. */
+export type PhoneCalls = {
+	deviceId: string,
+	phoneName: string,
+	/**  The phone's hands-free link with this desktop. */
+	link: CallLink,
+	/**  Its calls, the hands-free link's first. */
+	calls: CallView[],
+	/**  What went wrong last, until it works. */
+	problem: CallProblem | null,
 };
 
 /**  The phone's cellular connection. */
@@ -676,6 +882,12 @@ export type Settings = {
 	 *  by default: they are what the phone's own status bar shows.
 	 */
 	showPhoneStatus?: boolean,
+	/**
+	 *  The phones' calls ring on this computer, and are taken on it over
+	 *  Bluetooth. On by default: nothing happens until the user pairs a
+	 *  phone over Bluetooth.
+	 */
+	useForCalls?: boolean,
 };
 
 /**  Why the app could not start, for the page shown instead of the app. */

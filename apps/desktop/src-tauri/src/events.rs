@@ -10,8 +10,8 @@ use tauri::AppHandle;
 use tauri_specta::Event;
 
 use crate::backend::{
-    ClipboardStatus, Device, EventSink, FileTransferEvent, NotificationEvent, PairingState,
-    PhoneStatus, RingStatus,
+    CallsStatus, ClipboardStatus, Device, EventSink, FileTransferEvent, NotificationEvent,
+    PairingState, PhoneStatus, RingStatus,
 };
 
 /// The pairing step changed.
@@ -33,6 +33,10 @@ pub struct NotificationChanged {
 /// The shared clipboard's state changed.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 pub struct ClipboardChanged(pub ClipboardStatus);
+
+/// The phones' calls, or this computer's part in them, changed.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+pub struct CallsChanged(pub CallsStatus);
 
 /// A file transfer with a phone changed.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
@@ -128,5 +132,9 @@ impl EventSink for TauriSink {
             ring: *ring,
         }
         .emit(&self.app);
+    }
+
+    fn calls_changed(&self, status: &CallsStatus) {
+        let _ = CallsChanged(status.clone()).emit(&self.app);
     }
 }

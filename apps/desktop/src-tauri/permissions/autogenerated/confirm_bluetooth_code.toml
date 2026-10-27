@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-confirm-bluetooth-code"
+description = "Enables the confirm_bluetooth_code command without any pre-configured scope."
+commands.allow = ["confirm_bluetooth_code"]
+
+[[permission]]
+identifier = "deny-confirm-bluetooth-code"
+description = "Denies the confirm_bluetooth_code command without any pre-configured scope."
+commands.deny = ["confirm_bluetooth_code"]
