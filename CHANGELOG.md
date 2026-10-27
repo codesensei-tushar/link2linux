@@ -8,6 +8,10 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-27
+
+Phone status, ring my phone, and calls over Bluetooth.
+
 ### Added
 
 - Phone status. The computer shows the phone's battery level, whether it
@@ -23,8 +27,9 @@ from Unreleased to a version.
   microphone and speakers, over Bluetooth. The Calls page pairs the two
   over Bluetooth with a code you confirm on both, then shows incoming and
   ongoing calls with answer, decline, hang up and a keypad, and has a dial
-  pad. An incoming call pops up on the computer, and the phone's own call
-  notification is shown only once. Turn calls off on the computer to keep
+  pad. An incoming call pops up on the computer, naming the caller only
+  when notification text is on, and the phone's own call notification is
+  shown only once. Turn calls off on the computer to keep
   them on the phone. Media audio stays on the phone.
 
 ### Changed
@@ -223,7 +228,8 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.0...v0.1.1
