@@ -1423,8 +1423,10 @@ control, and `DISABLED` while its user has turned off calls on the desktop.
   adapter discoverable for that time, and sends `BluetoothPairingRequest`
   with its adapter's name and address.
 - The phone answers `INVALID_ARGUMENT` to a name or address outside the
-  forms the schema gives, and `UNAVAILABLE` when it has no Bluetooth.
-  Otherwise it asks the user to pair, for example with a notification that
+  forms the schema gives, `UNAVAILABLE` when it has no Bluetooth, and
+  `NOT_ALLOWED` when it cannot ask the user, for example because the user
+  blocked the app's notifications; the desktop then tells the user to pair
+  from the phone's Bluetooth settings. Otherwise it asks the user to pair, for example with a notification that
   opens the system's Bluetooth pairing screen, or that starts pairing with
   `address` itself where the user allowed the phone app to, and answers
   `Ack`. It withdraws the prompt after 2 minutes.
@@ -1729,7 +1731,9 @@ sends requests, and reports the feature `READY`.
 - On `RingRequest`, the phone starts ringing and answers `Ack`. It plays a
   ringtone at full volume, also when its ringer is set to vibrate or
   silent, vibrates, and shows a notification that names the desktop and
-  has a button to stop. It restores its volume once ringing ends.
+  has a button to stop. Where the user blocked that notification, it rings
+  all the same and offers the button in the app. It restores its volume
+  once ringing ends, also after the app was stopped while ringing.
 - The phone rings for 1 minute. A `RingRequest` while it rings, from any
   desktop, starts the minute again and gets an `Ack`.
 - Ringing ends when the user stops it on the phone, when a desktop sends
