@@ -3,6 +3,7 @@ package dev.link2linux.android.core.network
 import dev.link2linux.protocol.v1.Envelope
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -54,10 +55,20 @@ class StuckTransport : Transport {
         }
     }
 
-    /** The envelopes the phone wrote. */
+    /**
+     * The envelopes the phone wrote, up to the last whole frame: a frame's
+     * length and body are separate writes, and the session's writer may be
+     * between them.
+     */
     fun envelopes(): List<Envelope> {
         val bytes = ByteArrayInputStream(synchronized(written) { written.toByteArray() })
-        return generateSequence { FrameCodec().read(bytes) }.toList()
+        return generateSequence {
+            try {
+                FrameCodec().read(bytes)
+            } catch (_: EOFException) {
+                null
+            }
+        }.toList()
     }
 
     override val input: InputStream = object : InputStream() {
