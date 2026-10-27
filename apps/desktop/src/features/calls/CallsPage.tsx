@@ -2,12 +2,12 @@ import { Phone, RefreshCw, Smartphone, TriangleAlert } from "lucide-react";
 import { useCallback, useState } from "react";
 
 import { Button, Callout, Card, EmptyState, PageHeader, Spinner, StatusDot } from "@/components/ui";
-import { useDesktopApi, type CallsStatus, type PhoneCalls } from "@/lib/api";
+import { useDesktopApi, type CallsStatus, type CallView, type PhoneCalls } from "@/lib/api";
 import { useLive } from "@/lib/use-live";
 import { errorMessage } from "@/lib/utils";
 
 import { LinkPanel, PairingCard } from "./BluetoothSetup";
-import { CallCard } from "./CallCard";
+import { CallCard, type Mute } from "./CallCard";
 import { desktopCopy, problemText } from "./copy";
 import { DialPad } from "./DialPad";
 import { callsMeta } from "./meta";
@@ -74,6 +74,15 @@ function PhonePicker({
   );
 }
 
+/** What the microphone can do in a phone's calls. */
+function muteOf(phone: PhoneCalls): Mute {
+  return phone.link.state === "connected"
+    ? { can: phone.link.canMute, muted: phone.link.muted }
+    : { can: false, muted: false };
+}
+
+const isRinging = (call: CallView) => call.state === "incoming" || call.state === "waiting";
+
 function CallsView({ status }: { status: CallsStatus }) {
   const [chosen, setChosen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,10 +95,24 @@ function CallsView({ status }: { status: CallsStatus }) {
     phones.find((p) => p.deviceId === status.pairing?.deviceId) ??
     phones[0];
 
+  // An error belongs to the phone it came from, so drop it when another is shown.
+  const [errorPhone, setErrorPhone] = useState(phone?.deviceId);
+  if (errorPhone !== phone?.deviceId) {
+    setErrorPhone(phone?.deviceId);
+    setError(null);
+  }
+
+  const errorCallout = error && (
+    <Callout tone="warning" role="alert">
+      {error}
+    </Callout>
+  );
+
   if (!phone) {
     return (
       <>
         <DesktopCard status={status} onError={setError} />
+        {errorCallout}
         <EmptyState
           icon={Smartphone}
           title="No phone paired"
@@ -99,42 +122,48 @@ function CallsView({ status }: { status: CallsStatus }) {
     );
   }
 
-  const link = phone.link;
-  const mute =
-    link.state === "connected"
-      ? { can: link.canMute, muted: link.muted }
-      : { can: false, muted: false };
   const pairing = status.pairing?.deviceId === phone.deviceId ? status.pairing : null;
+  // Every phone's calls stay on top of the page, ringing ones first, so a call
+  // can be answered whichever phone is selected. A call keeps its place in the
+  // list when it is answered, so its card isn't rebuilt under the user.
+  const named = phones.length > 1;
+  const calls = phones
+    .flatMap((p) => p.calls.map((call) => ({ phone: p, call })))
+    .sort((a, b) => Number(isRinging(b.call)) - Number(isRinging(a.call)));
 
   return (
     <>
+      <div className="sr-only" aria-live="polite">
+        {calls
+          .filter(({ call }) => isRinging(call))
+          .map(({ phone: p, call }) => (
+            <p key={`${p.deviceId}:${call.id}`}>
+              {`Incoming call from ${call.name || call.number || "an unknown caller"}${named ? ` on ${p.phoneName}` : ""}`}
+            </p>
+          ))}
+      </div>
+      {calls.map(({ phone: p, call }) => (
+        <CallCard
+          key={`${p.deviceId}:${call.id}`}
+          deviceId={p.deviceId}
+          phoneName={named ? p.phoneName : undefined}
+          call={call}
+          mute={muteOf(p)}
+          onError={setError}
+        />
+      ))}
       <DesktopCard status={status} onError={setError} />
-      {phones.length > 1 && (
-        <PhonePicker phones={phones} selected={phone.deviceId} onSelect={setChosen} />
-      )}
+      {named && <PhonePicker phones={phones} selected={phone.deviceId} onSelect={setChosen} />}
       {phone.problem && (
         <Callout tone="warning">{problemText(phone.problem, phone.phoneName)}</Callout>
       )}
-      {error && (
-        <Callout tone="warning" role="alert">
-          {error}
-        </Callout>
-      )}
+      {errorCallout}
       {pairing ? (
         <PairingCard pairing={pairing} phoneName={phone.phoneName} onError={setError} />
       ) : (
         <LinkPanel key={phone.deviceId} phone={phone} onError={setError} />
       )}
-      {phone.calls.map((call) => (
-        <CallCard
-          key={call.id}
-          deviceId={phone.deviceId}
-          call={call}
-          mute={mute}
-          onError={setError}
-        />
-      ))}
-      {link.state === "connected" && (
+      {phone.link.state === "connected" && (
         <DialPad key={phone.deviceId} deviceId={phone.deviceId} onError={setError} />
       )}
     </>

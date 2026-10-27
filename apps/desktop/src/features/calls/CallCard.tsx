@@ -1,5 +1,5 @@
 import { Grid3x3, Mic, MicOff, Phone, PhoneOff } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button, Card } from "@/components/ui";
 import { useDesktopApi, type CallView } from "@/lib/api";
@@ -9,6 +9,7 @@ import { callStateLabel } from "./copy";
 import { formatDuration } from "./format";
 import { Keypad } from "./Keypad";
 import { useClock } from "./use-clock";
+import { useRun } from "./use-run";
 
 /** Whether the microphone can be muted in a phone's calls, and is. */
 export interface Mute {
@@ -24,11 +25,14 @@ function CallTimer({ since }: { since: number }) {
 /** One call of a phone, with what can be done with it. */
 export function CallCard({
   deviceId,
+  phoneName,
   call,
   mute,
   onError,
 }: {
   deviceId: string;
+  /** Names the phone when the page shows the calls of several. */
+  phoneName?: string;
   call: CallView;
   mute: Mute;
   onError: (message: string | null) => void;
@@ -38,19 +42,46 @@ export function CallCard({
   const caller = call.name || call.number || "Unknown caller";
   const detail = call.name && call.number ? call.number : null;
   const ringing = call.state === "incoming" || call.state === "waiting";
-  const run = (action: () => Promise<void>) => {
+  const { run, busy } = useRun(onError);
+  const section = useRef<HTMLElement>(null);
+  const hadFocus = useRef(false);
+  // Tones are sent one after the other, so fast taps arrive in order.
+  const tones = useRef<Promise<void>>(Promise.resolve());
+  const sendTone = (key: string) => {
     onError(null);
-    action().catch((reason: unknown) => {
-      onError(errorMessage(reason));
-    });
+    tones.current = tones.current
+      .then(() => api.sendCallTones(deviceId, key))
+      .catch((reason: unknown) => {
+        onError(errorMessage(reason));
+      });
+  };
+  // A button the call no longer allows disappears when it is used. Keep
+  // keyboard focus in the card instead of dropping it to the page.
+  const buttons = [call.canAnswer, call.canDecline, call.canHangUp, mute.can].join();
+  useEffect(() => {
+    const card = section.current;
+    if (hadFocus.current && card && !card.contains(document.activeElement)) {
+      card.focus();
+    }
+    hadFocus.current = false;
+  }, [buttons]);
+  const act = (action: () => Promise<void>) => {
+    hadFocus.current = section.current?.contains(document.activeElement) ?? false;
+    run(action);
   };
 
   return (
     <Card className={cn("call", ringing && "call--ringing")}>
-      <section aria-label={`Call with ${caller}`} className="call__body">
+      <section
+        ref={section}
+        tabIndex={-1}
+        aria-label={`Call with ${caller}`}
+        className="call__body"
+      >
         <div className="call__who">
           <h2 className="call__caller">{caller}</h2>
           {detail && <span className="call__detail">{detail}</span>}
+          {phoneName && <span className="call__detail">{`On ${phoneName}`}</span>}
           {call.appName && <span className="call__detail">{`${call.appName} call`}</span>}
         </div>
         {call.state === "active" && call.activeSinceUnixMs !== null ? (
@@ -64,8 +95,9 @@ export function CallCard({
             <Button
               variant="primary"
               icon={Phone}
+              disabled={busy}
               onClick={() => {
-                run(() => api.answerCall(deviceId, call.id));
+                act(() => api.answerCall(deviceId, call.id));
               }}
             >
               Answer
@@ -75,8 +107,9 @@ export function CallCard({
             <Button
               icon={PhoneOff}
               className="call__end"
+              disabled={busy}
               onClick={() => {
-                run(() => api.declineCall(deviceId, call.id));
+                act(() => api.declineCall(deviceId, call.id));
               }}
             >
               Decline
@@ -86,8 +119,9 @@ export function CallCard({
             <Button
               icon={PhoneOff}
               className="call__end"
+              disabled={busy}
               onClick={() => {
-                run(() => api.hangUpCall(deviceId, call.id));
+                act(() => api.hangUpCall(deviceId, call.id));
               }}
             >
               Hang up
@@ -97,8 +131,9 @@ export function CallCard({
             <Button
               icon={mute.muted ? MicOff : Mic}
               aria-pressed={mute.muted}
+              disabled={busy}
               onClick={() => {
-                run(() => api.setCallMuted(deviceId, !mute.muted));
+                act(() => api.setCallMuted(deviceId, !mute.muted));
               }}
             >
               Mute
@@ -120,7 +155,7 @@ export function CallCard({
           <Keypad
             label="Keypad"
             onKey={(key) => {
-              run(() => api.sendCallTones(deviceId, key));
+              sendTone(key);
             }}
           />
         )}
