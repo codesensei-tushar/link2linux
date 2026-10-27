@@ -34,6 +34,7 @@ pub trait CallsPort: Send + Sync {
         &self,
         device: BluetoothAddress,
     ) -> BoxFuture<'_, Result<(), PlatformError>>;
+    fn untrust(&self, device: BluetoothAddress) -> BoxFuture<'_, Result<(), PlatformError>>;
     fn gateways(&self) -> BoxFuture<'_, Result<Vec<Gateway>, PlatformError>>;
     fn telephony_changed(&self) -> BoxFuture<'_, Result<(), PlatformError>>;
     fn answer<'a>(&'a self, call: &'a str) -> BoxFuture<'a, Result<(), PlatformError>>;
@@ -108,6 +109,10 @@ impl<B: Bluetooth, T: Telephony> CallsPort for CallStack<B, T> {
         device: BluetoothAddress,
     ) -> BoxFuture<'_, Result<(), PlatformError>> {
         Box::pin(self.bluetooth.disconnect_hands_free(device))
+    }
+
+    fn untrust(&self, device: BluetoothAddress) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(self.bluetooth.untrust(device))
     }
 
     fn gateways(&self) -> BoxFuture<'_, Result<Vec<Gateway>, PlatformError>> {

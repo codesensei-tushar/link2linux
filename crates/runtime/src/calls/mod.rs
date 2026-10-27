@@ -14,8 +14,9 @@ mod choices;
 mod driver;
 pub mod dto;
 mod port;
+mod trusted;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -75,6 +76,9 @@ pub struct Calls {
     /// meant for one window never lands after a newer window opened.
     pairing: tokio::sync::Mutex<()>,
     choices_path: PathBuf,
+    /// The devices this desktop trusted itself, kept at `trusted_path`.
+    trusted: Mutex<HashSet<BluetoothAddress>>,
+    trusted_path: PathBuf,
 }
 
 impl Calls {
@@ -86,6 +90,7 @@ impl Calls {
         choices_path: PathBuf,
     ) -> Self {
         let choices = choices::load(&choices_path);
+        let trusted_path = choices_path.with_file_name("calls-trusted.json");
         Self {
             center: Mutex::new(Center::new(port.is_some(), enabled, choices)),
             port,
@@ -95,7 +100,31 @@ impl Calls {
             nudge: Notify::new(),
             pairing: tokio::sync::Mutex::new(()),
             choices_path,
+            trusted: Mutex::new(trusted::load(&trusted_path)),
+            trusted_path,
         }
+    }
+
+    /// The desktop trusts `address` to connect its hands-free link, which
+    /// it was not: noted, so that forgetting the phone takes the trust back.
+    fn note_trust(&self, address: BluetoothAddress) {
+        let mut trusted = lock(&self.trusted);
+        if trusted.insert(address)
+            && let Err(error) = trusted::save(&self.trusted_path, &trusted)
+        {
+            tracing::warn!(%error, "could not keep the Bluetooth devices this computer trusted");
+        }
+    }
+
+    /// Whether the desktop trusted `address` itself. It no longer counts
+    /// as such afterwards.
+    fn take_trust(&self, address: BluetoothAddress) -> bool {
+        let mut trusted = lock(&self.trusted);
+        let ours = trusted.remove(&address);
+        if ours && let Err(error) = trusted::save(&self.trusted_path, &trusted) {
+            tracing::warn!(%error, "could not keep the Bluetooth devices this computer trusted");
+        }
+        ours
     }
 
     /// Closes pairing at the adapter for the window that opened as the
@@ -406,7 +435,16 @@ fn connect_link(
     address: BluetoothAddress,
     why: Connect,
 ) {
-    lock(&core.calls.center).set_connecting(&device_id, true);
+    let trusted = {
+        let mut center = lock(&core.calls.center);
+        center.set_connecting(&device_id, true);
+        center.is_trusted(address)
+    };
+    // Connecting trusts the device. A trust the desktop gives is noted,
+    // so that forgetting the phone takes back that one only.
+    if !trusted {
+        core.calls.note_trust(address);
+    }
     let core = core.clone();
     let port = port.clone();
     core.clone().handle.spawn(async move {
@@ -622,17 +660,34 @@ pub(crate) fn set_enabled(core: &Core, enabled: bool) {
 }
 
 /// Phone `device_id` is no longer paired: what the desktop kept for it
-/// goes, and pairing open for it closes.
+/// goes, pairing open for it closes, and its hands-free link goes down.
+/// Its device stays paired with the desktop, but loses a trust the desktop
+/// gave it, so it no longer connects by itself.
 pub(crate) fn forget(core: &Core, device_id: &str) {
     let calls = &core.calls;
-    let (choices, closed) = {
+    let (choices, closed, device) = {
         let mut center = lock(&calls.center);
         let closed = take_window(&mut center, |window| window.device_id() == device_id);
+        let device = center.choices().get(device_id).copied();
         center.forget(device_id);
-        (center.choices().clone(), closed)
+        (center.choices().clone(), closed, device)
     };
     if let Some(closed) = closed {
         close_taken(core, closed);
+    }
+    if let (Some(address), Some(port)) = (device, calls.port.clone()) {
+        let calls = calls.clone();
+        core.handle.spawn(async move {
+            tracing::info!(%address, "a phone is forgotten: disconnecting its hands-free link");
+            if let Err(error) = port.disconnect_hands_free(address).await {
+                tracing::debug!(%error, "could not disconnect the hands-free link");
+            }
+            if calls.take_trust(address)
+                && let Err(error) = port.untrust(address).await
+            {
+                tracing::debug!(%error, "could not take back the device's trust");
+            }
+        });
     }
     lock(&calls.told).remove(device_id);
     calls.save(&choices);

@@ -665,6 +665,19 @@ impl Bluetooth for BluezBluetooth {
         }
     }
 
+    async fn untrust(&self, device: BluetoothAddress) -> Result<(), PlatformError> {
+        let connection = self.connect().await?;
+        let path = self.device_path(&connection, device).await?;
+        try_set(&connection, path.as_ref(), DEVICE, "Trusted", false)
+            .await
+            .map_err(|e| {
+                unavailable(
+                    SERVICE,
+                    format!("could not untrust the phone: {}", describe(&e)),
+                )
+            })
+    }
+
     async fn disconnect_hands_free(&self, device: BluetoothAddress) -> Result<(), PlatformError> {
         let connection = self.connect().await?;
         let path = self.device_path(&connection, device).await?;

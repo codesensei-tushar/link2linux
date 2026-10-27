@@ -276,6 +276,15 @@ impl Center {
         known
     }
 
+    /// Whether the paired device at `address` is trusted to connect by
+    /// itself, by what Bluetooth reported last.
+    pub fn is_trusted(&self, address: BluetoothAddress) -> bool {
+        self.seen
+            .devices
+            .iter()
+            .any(|d| d.address == address && d.trusted)
+    }
+
     /// `device_id`'s device, when it is found.
     pub fn found(&self, phone: &Phone) -> Option<BluetoothAddress> {
         match self.device_of(phone) {

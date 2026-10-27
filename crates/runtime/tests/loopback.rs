@@ -2518,11 +2518,17 @@ impl FakeCalls {
 
     /// The phone named `name` is now paired.
     fn pair_device(&self, name: &str) {
+        self.add_device(name, false);
+    }
+
+    /// The phone named `name` is paired, and trusted when `trusted`, as
+    /// the desktop's Bluetooth settings may have done.
+    fn add_device(&self, name: &str, trusted: bool) {
         self.state.lock().unwrap().devices.push(BluetoothDevice {
             address: PHONE_BT.parse().unwrap(),
             name: name.into(),
             paired: true,
-            trusted: false,
+            trusted,
             connected: true,
             phone: true,
             hands_free_gateway: true,
@@ -2648,6 +2654,13 @@ impl CallsPort for FakeCalls {
             self.record(format!("disconnect {device}"));
             self.state.lock().unwrap().gateways.clear();
             self.telephony.send_modify(|v| *v += 1);
+            Ok(())
+        })
+    }
+
+    fn untrust(&self, device: BluetoothAddress) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("untrust {device}"));
             Ok(())
         })
     }
@@ -2886,6 +2899,37 @@ async fn unpairing_a_phone_closes_its_pairing_window() {
     calls.wait_for("close").await;
     assert!(!calls.is_open());
     assert!(rig.runtime.calls().pairing.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_a_phone_takes_down_its_link_and_the_trust_given_to_it() {
+    let (rig, calls, phone, device, mut session) = calls_rig("calls-unpair-link").await;
+    pair_over_bluetooth(&rig, &calls, &mut session, &device, &phone.name).await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+
+    rig.runtime.unpair(&device.id).unwrap();
+    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    calls.wait_for(&format!("untrust {PHONE_BT}")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_a_phone_keeps_a_trust_the_user_gave() {
+    // The phone was paired and trusted in the desktop's Bluetooth settings:
+    // its link connects once the phone connects to the app with calls on.
+    let calls = FakeCalls::new();
+    let rig = start_rig(None, None, Some(calls.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "calls-unpair-trusted").await);
+    calls.add_device(&phone.name, true);
+    let (desktop, device) = pair(&rig, &phone).await;
+    let _session = within(calls_session(&phone, desktop)).await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+
+    rig.runtime.unpair(&device.id).unwrap();
+    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    // The trust would be taken back right after the disconnect.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let log = calls.state.lock().unwrap().log.clone();
+    assert!(!log.contains(&format!("untrust {PHONE_BT}")), "{log:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
