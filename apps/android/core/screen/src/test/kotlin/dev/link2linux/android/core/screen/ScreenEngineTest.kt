@@ -651,6 +651,26 @@ class ScreenEngineTest {
     }
 
     @Test
+    fun oversizedFramesAskForOneKeyFrameASecond() = runTest {
+        val engine = engine()
+        val peer = FakePeer("a")
+        val capture = share(engine, peer)
+        capture.frame(0, key = true)
+        runCurrent()
+
+        // A capture that answers a request by sending the picture again must not be asked once per frame.
+        capture.frame(16, size = ScreenEngine.MAX_FRAME_BYTES + 1)
+        capture.frame(32, size = ScreenEngine.MAX_FRAME_BYTES + 1)
+        capture.frame(48, size = ScreenEngine.MAX_FRAME_BYTES + 1)
+        runCurrent()
+        assertEquals(1, capture.keyFrameRequests)
+
+        capture.frame(1_020, size = ScreenEngine.MAX_FRAME_BYTES + 1)
+        runCurrent()
+        assertEquals(2, capture.keyFrameRequests)
+    }
+
+    @Test
     fun aSlowNetworkDropsFramesAsksForAKeyFrameAndLowersTheQuality() = runTest {
         val engine = engine()
         val peer = FakePeer("a")

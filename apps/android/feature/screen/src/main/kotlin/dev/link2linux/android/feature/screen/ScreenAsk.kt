@@ -97,8 +97,11 @@ internal class ScreenAsk(private val context: Context) : ScreenAsker {
         setContentText(context.getString(R.string.screen_ask_text))
         setPriority(NotificationCompat.PRIORITY_HIGH)
         setAutoCancel(true)
-        // The engine takes the question back when it times out; this only tidies up after a lost process.
-        setTimeoutAfter(ScreenEngine.ANSWER_MILLIS)
+        // Later than the engine's own minute. The engine withdraws the question then, and cancelling
+        // the notification does not run its decline action. A timeout of the same length would: the
+        // system removes the notification and runs that action, so a user who simply did not answer
+        // would be reported as having declined. This only tidies up after a lost process.
+        setTimeoutAfter(ScreenEngine.ANSWER_MILLIS + NOTIFICATION_TIMEOUT_MARGIN_MILLIS)
         setContentIntent(share)
         // Swiping the question away declines it.
         setDeleteIntent(decline)
@@ -120,5 +123,8 @@ internal class ScreenAsk(private val context: Context) : ScreenAsker {
 
     private companion object {
         const val CHANNEL = "screen-ask"
+
+        /** How long after the engine's minute the notification may stay if the process is gone. */
+        const val NOTIFICATION_TIMEOUT_MARGIN_MILLIS = 30_000L
     }
 }

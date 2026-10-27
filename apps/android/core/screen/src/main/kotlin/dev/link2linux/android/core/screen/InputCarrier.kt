@@ -17,8 +17,14 @@ internal class InputCarrier(private val controller: ScreenController) {
     /** A password as this carrier typed it into [field]. */
     private class Typed(val field: Any, val text: String)
 
-    // Only in memory, for one stream, and never logged.
+    // Only in memory, for one stream, and never logged. Cleared when the
+    // focus leaves the field and when the stream ends.
     private var typed: Typed? = null
+
+    /** Forgets a password this carrier typed. The stream calls it as it ends. */
+    fun forget() {
+        typed = null
+    }
 
     /** Carries [input] out on the screen whose video is [video], the current one. */
     suspend fun carryOut(input: ScreenInput, video: VideoFormat?): ScreenReply = when (input.inputCase) {
