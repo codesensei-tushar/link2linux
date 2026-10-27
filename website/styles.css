@@ -1220,12 +1220,6 @@ details[open] .faq-chevron { transform: rotate(180deg); }
   color: var(--text-subtle);
 }
 
-.footer-legal {
-  margin-top: var(--space-3);
-  font-size: 0.8125rem;
-  color: var(--text-subtle);
-}
-
 .not-found-page {
   position: relative;
   min-height: calc(100vh - 64px - 120px);
