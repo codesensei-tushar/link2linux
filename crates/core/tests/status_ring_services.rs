@@ -378,10 +378,9 @@ async fn a_status_hidden_on_the_desktop_is_not_asked_for() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_refused_or_unanswered_request_says_why_and_waits_for_ready_again() {
+async fn a_refused_request_says_why_and_waits_for_ready_again() {
     for (code, state) in [
         (ErrorCode::Disabled, StatusState::TurnedOff),
-        (ErrorCode::Unavailable, StatusState::Unavailable),
         (ErrorCode::Unsupported, StatusState::Unsupported),
     ] {
         let mut link = Link::connect(&["status"], true).await;
@@ -389,11 +388,30 @@ async fn a_refused_or_unanswered_request_says_why_and_waits_for_ready_again() {
         let asked = link.status_request().await;
         link.answer(asked, refusal(code)).await;
         assert_eq!(link.status.state(), &state, "{code:?}");
-        // Not asked again while the feature stays ready.
+        // Not asked again, however long the feature stays ready.
+        assert_eq!(link.status.next_deadline(), None);
         link.report(&[("status", Ready)]).await;
         link.sent_nothing();
     }
+}
 
+impl Link {
+    /// Waits for the desktop's retry deadline and lets the service act on
+    /// it. Returns how long it waited.
+    async fn retry(&mut self) -> Duration {
+        let started = Instant::now();
+        let deadline = self.status.next_deadline().expect("a retry is planned");
+        tokio::time::sleep_until(deadline).await;
+        self.status
+            .tick(&mut self.session, Instant::now())
+            .await
+            .unwrap();
+        started.elapsed()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_request_is_asked_again_with_backoff() {
     let mut link = Link::connect(&["status"], true).await;
     link.report(&[("status", Ready)]).await;
     link.status_request().await;
@@ -401,6 +419,86 @@ async fn a_refused_or_unanswered_request_says_why_and_waits_for_ready_again() {
     assert!(link.pump().await.is_none());
     assert_eq!(started.elapsed(), Duration::from_secs(30));
     assert_eq!(link.status.state(), &StatusState::Unavailable);
+
+    for wait in [5, 30] {
+        assert_eq!(link.retry().await, Duration::from_secs(wait));
+        link.status_request().await;
+        assert!(link.pump().await.is_none());
+    }
+    // From then on, every five minutes. The session would end for a phone
+    // that has gone silent first, so the wait is read off the deadline.
+    let wait = link.status.next_deadline().unwrap() - Instant::now();
+    assert_eq!(wait, Duration::from_secs(300));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_late_subscription_heals_with_the_next_change() {
+    let mut link = Link::connect(&["status"], true).await;
+    link.report(&[("status", Ready)]).await;
+    link.status_request().await;
+    assert!(link.pump().await.is_none());
+    assert_eq!(link.status.state(), &StatusState::Unavailable);
+
+    link.phone_sends(changed(charging(7))).await;
+    assert_eq!(link.current().battery.unwrap().percent, Some(7));
+    // Subscribed after all: no retry is left to send.
+    assert_eq!(link.status.next_deadline(), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_busy_phone_is_asked_again_after_its_retry_after() {
+    let mut link = Link::connect(&["status"], true).await;
+    link.report(&[("status", Ready)]).await;
+    let asked = link.status_request().await;
+    link.answer(
+        asked,
+        Payload::ErrorReply(ErrorReply {
+            code: ErrorCode::Busy.into(),
+            retry_after_ms: 2_000,
+            ..ErrorReply::default()
+        }),
+    )
+    .await;
+    assert_eq!(link.status.state(), &StatusState::Unavailable);
+    assert_eq!(link.retry().await, Duration::from_secs(2));
+    let asked = link.status_request().await;
+    link.answer(asked, reply(full())).await;
+    assert_eq!(link.current().battery.unwrap().percent, Some(64));
+    assert_eq!(link.status.next_deadline(), None);
+
+    // Without retry_after_ms: the backoff.
+    let mut link = Link::connect(&["status"], true).await;
+    link.report(&[("status", Ready)]).await;
+    let asked = link.status_request().await;
+    link.answer(asked, refusal(ErrorCode::Unavailable)).await;
+    assert_eq!(link.retry().await, Duration::from_secs(5));
+    link.status_request().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_retry_is_sent_once_the_feature_is_not_ready() {
+    let mut link = Link::connect(&["status"], true).await;
+    link.report(&[("status", Ready)]).await;
+    let asked = link.status_request().await;
+    link.answer(asked, refusal(ErrorCode::Busy)).await;
+    assert!(link.status.next_deadline().is_some());
+
+    link.report(&[("status", Disabled)]).await;
+    assert_eq!(link.status.state(), &StatusState::TurnedOff);
+    assert_eq!(link.status.next_deadline(), None);
+    link.status
+        .tick(&mut link.session, Instant::now() + Duration::from_secs(600))
+        .await
+        .unwrap();
+    link.sent_nothing();
+
+    // A session end plans none either.
+    let mut link = Link::connect(&["status"], true).await;
+    link.report(&[("status", Ready)]).await;
+    let asked = link.status_request().await;
+    link.answer(asked, refusal(ErrorCode::Busy)).await;
+    link.status.session_ended();
+    assert_eq!(link.status.next_deadline(), None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -419,6 +517,17 @@ async fn a_status_out_of_range_shows_as_unknown() {
     link.phone_sends(Payload::PhoneStatusChanged(PhoneStatusChanged::default()))
         .await;
     assert_eq!(link.current(), &PhoneStatus::default());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_phone_that_has_not_reported_yet_is_waited_for_not_unavailable() {
+    let mut link = Link::connect(&["status", "ring"], true).await;
+    assert_eq!(link.ring.state().blocked, Some(RingFailure::Waiting));
+
+    link.report(&[("status", Ready), ("ring", Disabled)]).await;
+    assert_eq!(link.ring.state().blocked, Some(RingFailure::TurnedOff));
+    link.report(&[("status", Ready), ("ring", Ready)]).await;
+    assert_eq!(link.ring.state().blocked, None);
 }
 
 #[tokio::test(start_paused = true)]

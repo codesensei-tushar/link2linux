@@ -13,6 +13,7 @@
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{self as wire, ErrorCode, ErrorReply, PhoneStatusRequest};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::time::{Duration, Instant};
 
 use crate::Feature;
 use crate::files::shown_name;
@@ -24,6 +25,15 @@ pub const MAX_OPERATOR_NAME_BYTES: usize = 64;
 
 /// The highest signal level: full bars.
 pub const MAX_LEVEL: u8 = 4;
+
+/// How long the desktop waits before it asks again after a request that
+/// timed out or failed in a way that may pass: for the first retry, the
+/// second, and every one after.
+const RETRY_AFTER: [Duration; 3] = [
+    Duration::from_secs(5),
+    Duration::from_secs(30),
+    Duration::from_secs(300),
+];
 
 /// The phone's status, checked against the protocol's ranges. A part the
 /// phone left unset or sent out of range is `None`: unknown, and shown as
@@ -203,9 +213,14 @@ pub struct StatusService {
     ready: bool,
     /// The `PhoneStatusRequest` that waits for its answer.
     asked: Option<u64>,
-    /// The phone answered: its changes apply until the feature leaves
-    /// `READY` or the session ends.
+    /// A request was sent while the feature has been ready, answered or
+    /// not: the phone counts the desktop as subscribed, so its changes
+    /// apply until the feature leaves `READY` or the session ends.
     following: bool,
+    /// When to ask again after a request that got no usable answer.
+    retry_at: Option<Instant>,
+    /// The requests in a row that got no usable answer.
+    failures: usize,
 }
 
 impl Default for StatusService {
@@ -223,6 +238,8 @@ impl StatusService {
             ready: false,
             asked: None,
             following: false,
+            retry_at: None,
+            failures: 0,
         }
     }
 
@@ -252,6 +269,8 @@ impl StatusService {
         self.ready = false;
         self.asked = None;
         self.following = false;
+        self.retry_at = None;
+        self.failures = 0;
         self.state = StatusState::Disconnected;
     }
 
@@ -280,6 +299,7 @@ impl StatusService {
                 self.asked = None;
                 tracing::info!("the phone did not send its status in time");
                 self.state = StatusState::Unavailable;
+                self.retry_later(0);
                 Ok(None)
             }
             SessionEvent::Message {
@@ -289,6 +309,9 @@ impl StatusService {
                 if self.following {
                     let status = changed.status.unwrap_or_default();
                     self.state = StatusState::Current(PhoneStatus::from_wire(&status));
+                    // The subscription works after all.
+                    self.retry_at = None;
+                    self.failures = 0;
                     tracing::trace!("the phone's status changed");
                 } else {
                     tracing::debug!("ignoring a status change the desktop did not ask for");
@@ -344,17 +367,71 @@ impl StatusService {
             // A late answer to the request that waits is not taken.
             self.asked = None;
             self.following = false;
+            self.retry_at = None;
+            self.failures = 0;
             self.state = not_ready(session);
             return Ok(());
         }
         if !self.ready {
-            let request = Payload::PhoneStatusRequest(PhoneStatusRequest {});
-            let seq = session.start_request(request).await?;
-            tracing::debug!(seq, "asked for the phone's status");
+            self.failures = 0;
+            self.retry_at = None;
+            self.ask(session).await?;
             self.ready = true;
-            self.asked = Some(seq);
-            self.following = false;
             self.state = StatusState::Waiting;
+        }
+        Ok(())
+    }
+
+    async fn ask<S>(&mut self, session: &mut Session<S>) -> Result<(), SessionError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let request = Payload::PhoneStatusRequest(PhoneStatusRequest {});
+        let seq = session.start_request(request).await?;
+        tracing::debug!(seq, "asked for the phone's status");
+        self.asked = Some(seq);
+        self.following = true;
+        Ok(())
+    }
+
+    /// Plans the next request after one that got no usable answer: in
+    /// `retry_after_ms` when the phone said, else after a backoff.
+    fn retry_later(&mut self, retry_after_ms: u32) {
+        let backoff = RETRY_AFTER[self.failures.min(RETRY_AFTER.len() - 1)];
+        let wait = match retry_after_ms {
+            0 => backoff,
+            ms => Duration::from_millis(ms.into()),
+        };
+        self.failures += 1;
+        self.retry_at = Some(Instant::now() + wait);
+    }
+
+    /// When the desktop asks for the status again by itself.
+    #[must_use]
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.retry_at
+    }
+
+    /// The time [`StatusService::next_deadline`] named may have come: asks
+    /// again, unless the feature is no longer ready.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the session fails.
+    pub async fn tick<S>(
+        &mut self,
+        session: &mut Session<S>,
+        now: Instant,
+    ) -> Result<(), SessionError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        if !self.retry_at.is_some_and(|at| at <= now) {
+            return Ok(());
+        }
+        self.retry_at = None;
+        if self.ready && self.asked.is_none() && session.is_ready(Feature::Status) {
+            self.ask(session).await?;
         }
         Ok(())
     }
@@ -364,11 +441,14 @@ impl StatusService {
         self.state = match answer {
             Ok(Payload::PhoneStatusReply(reply)) => {
                 self.following = true;
+                self.retry_at = None;
+                self.failures = 0;
                 let status = reply.status.unwrap_or_default();
                 StatusState::Current(PhoneStatus::from_wire(&status))
             }
             Ok(_) => {
                 tracing::debug!("the phone answered the status request with something else");
+                self.retry_later(0);
                 StatusState::Unavailable
             }
             Err(error) => {
@@ -376,6 +456,10 @@ impl StatusService {
                 match error.code() {
                     ErrorCode::Disabled => StatusState::TurnedOff,
                     ErrorCode::Unsupported => StatusState::Unsupported,
+                    ErrorCode::Unavailable | ErrorCode::Busy | ErrorCode::Internal => {
+                        self.retry_later(error.retry_after_ms);
+                        StatusState::Unavailable
+                    }
                     _ => StatusState::Unavailable,
                 }
             }

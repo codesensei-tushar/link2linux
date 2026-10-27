@@ -43,6 +43,9 @@ pub enum RingFailure {
     Unsupported,
     /// No session with the phone is up.
     NotConnected,
+    /// The session is up, but the phone has not yet said whether it can
+    /// ring.
+    Waiting,
     /// The phone refused, or gave no answer in time.
     Failed,
 }
@@ -341,10 +344,10 @@ where
     if !session.shared_features().contains(&Feature::Ring) {
         return Some(RingFailure::Unsupported);
     }
-    let phone = session
-        .peer_availability()
-        .and_then(|states| states.get(&Feature::Ring));
-    Some(match phone {
+    let Some(states) = session.peer_availability() else {
+        return Some(RingFailure::Waiting);
+    };
+    Some(match states.get(&Feature::Ring) {
         Some(Availability::Disabled) => RingFailure::TurnedOff,
         _ => RingFailure::Unavailable,
     })

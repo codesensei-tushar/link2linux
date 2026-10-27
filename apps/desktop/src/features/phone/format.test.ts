@@ -80,6 +80,7 @@ describe("notes", () => {
     expect(ringProblemText("turnedOff")).toBe("Ringing is turned off on your phone.");
     expect(ringProblemText("unavailable")).toMatch(/during a call/);
     expect(ringProblemText("notConnected")).toBe("Your phone isn't connected.");
+    expect(ringProblemText("waiting")).toBe("");
     expect(ringProblemText("failed")).toMatch(/Try again/);
     expect(ringProblemText("unsupported")).toMatch(/Update link2linux/);
     expect(ringEndText("stoppedOnPhone")).toBe("Stopped on the phone.");
