@@ -51,6 +51,11 @@
     "allow-stop-screen",
     "allow-send-screen-input",
     "allow-request-screen-key-frame",
+    "allow-list-photos",
+    "allow-photo-thumbnail",
+    "allow-save-photo",
+    "allow-open-saved-photo",
+    "allow-show-saved-photo",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

@@ -71,6 +71,11 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::screen::stop_screen,
             commands::screen::send_screen_input,
             commands::screen::request_screen_key_frame,
+            commands::photos::list_photos,
+            commands::photos::photo_thumbnail,
+            commands::photos::save_photo,
+            commands::photos::open_saved_photo,
+            commands::photos::show_saved_photo,
         ])
         .events(collect_events![
             events::PairingChanged,
@@ -82,6 +87,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             events::RingChanged,
             events::CallsChanged,
             events::ScreenChanged,
+            events::PhotosChanged,
             events::FileDrag,
             events::FilesDropped,
         ])

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-photos"
+description = "Enables the list_photos command without any pre-configured scope."
+commands.allow = ["list_photos"]
+
+[[permission]]
+identifier = "deny-list-photos"
+description = "Denies the list_photos command without any pre-configured scope."
+commands.deny = ["list_photos"]

@@ -279,6 +279,16 @@ pub trait FileStore: Send + Sync {
     /// Fails when the OS does not say where downloads go.
     fn downloads_dir(&self) -> Result<PathBuf, PlatformError>;
 
+    /// The directory the user keeps pictures in, where saved photos go.
+    /// [`Self::downloads_dir`] where the OS names none.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the OS says neither.
+    fn pictures_dir(&self) -> Result<PathBuf, PlatformError> {
+        self.downloads_dir()
+    }
+
     /// Opens the file at the absolute `path` with the desktop's default
     /// application. Only ever on the user's request: received files are
     /// never opened by themselves.

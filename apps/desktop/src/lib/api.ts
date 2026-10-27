@@ -16,15 +16,18 @@ import {
   type FileTransferEvent,
   type PairingMethod,
   type PairingState,
+  type PhonePhotos,
   type PhoneStatus,
   type PhoneTarget,
   type RingStatus,
+  type SavedPhoto,
   type ScreenCodec,
   type ScreenInput,
   type ScreenStatus,
   type Settings,
   type StartupError,
 } from "./bindings";
+import { imageBlob } from "./image-blob";
 import { createPreviewApi } from "./preview-api";
 
 export type {
@@ -58,14 +61,18 @@ export type {
   PairingState,
   PhoneBattery,
   PhoneCellular,
+  PhonePhotos,
   PhoneStatus,
   PhoneTarget,
   PhoneWifi,
+  Photo,
+  PhotosStatus,
   RingEnd,
   RingerMode,
   RingPhase,
   RingProblem,
   RingStatus,
+  SavedPhoto,
   ScreenCodec,
   ScreenEnd,
   ScreenFormat,
@@ -205,6 +212,19 @@ export interface DesktopApi {
   /** Sends touch tones in the phone's active call. */
   sendCallTones(deviceId: string, tones: string): Promise<void>;
   setCallMuted(deviceId: string, muted: boolean): Promise<void>;
+
+  /** A phone's recent photos, newest first, and whether they can be shown. */
+  listPhotos(deviceId: string): Promise<PhonePhotos>;
+  /** Subscribe before reading a snapshot, so nothing is missed in between. */
+  onPhotosChanged(deviceId: string, listener: (photos: PhonePhotos) => void): Promise<Unsubscribe>;
+  /** A thumbnail of a photo, at most `maxSize` pixels on its longest side, for a `blob:` URL. */
+  photoThumbnail(deviceId: string, photoId: string, maxSize: number): Promise<Blob>;
+  /** Fetches a photo and saves it in the Pictures folder; resolves with the name it got. */
+  savePhoto(deviceId: string, photoId: string): Promise<SavedPhoto>;
+  /** Opens a photo the user saved with the desktop's default application. */
+  openSavedPhoto(deviceId: string, photoId: string): Promise<void>;
+  /** Shows a photo the user saved in its folder. */
+  showSavedPhoto(deviceId: string, photoId: string): Promise<void>;
 
   unpairDevice(deviceId: string): Promise<void>;
   getPairingState(): Promise<PairingState>;
@@ -348,6 +368,16 @@ export const tauriApi: DesktopApi = {
   dialNumber: (deviceId, number) => expectOk(commands.dialNumber(deviceId, number)),
   sendCallTones: (deviceId, tones) => expectOk(commands.sendCallTones(deviceId, tones)),
   setCallMuted: (deviceId, muted) => expectOk(commands.setCallMuted(deviceId, muted)),
+  listPhotos: (deviceId) => expectData(commands.listPhotos(deviceId)),
+  onPhotosChanged: (deviceId, listener) =>
+    events.photosChanged.listen((event) => {
+      if (event.payload.deviceId === deviceId) listener(event.payload.photos);
+    }),
+  photoThumbnail: async (deviceId, photoId, maxSize) =>
+    imageBlob(await expectData(commands.photoThumbnail(deviceId, photoId, maxSize))),
+  savePhoto: (deviceId, photoId) => expectData(commands.savePhoto(deviceId, photoId)),
+  openSavedPhoto: (deviceId, photoId) => expectOk(commands.openSavedPhoto(deviceId, photoId)),
+  showSavedPhoto: (deviceId, photoId) => expectOk(commands.showSavedPhoto(deviceId, photoId)),
   unpairDevice: (deviceId) => expectOk(commands.unpairDevice(deviceId)),
   getPairingState: () => commands.getPairingState(),
   startPairing: (method) => expectOk(commands.startPairing(method)),

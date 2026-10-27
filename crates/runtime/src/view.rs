@@ -46,6 +46,7 @@ pub use crate::phone::dto::{
     CellularNetwork, PhoneBattery, PhoneCellular, PhoneStatus, PhoneWifi, RingEnd, RingPhase,
     RingProblem, RingStatus, RingerMode,
 };
+pub use crate::photos::dto::{PhonePhotos, Photo, PhotosStatus, SavedPhoto};
 pub use crate::screen::dto::{
     ScreenCodec, ScreenEnd, ScreenFormat, ScreenInput, ScreenInputProblem, ScreenKey, ScreenPhase,
     ScreenPoint, ScreenProblem, ScreenStatus,
@@ -264,6 +265,24 @@ pub enum BackendError {
     /// The phone has calls turned off, or can't take them.
     #[error("Turn on Calls in the app on your phone first.")]
     CallsOffOnPhone,
+    /// No session with the phone is up.
+    #[error("Your phone isn't connected right now.")]
+    PhoneNotConnected,
+    /// The phone does not share its photos right now.
+    #[error("Your phone doesn't share its photos right now.")]
+    PhotosNotShared,
+    /// The photo is no longer on the phone.
+    #[error("That photo is no longer on your phone.")]
+    PhotoGone,
+    /// The photo is too large to fetch.
+    #[error("That photo is too large to save from here.")]
+    PhotoTooLarge,
+    /// The phone did not send the photo.
+    #[error("The photo didn't come through. Try again.")]
+    PhotoNotFetched,
+    /// The photo could not be written.
+    #[error("The photo couldn't be saved in your Pictures folder.")]
+    PhotoNotSaved,
 }
 
 /// Why the app could not start, for the page shown instead of the app.
@@ -296,4 +315,6 @@ pub trait EventSink: Send + Sync {
     fn screen_changed(&self, _device_id: &str, _screen: &ScreenStatus) {}
     /// The phones' calls, or this desktop's part in them, changed.
     fn calls_changed(&self, _status: &CallsStatus) {}
+    /// What the UI shows of a phone's photos changed.
+    fn photos_changed(&self, _device_id: &str, _photos: &PhonePhotos) {}
 }

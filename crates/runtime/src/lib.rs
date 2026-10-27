@@ -20,6 +20,7 @@ pub mod notify;
 mod pairing;
 pub mod paths;
 pub mod phone;
+pub mod photos;
 pub mod qr;
 mod runtime;
 pub mod screen;

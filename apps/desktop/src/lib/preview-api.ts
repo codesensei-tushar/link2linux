@@ -1,6 +1,7 @@
 import { demoCall, demoCallsStatus } from "@/features/calls/demo";
 import { demoTransfers } from "@/features/files/demo";
 import { demoNotifications } from "@/features/notifications/demo";
+import { demoPhotos, demoThumbnail } from "@/features/photos/demo";
 import { demoScreenFormat, demoScreenPacket } from "@/features/screen/demo";
 
 import type {
@@ -10,6 +11,7 @@ import type {
   DesktopApi,
   Device,
   PairingState,
+  PhonePhotos,
   PhoneStatus,
   PhoneTarget,
   RingStatus,
@@ -24,7 +26,8 @@ const DAY_MS = 86_400_000;
  * Stand-in for running the UI in a plain browser (`pnpm dev` without Tauri),
  * where IPC does not exist. It plays a short, fixed story so every screen can
  * be looked at. `?preview=qr|code|success|failed|empty|startup-error` opens on that screen,
- * and `?preview=clipboard-focus` shows a clipboard shared only while the window has focus.
+ * `?preview=clipboard-focus` shows a clipboard shared only while the window has focus, and
+ * `?preview=photos-permission` a phone that waits for the user to let it share photos.
  */
 export function createPreviewApi(search: string = globalThis.location.search): DesktopApi {
   const scenario = new URLSearchParams(search).get("preview");
@@ -197,6 +200,18 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     const blocked = isConnected(deviceId) ? null : "notConnected";
     const ring = rings.get(deviceId) ?? { phase: "idle", blocked, problem: null, ended: null };
     return { ...ring, blocked };
+  };
+  const photos = demoPhotos(now);
+  const photosOf = (deviceId: string): PhonePhotos => {
+    if (!isConnected(deviceId)) return { state: "disconnected", photos: [] };
+    if (scenario === "photos-permission") return { state: "permissionRequired", photos: [] };
+    return { state: "listed", photos };
+  };
+  const photo = (photoId: string) => {
+    const found = photos.find((p) => p.id === photoId);
+    return found
+      ? Promise.resolve(found)
+      : Promise.reject(new Error("That photo is no longer on your phone."));
   };
   const setRing = (deviceId: string, ring: RingStatus) => {
     rings.set(deviceId, ring);
@@ -487,6 +502,12 @@ export function createPreviewApi(search: string = globalThis.location.search): D
       });
       return Promise.resolve();
     },
+    listPhotos: (deviceId) => Promise.resolve(photosOf(deviceId)),
+    onPhotosChanged: () => Promise.resolve(() => undefined),
+    photoThumbnail: (_deviceId, photoId) => photo(photoId).then(demoThumbnail),
+    savePhoto: (_deviceId, photoId) => photo(photoId).then(({ name }) => ({ name })),
+    openSavedPhoto: () => Promise.resolve(),
+    showSavedPhoto: () => Promise.resolve(),
     getSettings: () => Promise.resolve(settings),
     setSettings: (next) => {
       settings = next;

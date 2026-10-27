@@ -19,7 +19,10 @@ describe("features", () => {
 
   it.each(
     features.filter(
-      (f) => !["pairing", "notifications", "calls", "clipboard", "files", "screen"].includes(f.id),
+      (f) =>
+        !["pairing", "notifications", "calls", "photos", "clipboard", "files", "screen"].includes(
+          f.id,
+        ),
     ),
   )(
     "$label renders a placeholder page that says what it will do",

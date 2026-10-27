@@ -10,8 +10,10 @@ use link2linux_core::clipboard::ClipboardSettings;
 use link2linux_core::files::TransferId;
 use link2linux_core::notifications::CachedImage;
 use link2linux_core::pairing::{StoreKey, TrustStore, records};
+use link2linux_core::photos::Thumbnail;
 use link2linux_core::session::Availability;
 use tokio::runtime::Handle;
+use tokio::sync::oneshot;
 
 use crate::calls;
 use crate::clipboard;
@@ -20,11 +22,12 @@ use crate::files;
 use crate::link::{Command, lock};
 use crate::pairing;
 use crate::phone::PhoneCommand;
+use crate::photos::{self, PhotoCommand};
 use crate::screen::{ScreenCodec, ScreenCommand, ScreenInput, ScreenStatus, ScreenViewer};
 use crate::shared::{Core, RuntimeConfig, RuntimeError, Shell};
 use crate::view::{
     BackendError, CallsStatus, ClipboardStatus, Device, FileTransfer, MirroredNotification,
-    PairingMethod, PairingState, PhoneStatus, PhoneTarget, RingStatus,
+    PairingMethod, PairingState, PhonePhotos, PhoneStatus, PhoneTarget, RingStatus, SavedPhoto,
 };
 
 /// Discovery, pairing and a session with each paired phone.
@@ -498,6 +501,144 @@ impl Runtime {
     /// Fails for a phone that is not paired.
     pub fn request_screen_key_frame(&self, device_id: &str) -> Result<(), BackendError> {
         self.send(device_id, Command::Screen(ScreenCommand::KeyFrame))
+    }
+
+    /// Phone `device_id`'s recent photos, as the photos page shows them.
+    /// Changes arrive through the event sink.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn photos(&self, device_id: &str) -> Result<PhonePhotos, BackendError> {
+        self.check_paired(device_id)?;
+        Ok(self.core.phone.photos(device_id))
+    }
+
+    /// A thumbnail of photo `photo_id` of phone `device_id`, at most
+    /// `max_size` pixels on its longest side: from memory when the desktop
+    /// has it, otherwise from the phone. The future holds no borrow of the
+    /// runtime; dropping it tells the phone's task the thumbnail is no
+    /// longer wanted.
+    pub fn photo_thumbnail(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+        max_size: u32,
+    ) -> impl Future<Output = Result<Thumbnail, BackendError>> + Send + 'static {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.send(
+            device_id,
+            Command::Photos(PhotoCommand::Thumbnail {
+                id: photo_id.to_owned(),
+                max_size,
+                reply,
+            }),
+        );
+        async move {
+            sent?;
+            answer
+                .await
+                .map_err(|_| BackendError::PhoneNotConnected)?
+                .map_err(photos::dto::error)
+        }
+    }
+
+    /// Fetches photo `photo_id` of phone `device_id` and saves it in the
+    /// user's Pictures directory, as a received file is saved: under a free
+    /// name, never replacing a file. The future holds no borrow of the
+    /// runtime.
+    pub fn save_photo(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+    ) -> impl Future<Output = Result<SavedPhoto, BackendError>> + Send + 'static {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.send(
+            device_id,
+            Command::Photos(PhotoCommand::Fetch {
+                id: photo_id.to_owned(),
+                reply,
+            }),
+        );
+        let core = self.core.clone();
+        let (device_id, photo_id) = (device_id.to_owned(), photo_id.to_owned());
+        async move {
+            sent?;
+            let photo = answer
+                .await
+                .map_err(|_| BackendError::PhoneNotConnected)?
+                .map_err(photos::dto::error)?;
+            let opener = core.files.opener();
+            let path = core
+                .handle
+                .spawn_blocking(move || {
+                    let dir = opener.pictures_dir().map_err(|error| {
+                        tracing::warn!(%error, "no directory to save photos in");
+                        BackendError::PhotoNotSaved
+                    })?;
+                    // The error only: its message may name the folder.
+                    link2linux_core::photos::save(&dir, &photo).map_err(|error| {
+                        tracing::warn!(kind = %error.kind(), "could not save a photo");
+                        BackendError::PhotoNotSaved
+                    })
+                })
+                .await
+                .map_err(|_| BackendError::PhotoNotSaved)??;
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            core.saved_photos.insert(&device_id, &photo_id, path);
+            Ok(SavedPhoto { name })
+        }
+    }
+
+    /// Opens the photo `photo_id` of phone `device_id` that the user saved
+    /// with the desktop's default app, or shows its folder where that fails.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the user has not saved that photo.
+    pub fn open_saved_photo(&self, device_id: &str, photo_id: &str) -> Result<(), BackendError> {
+        self.with_saved_photo(device_id, photo_id, false)
+    }
+
+    /// Shows the photo `photo_id` of phone `device_id` that the user saved
+    /// in its folder.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the user has not saved that photo.
+    pub fn show_saved_photo(&self, device_id: &str, photo_id: &str) -> Result<(), BackendError> {
+        self.with_saved_photo(device_id, photo_id, true)
+    }
+
+    fn with_saved_photo(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+        show: bool,
+    ) -> Result<(), BackendError> {
+        let path = self
+            .core
+            .saved_photos
+            .get(device_id, photo_id)
+            .ok_or(BackendError::NotFound)?;
+        let opener = self.core.files.opener();
+        self.core.handle.spawn(async move {
+            let done = if show {
+                opener.show_in_folder(&path).await
+            } else {
+                opener.open(&path).await
+            };
+            if let Err(error) = done {
+                tracing::warn!(%error, "could not open a saved photo");
+                if !show && let Err(error) = opener.show_in_folder(&path).await {
+                    tracing::warn!(%error, "could not show a saved photo");
+                }
+            }
+        });
+        Ok(())
     }
 
     fn check_paired(&self, device_id: &str) -> Result<(), BackendError> {

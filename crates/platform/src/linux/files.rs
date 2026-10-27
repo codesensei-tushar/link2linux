@@ -119,6 +119,37 @@ impl FileStore for XdgFileStore {
         Ok(from_file.unwrap_or_else(|| home.join("Downloads")))
     }
 
+    /// `XDG_PICTURES_DIR` from the environment or from
+    /// `$XDG_CONFIG_HOME/user-dirs.dirs`, falling back to `~/Pictures` when
+    /// it exists, and to [`Self::downloads_dir`] otherwise. A pictures
+    /// directory that is the home directory itself means none, as
+    /// `xdg-user-dirs` has it.
+    fn pictures_dir(&self) -> Result<PathBuf, PlatformError> {
+        let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+            return self.downloads_dir();
+        };
+        let named = env::var_os("XDG_PICTURES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let config_home = env::var_os("XDG_CONFIG_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".config"));
+                fs::read_to_string(config_home.join("user-dirs.dirs"))
+                    .ok()
+                    .and_then(|contents| {
+                        user_dir_from_user_dirs(&contents, "XDG_PICTURES_DIR", &home)
+                    })
+            });
+        if let Some(dir) = named.filter(|dir| dir.is_absolute() && *dir != home) {
+            return Ok(dir);
+        }
+        let pictures = home.join("Pictures");
+        if pictures.is_dir() {
+            return Ok(pictures);
+        }
+        self.downloads_dir()
+    }
+
     async fn open(&self, path: &Path) -> Result<(), PlatformError> {
         let path = absolute(path)?;
         let ask = !opens_without_asking(path);
@@ -260,9 +291,16 @@ fn file_uri(path: &Path) -> String {
 /// Reads `XDG_DOWNLOAD_DIR` from the contents of a `user-dirs.dirs` file,
 /// whose values look like `"$HOME/Downloads"` or `"/absolute/path"`.
 fn download_dir_from_user_dirs(contents: &str, home: &Path) -> Option<PathBuf> {
+    user_dir_from_user_dirs(contents, "XDG_DOWNLOAD_DIR", home)
+}
+
+/// Reads the directory `key`, such as `XDG_PICTURES_DIR`, from the contents
+/// of a `user-dirs.dirs` file.
+fn user_dir_from_user_dirs(contents: &str, key: &str, home: &Path) -> Option<PathBuf> {
     let value = contents.lines().find_map(|line| {
         line.trim()
-            .strip_prefix("XDG_DOWNLOAD_DIR=")
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
             .map(|value| value.trim_matches('"'))
     })?;
     if let Some(rest) = value.strip_prefix("$HOME") {
@@ -305,6 +343,21 @@ mod tests {
         );
         assert_eq!(
             download_dir_from_user_dirs("XDG_MUSIC_DIR=\"$HOME/Music\"", home),
+            None
+        );
+    }
+
+    #[test]
+    fn reads_the_pictures_dir_from_user_dirs() {
+        let home = Path::new("/home/ana");
+        let contents = "XDG_PICTURES_DIR_OLD=\"/old\"\n\
+                        XDG_PICTURES_DIR=\"$HOME/Images\"\n";
+        assert_eq!(
+            user_dir_from_user_dirs(contents, "XDG_PICTURES_DIR", home),
+            Some(PathBuf::from("/home/ana/Images"))
+        );
+        assert_eq!(
+            user_dir_from_user_dirs(contents, "XDG_DOWNLOAD_DIR", home),
             None
         );
     }

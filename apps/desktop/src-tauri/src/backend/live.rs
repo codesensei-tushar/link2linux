@@ -27,8 +27,9 @@ use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
     Backend, BackendError, CachedImage, CallsStatus, ClipboardStatus, Device, EventSink,
-    FileTransfer, MirroredNotification, PairingMethod, PairingState, PhoneStatus, PhoneTarget,
-    RingStatus, ScreenCodec, ScreenInput, ScreenStatus, ScreenViewer, Settings,
+    FileTransfer, MirroredNotification, PairingMethod, PairingState, Pending, PhonePhotos,
+    PhoneStatus, PhoneTarget, RingStatus, SavedPhoto, ScreenCodec, ScreenInput, ScreenStatus,
+    ScreenViewer, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -405,6 +406,32 @@ impl Backend for LiveBackend {
 
     fn request_screen_key_frame(&self, device_id: &str) -> Result<(), BackendError> {
         self.runtime.request_screen_key_frame(device_id)
+    }
+
+    fn photos(&self, device_id: &str) -> Result<PhonePhotos, BackendError> {
+        self.runtime.photos(device_id)
+    }
+
+    fn photo_thumbnail(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+        max_size: u32,
+    ) -> Pending<Arc<[u8]>> {
+        let thumbnail = self.runtime.photo_thumbnail(device_id, photo_id, max_size);
+        Box::pin(async move { thumbnail.await.map(|thumbnail| thumbnail.data) })
+    }
+
+    fn save_photo(&self, device_id: &str, photo_id: &str) -> Pending<SavedPhoto> {
+        Box::pin(self.runtime.save_photo(device_id, photo_id))
+    }
+
+    fn open_saved_photo(&self, device_id: &str, photo_id: &str) -> Result<(), BackendError> {
+        self.runtime.open_saved_photo(device_id, photo_id)
+    }
+
+    fn show_saved_photo(&self, device_id: &str, photo_id: &str) -> Result<(), BackendError> {
+        self.runtime.show_saved_photo(device_id, photo_id)
     }
 
     fn set_settings(&self, settings: Settings) -> Result<(), BackendError> {
