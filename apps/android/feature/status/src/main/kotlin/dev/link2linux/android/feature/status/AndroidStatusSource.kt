@@ -61,18 +61,20 @@ internal class AndroidStatusSource(context: Context) : StatusSource {
 
     override fun statuses(): Flow<PhoneStatus> = flow {
         val readings = MutableStateFlow(StatusReadings(telephony = telephony != null))
-        // One at a time, each on its own: a watcher that fails leaves its part unset, and the
-        // ones registered before it are stopped with the rest.
+        // One at a time, each on its own: a watcher that fails leaves its part unset (also when
+        // it had read it before it failed), and the ones registered before it are stopped with the rest.
         val stops = mutableListOf<() -> Unit>()
-        for ((name, watch) in listOf<Pair<String, (MutableStateFlow<StatusReadings>) -> () -> Unit>>(
-            "broadcasts" to ::watchBroadcasts,
-            "telephony" to ::watchTelephony,
-            "wifi" to ::watchWifi,
-        )) {
+        val watchers = listOf<Triple<String, (MutableStateFlow<StatusReadings>) -> () -> Unit, (StatusReadings) -> StatusReadings>>(
+            Triple("broadcasts", ::watchBroadcasts) { it },
+            Triple("telephony", ::watchTelephony, StatusReadings::withoutCellular),
+            Triple("wifi", ::watchWifi, StatusReadings::withoutWifi),
+        )
+        for ((name, watch, clear) in watchers) {
             try {
                 stops += watch(readings)
             } catch (e: Exception) {
                 Log.w(TAG, "No $name status: ${e.javaClass.simpleName}")
+                readings.update(clear)
             }
         }
         try {

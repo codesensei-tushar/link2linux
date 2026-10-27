@@ -12,11 +12,8 @@ import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
-import androidx.core.content.edit
-import dev.link2linux.android.core.ring.AlarmVolume
 import dev.link2linux.android.core.ring.AlarmVolumeGuard
 import dev.link2linux.android.core.ring.RingPlayer
-import dev.link2linux.android.core.ring.SavedVolume
 
 /**
  * Plays the ringtone on the alarm stream, which Android plays also when the
@@ -40,18 +37,7 @@ internal class AndroidRingPlayer(context: Context) : RingPlayer {
 
     private var media: MediaPlayer? = null
     private var focus: AudioFocusRequest? = null
-    private val volume = AlarmVolumeGuard(
-        object : AlarmVolume {
-            override fun level() = audio?.getStreamVolume(AudioManager.STREAM_ALARM) ?: 0
-
-            override fun max() = audio?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 0
-
-            override fun set(level: Int) {
-                setAlarmVolume(level)
-            }
-        },
-        PreferencesSavedVolume(app),
-    )
+    private val volume = alarmVolumeGuard(app)
     // An AudioManager.OnModeChangedListener from Android 12 on; typed so older versions never load the type.
     private var modeListener: Any? = null
 
@@ -118,28 +104,7 @@ internal class AndroidRingPlayer(context: Context) : RingPlayer {
         }.getOrNull()
     }
 
-    // Do Not Disturb may refuse the change; the phone then rings as loud as the user left it.
-    private fun setAlarmVolume(volume: Int) {
-        try {
-            audio?.setStreamVolume(AudioManager.STREAM_ALARM, volume, 0)
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Could not set the alarm volume: ${e.javaClass.simpleName}")
-        }
-    }
-
-    /** The level from before ringing, in its own file and written with `commit` since the process may die right after. */
-    private class PreferencesSavedVolume(context: Context) : SavedVolume {
-        private val prefs = context.getSharedPreferences("ring-volume", Context.MODE_PRIVATE)
-
-        override fun load(): Int? = if (prefs.contains(LEVEL)) prefs.getInt(LEVEL, 0) else null
-
-        override fun save(level: Int) = prefs.edit(commit = true) { putInt(LEVEL, level) }
-
-        override fun clear() = prefs.edit(commit = true) { remove(LEVEL) }
-    }
-
     private companion object {
-        const val LEVEL = "before"
         const val TAG = "link2linux"
 
         val ALARM: AudioAttributes = AudioAttributes.Builder()
