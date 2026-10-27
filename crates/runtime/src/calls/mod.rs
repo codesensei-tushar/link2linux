@@ -137,6 +137,20 @@ impl Calls {
         self.nudge.notify_one();
     }
 
+    /// A session with phone `device_id` started. Its call notifications
+    /// count only while it has one: a call that ended while it was away
+    /// would show until the next sync.
+    pub fn session_started(&self, device_id: &str) {
+        lock(&self.center).session_started(device_id);
+        self.nudge.notify_one();
+    }
+
+    /// A session with phone `device_id` ended.
+    pub fn session_ended(&self, device_id: &str) {
+        lock(&self.center).session_ended(device_id);
+        self.nudge.notify_one();
+    }
+
     /// A change to phone `device_id`'s mirrored notifications.
     pub(crate) fn notification_changed(&self, device_id: &str, change: &Change) {
         let (key, note) = match change {
@@ -316,13 +330,10 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
     }
     if let Some((device_id, address)) = paired {
         tracing::info!(%address, "the phone paired over Bluetooth");
-        if let Err(error) = port.close_pairing().await {
-            tracing::debug!(%error, "could not close Bluetooth pairing");
-        }
-        connect_link(core, port, device_id, address);
+        connect_link(core, port, device_id, address, Connect::Paired);
     }
     for (device_id, address) in connect {
-        connect_link(core, port, device_id, address);
+        connect_link(core, port, device_id, address, Connect::Auto);
     }
     for address in disconnect {
         tracing::info!(%address, "calls are off: disconnecting the phone's hands-free link");
@@ -335,25 +346,46 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
     emit(core);
 }
 
+/// Why the desktop connects a phone's hands-free link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Connect {
+    /// The phone just paired: pairing closes once the phone is trusted,
+    /// so its own connection right after pairing is still let in.
+    Paired,
+    /// The user asked to.
+    User,
+    /// The phone connected to the app. A failure is not reported: the
+    /// phone may be out of Bluetooth range, and nobody asked.
+    Auto,
+}
+
 /// Connects the hands-free link of phone `device_id`, without waiting.
 fn connect_link(
     core: &Arc<Core>,
     port: &Arc<dyn CallsPort>,
     device_id: String,
     address: BluetoothAddress,
+    why: Connect,
 ) {
     lock(&core.calls.center).set_connecting(&device_id, true);
     let core = core.clone();
     let port = port.clone();
     core.clone().handle.spawn(async move {
         let result = port.connect_hands_free(address).await;
+        if why == Connect::Paired
+            && let Err(error) = port.close_pairing().await
+        {
+            tracing::debug!(%error, "could not close Bluetooth pairing");
+        }
         let mut center = lock(&core.calls.center);
         center.set_connecting(&device_id, false);
         match result {
             Ok(()) => center.set_problem(&device_id, None),
             Err(error) => {
                 tracing::info!(%error, "could not connect the phone's hands-free link");
-                center.set_problem(&device_id, Some(CallProblem::ConnectFailed));
+                if why != Connect::Auto {
+                    center.set_problem(&device_id, Some(CallProblem::ConnectFailed));
+                }
             }
         }
         drop(center);
@@ -573,7 +605,7 @@ pub(crate) fn connect(core: &Arc<Core>, device_id: &str) -> Result<(), BackendEr
             .found(&phone)
             .ok_or(BackendError::CallsNotConnected)?
     };
-    connect_link(core, &port, device_id.to_owned(), address);
+    connect_link(core, &port, device_id.to_owned(), address, Connect::User);
     core.calls.nudge.notify_one();
     Ok(())
 }

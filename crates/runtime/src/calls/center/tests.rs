@@ -79,9 +79,12 @@ fn feed(center: &mut Center, seen: Seen, now_ms: i64) {
     center.settle_choices(&phones());
 }
 
+/// A desktop that can take calls, with both phones connected to the app.
 fn ready(devices: Vec<BluetoothDevice>, gateways: Vec<Gateway>) -> Center {
     let mut center = Center::new(true, true, BTreeMap::new());
     feed(&mut center, seen(devices, gateways), 0);
+    center.session_started("p1");
+    center.session_started("p2");
     center
 }
 
@@ -396,6 +399,21 @@ fn without_the_link_the_phones_own_banner_shows_the_call() {
     let mut center = ready(vec![device(PIXEL, "Pixel 8")], vec![]);
     center.set_note("p1", "k1", Some(ringing_note("k1", "Anna")));
     assert!(center.plan_popups(&phones).show.is_empty());
+}
+
+#[test]
+fn call_notifications_count_only_while_the_phone_has_a_session() {
+    let phones = phones();
+    let mut center = ready(vec![], vec![]);
+    center.set_note("p1", "k1", Some(ringing_note("k1", "Anna")));
+    assert_eq!(center.calls_of(&phones[0], &phones).len(), 1);
+    // A new connection replaces the old one: the old session ends last.
+    center.session_started("p1");
+    center.session_ended("p1");
+    assert_eq!(center.calls_of(&phones[0], &phones).len(), 1);
+    center.session_ended("p1");
+    assert!(center.calls_of(&phones[0], &phones).is_empty());
+    assert!(center.has_note("p1", "k1"));
 }
 
 #[test]

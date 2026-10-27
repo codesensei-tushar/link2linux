@@ -69,7 +69,6 @@ pub(crate) struct PopupPlan {
 }
 
 /// The desktop's part in calls.
-#[derive(Debug)]
 pub(crate) struct Center {
     /// Whether this build has calls for this OS.
     supported: bool,
@@ -82,6 +81,10 @@ pub(crate) struct Center {
     window: Option<PairingWindow>,
     /// Each phone's call notifications, by key.
     notes: HashMap<String, BTreeMap<String, CallNotification>>,
+    /// How many sessions each phone has: its call notifications count
+    /// only while it has one. A count, not a flag, as a replaced
+    /// session may end after its successor started.
+    sessions: HashMap<String, usize>,
     /// When each shown call became active, for its timer.
     active_since: HashMap<String, i64>,
     problems: HashMap<String, CallProblem>,
@@ -91,6 +94,17 @@ pub(crate) struct Center {
     /// used.
     want_connect: HashSet<String>,
     popups: HashMap<String, Popup>,
+}
+
+impl std::fmt::Debug for Center {
+    // Pop-ups and notes name callers: never logged.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Center")
+            .field("supported", &self.supported)
+            .field("enabled", &self.enabled)
+            .field("choices", &self.choices)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Center {
@@ -107,6 +121,7 @@ impl Center {
             choices,
             window: None,
             notes: HashMap::new(),
+            sessions: HashMap::new(),
             active_since: HashMap::new(),
             problems: HashMap::new(),
             connecting: HashSet::new(),
@@ -276,6 +291,7 @@ impl Center {
         let notes: Vec<CallNotification> = self
             .notes
             .get(&phone.id)
+            .filter(|_| self.sessions.get(&phone.id).is_some_and(|n| *n > 0))
             .map(|notes| notes.values().cloned().collect())
             .unwrap_or_default();
         merge(gateway, &notes)
@@ -292,6 +308,18 @@ impl Center {
             None => {
                 notes.remove(key);
             }
+        }
+    }
+
+    /// A session with phone `device_id` started.
+    pub fn session_started(&mut self, device_id: &str) {
+        *self.sessions.entry(device_id.to_owned()).or_default() += 1;
+    }
+
+    /// A session with phone `device_id` ended.
+    pub fn session_ended(&mut self, device_id: &str) {
+        if let Some(count) = self.sessions.get_mut(device_id) {
+            *count = count.saturating_sub(1);
         }
     }
 
@@ -350,6 +378,7 @@ impl Center {
     pub fn forget(&mut self, device_id: &str) {
         self.choices.remove(device_id);
         self.notes.remove(device_id);
+        self.sessions.remove(device_id);
         self.problems.remove(device_id);
         self.connecting.remove(device_id);
         self.want_connect.remove(device_id);

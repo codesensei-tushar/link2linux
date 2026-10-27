@@ -49,6 +49,7 @@ impl CallsDriver {
         self.service
             .session_started(session, self.calls.availability())
             .await?;
+        self.calls.session_started(&self.device_id);
         // The phone is around: its hands-free link may come up too.
         self.calls.phone_connected(&self.device_id);
         self.ask_to_pair(session).await
@@ -100,6 +101,7 @@ impl CallsDriver {
 
     /// The session is over.
     pub fn session_ended(&mut self) {
+        self.calls.session_ended(&self.device_id);
         if let Some(answer) = self.service.session_ended() {
             self.calls.phone_answered(&self.device_id, answer);
         }
