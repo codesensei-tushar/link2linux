@@ -520,6 +520,17 @@ async fn a_status_out_of_range_shows_as_unknown() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_phone_that_has_not_reported_yet_is_waited_for_not_unavailable() {
+    let mut link = Link::connect(&["status", "ring"], true).await;
+    assert_eq!(link.ring.state().blocked, Some(RingFailure::Waiting));
+
+    link.report(&[("status", Ready), ("ring", Disabled)]).await;
+    assert_eq!(link.ring.state().blocked, Some(RingFailure::TurnedOff));
+    link.report(&[("status", Ready), ("ring", Ready)]).await;
+    assert_eq!(link.ring.state().blocked, None);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_phone_without_the_features_shows_neither() {
     let mut link = Link::connect(&["clipboard"], true).await;
     link.report(&[("clipboard", Ready)]).await;

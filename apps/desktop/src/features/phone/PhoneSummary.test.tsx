@@ -54,7 +54,9 @@ describe("PhoneSummary", () => {
 
     api.emitPhoneStatus("phone-1", { state: "disconnected" });
     expect(screen.queryByRole("list", { name: "Phone status" })).not.toBeInTheDocument();
-    expect(screen.getByText("Not connected")).toBeVisible();
+    // The summary is for a connected phone, so it says nothing until the
+    // session has published its first status.
+    expect(screen.queryByText("Not connected")).not.toBeInTheDocument();
 
     api.emitPhoneStatus("phone-1", { state: "hidden" });
     expect(screen.queryByText("Not connected")).not.toBeInTheDocument();
@@ -101,6 +103,22 @@ describe("PhoneSummary", () => {
     );
     api.emitRing("phone-1", testRing({ problem: "failed" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Your phone didn't answer. Try again.");
+  });
+
+  it("says nothing of ringing until the phone has reported", async () => {
+    const api = createFakeApi();
+    api.getRingStatus.mockResolvedValue(testRing({ blocked: "notConnected" }));
+    renderSummary(api);
+
+    expect(await screen.findByRole("button", { name: "Ring phone" })).toBeDisabled();
+    expect(screen.queryByText("Your phone isn't connected.")).not.toBeInTheDocument();
+
+    api.emitRing("phone-1", testRing({ blocked: "waiting" }));
+    expect(screen.getByRole("button", { name: "Ring phone" })).toBeDisabled();
+    expect(screen.queryByText(/phone/i, { selector: ".ring__note" })).not.toBeInTheDocument();
+
+    api.emitRing("phone-1", testRing());
+    expect(screen.getByRole("button", { name: "Ring phone" })).toBeEnabled();
   });
 
   it("keeps the button off while the phone has ringing turned off", async () => {

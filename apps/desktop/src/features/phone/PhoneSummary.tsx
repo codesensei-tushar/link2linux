@@ -11,6 +11,9 @@ import "./phone.css";
 
 /** The phone's battery, signal and sound mode, or why they aren't shown. */
 function StatusList({ status }: { status: PhoneStatus }) {
+  // The summary is for a connected phone: until the session has published
+  // its first status, "Not connected" would contradict the connection.
+  if (status.state === "disconnected") return null;
   if (status.state !== "current") {
     const note = statusNote(status);
     return note && <p className="phone-status__note">{note}</p>;
@@ -45,7 +48,7 @@ function RingControl({ device }: { device: Device }) {
   const ringing = ring.phase === "ringing" || ring.phase === "stopping";
   const problem = failure ?? (ring.problem && ringProblemText(ring.problem));
   let note = null;
-  if (ring.blocked) note = ringProblemText(ring.blocked);
+  if (ring.blocked) note = ring.blocked === "notConnected" ? null : ringProblemText(ring.blocked);
   else if (ring.ended) note = ringEndText(ring.ended);
 
   return (

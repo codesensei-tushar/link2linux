@@ -625,6 +625,8 @@ export type RingProblem =
 "unsupported" | 
 /**  The phone is not connected. */
 "notConnected" | 
+/**  The phone has not yet said whether it can ring: shown as nothing. */
+"waiting" | 
 /**  The phone refused, or did not answer in time. */
 "failed";
 

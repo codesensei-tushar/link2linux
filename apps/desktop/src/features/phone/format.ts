@@ -148,6 +148,8 @@ export function ringProblemText(problem: RingProblem): string {
       return "Update link2linux on your phone to ring it from here.";
     case "notConnected":
       return "Your phone isn't connected.";
+    case "waiting":
+      return "";
     case "failed":
       return "Your phone didn't answer. Try again.";
   }

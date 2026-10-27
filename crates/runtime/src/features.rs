@@ -213,9 +213,9 @@ impl Features {
             self.ring.next_deadline(),
             self.status.next_deadline(),
         ]
-            .into_iter()
-            .flatten()
-            .min()
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// The time [`Self::next_deadline`] named has come. `session` is `None`

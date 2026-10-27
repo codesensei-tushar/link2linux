@@ -143,6 +143,8 @@ pub enum RingProblem {
     Unsupported,
     /// The phone is not connected.
     NotConnected,
+    /// The phone has not yet said whether it can ring: shown as nothing.
+    Waiting,
     /// The phone refused, or did not answer in time.
     Failed,
 }
@@ -234,6 +236,7 @@ fn problem(failure: RingFailure) -> RingProblem {
         RingFailure::Unavailable => RingProblem::Unavailable,
         RingFailure::Unsupported => RingProblem::Unsupported,
         RingFailure::NotConnected => RingProblem::NotConnected,
+        RingFailure::Waiting => RingProblem::Waiting,
         RingFailure::Failed => RingProblem::Failed,
     }
 }
