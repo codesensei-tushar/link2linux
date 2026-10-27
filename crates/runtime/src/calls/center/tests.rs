@@ -477,15 +477,20 @@ fn ringing_calls_get_one_popup_while_the_desktop_shows_them() {
     feed(&mut center, link(CallState::Incoming), 0);
     let plan = center.plan_popups(&phones);
     assert_eq!(plan.show.len(), 1);
-    let (call, popup, locked, replaces) = &plan.show[0];
-    assert_eq!(call, "bt:/ag0/call0");
-    assert_eq!(popup.summary, "Call from +15550100");
-    assert!(popup.body.contains("Pixel 8"));
-    assert_eq!(locked.summary, "Incoming call");
-    assert!(!locked.body.contains("5550100"));
-    assert_eq!(*replaces, None);
-    let keys: Vec<&str> = popup.actions.iter().map(|a| a.key.as_str()).collect();
-    assert_eq!(keys, [ANSWER_KEY, DECLINE_KEY]);
+    let planned = &plan.show[0];
+    assert_eq!(planned.call, "bt:/ag0/call0");
+    assert_eq!(planned.popup.summary, "Call from +15550100");
+    assert!(planned.popup.body.contains("Pixel 8"));
+    // Without the phone's text the pop-up names the phone, not the caller.
+    assert_eq!(planned.without_text.summary, "Incoming call on Pixel 8");
+    assert!(!planned.without_text.body.contains("5550100"));
+    assert_eq!(planned.locked.summary, "Incoming call");
+    assert!(!planned.locked.body.contains("5550100"));
+    assert_eq!(planned.replaces, None);
+    for popup in [&planned.popup, &planned.without_text, &planned.locked] {
+        let keys: Vec<&str> = popup.actions.iter().map(|a| a.key.as_str()).collect();
+        assert_eq!(keys, [ANSWER_KEY, DECLINE_KEY]);
+    }
     center.popup_shown("bt:/ag0/call0", NotificationId(9));
     assert_eq!(
         center.popup_call(NotificationId(9)),
@@ -497,8 +502,9 @@ fn ringing_calls_get_one_popup_while_the_desktop_shows_them() {
     center.set_note("p1", "k1", Some(ringing_note("k1", "Anna")));
     let plan = center.plan_popups(&phones);
     assert_eq!(plan.show.len(), 1);
-    assert_eq!(plan.show[0].1.summary, "Call from Anna");
-    assert_eq!(plan.show[0].3, Some(NotificationId(9)));
+    assert_eq!(plan.show[0].popup.summary, "Call from Anna");
+    assert!(!plan.show[0].without_text.summary.contains("Anna"));
+    assert_eq!(plan.show[0].replaces, Some(NotificationId(9)));
 
     // Answered: the pop-up goes.
     feed(&mut center, link(CallState::Active), 0);
@@ -526,7 +532,7 @@ fn a_popup_the_desktop_refused_is_shown_again() {
     center.popup_failed("bt:/ag0/call0");
     let plan = center.plan_popups(&phones);
     assert_eq!(plan.show.len(), 1);
-    assert_eq!(plan.show[0].3, None);
+    assert_eq!(plan.show[0].replaces, None);
 
     // A replacement that fails keeps the pop-up on screen to replace.
     center.popup_shown("bt:/ag0/call0", NotificationId(4));
@@ -535,7 +541,7 @@ fn a_popup_the_desktop_refused_is_shown_again() {
     center.popup_failed("bt:/ag0/call0");
     let plan = center.plan_popups(&phones);
     assert_eq!(plan.show.len(), 1);
-    assert_eq!(plan.show[0].3, Some(NotificationId(4)));
+    assert_eq!(plan.show[0].replaces, Some(NotificationId(4)));
     assert!(center.plan_popups(&phones).show.is_empty());
 }
 

@@ -447,12 +447,23 @@ async fn popups(core: &Core) {
         }
     }
     let mut failed = false;
-    for (call, popup, locked, replaces) in plan.show {
-        match core.presenter.show_own(&popup, &locked, replaces).await {
-            Ok(id) => lock(&core.calls.center).popup_shown(&call, id),
+    for planned in plan.show {
+        // The caller shows only where the phone's notifications show
+        // their text.
+        let shown = core
+            .presenter
+            .show_own_with_text(
+                &planned.popup,
+                &planned.without_text,
+                &planned.locked,
+                planned.replaces,
+            )
+            .await;
+        match shown {
+            Ok(id) => lock(&core.calls.center).popup_shown(&planned.call, id),
             Err(error) => {
                 tracing::warn!(%error, "could not show an incoming call");
-                lock(&core.calls.center).popup_failed(&call);
+                lock(&core.calls.center).popup_failed(&planned.call);
                 failed = true;
             }
         }

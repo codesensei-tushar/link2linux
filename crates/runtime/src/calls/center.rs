@@ -57,15 +57,23 @@ struct Popup {
 /// The pop-ups to show and take down.
 #[derive(Debug, Default)]
 pub(crate) struct PopupPlan {
-    /// Each call's pop-up as the user sees it, as it shows while the
-    /// screen is locked, and the one it replaces.
-    pub show: Vec<(
-        String,
-        DesktopNotification,
-        DesktopNotification,
-        Option<NotificationId>,
-    )>,
+    pub show: Vec<PlannedPopup>,
     pub close: Vec<NotificationId>,
+}
+
+/// A call's incoming-call pop-up to show.
+#[derive(Debug)]
+pub(crate) struct PlannedPopup {
+    pub call: String,
+    /// What it says with the caller.
+    pub popup: DesktopNotification,
+    /// What it says while the user keeps the text of the phone's
+    /// notifications off pop-ups: the caller is the phone's to tell.
+    pub without_text: DesktopNotification,
+    /// What it says while the screen is locked, which names nobody.
+    pub locked: DesktopNotification,
+    /// The pop-up on screen that it replaces.
+    pub replaces: Option<NotificationId>,
 }
 
 /// The desktop's part in calls.
@@ -582,16 +590,15 @@ impl Center {
     /// Which incoming-call pop-ups to show, update and take down: one for
     /// each ringing call of a phone whose calls the desktop shows itself.
     pub fn plan_popups(&mut self, phones: &[Phone]) -> PopupPlan {
-        let mut wanted: HashMap<String, (String, DesktopNotification, DesktopNotification)> =
-            HashMap::new();
+        let mut wanted: HashMap<String, (String, PlannedPopup)> = HashMap::new();
         for phone in phones {
             if !self.shows_calls(phone, phones) {
                 continue;
             }
             for call in self.calls_of(phone, phones) {
                 if call.state.is_ringing() {
-                    let (popup, locked) = incoming_popup(&call, &phone.name);
-                    wanted.insert(call.id.clone(), (phone.id.clone(), popup, locked));
+                    let planned = incoming_popup(&call, &phone.name);
+                    wanted.insert(call.id.clone(), (phone.id.clone(), planned));
                 }
             }
         }
@@ -603,21 +610,21 @@ impl Center {
             }
             keep
         });
-        for (call, (device_id, popup, locked)) in wanted {
+        for (call, (device_id, mut planned)) in wanted {
             let shown = self.popups.get(&call);
-            if shown.is_some_and(|shown| shown.summary == popup.summary) {
+            if shown.is_some_and(|shown| shown.summary == planned.popup.summary) {
                 continue;
             }
-            let replaces = shown.and_then(|shown| shown.id);
+            planned.replaces = shown.and_then(|shown| shown.id);
             self.popups.insert(
-                call.clone(),
+                call,
                 Popup {
                     device_id,
-                    summary: popup.summary.clone(),
-                    id: replaces,
+                    summary: planned.popup.summary.clone(),
+                    id: planned.replaces,
                 },
             );
-            plan.show.push((call, popup, locked, replaces));
+            plan.show.push(planned);
         }
         plan
     }
@@ -676,12 +683,10 @@ fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
-/// The pop-up for the ringing call `call` of phone `phone_name`, and what
-/// it says while the screen is locked, which names nobody.
-fn incoming_popup(
-    call: &ShownCall,
-    phone_name: &str,
-) -> (DesktopNotification, DesktopNotification) {
+/// The pop-up for the ringing call `call` of phone `phone_name`, in its
+/// forms with the caller, without, and for a locked screen. Its
+/// replacement is left for the plan to fill in.
+fn incoming_popup(call: &ShownCall, phone_name: &str) -> PlannedPopup {
     let caller = [&call.name, &call.number]
         .into_iter()
         .find(|s| !s.trim().is_empty())
@@ -690,9 +695,14 @@ fn incoming_popup(
         call.control,
         link2linux_core::calls::Control::Bluetooth { .. }
     );
-    let what = match &call.app_name {
-        Some(app) if !bluetooth => format!("{app} call"),
-        _ => "Call".to_owned(),
+    let (what, incoming) = match &call.app_name {
+        Some(app) if !bluetooth => (format!("{app} call"), format!("Incoming {app} call")),
+        _ => ("Call".to_owned(), "Incoming call".to_owned()),
+    };
+    let sound = if bluetooth {
+        "Answer to talk on this computer."
+    } else {
+        "The call's sound stays on the phone."
     };
     let actions = vec![
         DesktopAction {
@@ -715,14 +725,21 @@ fn incoming_popup(
     };
     let popup = DesktopNotification {
         summary: format!("{what} from {caller}"),
-        body: if bluetooth {
-            format!("On {phone_name}. Answer to talk on this computer.")
-        } else {
-            format!("On {phone_name}. The call's sound stays on the phone.")
-        },
+        body: format!("On {phone_name}. {sound}"),
         ..locked.clone()
     };
-    (popup, locked)
+    let without_text = DesktopNotification {
+        summary: format!("{incoming} on {phone_name}"),
+        body: sound.to_owned(),
+        ..locked.clone()
+    };
+    PlannedPopup {
+        call: call.id.clone(),
+        popup,
+        without_text,
+        locked,
+        replaces: None,
+    }
 }
 
 #[cfg(test)]

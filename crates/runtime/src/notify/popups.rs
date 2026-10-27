@@ -216,6 +216,21 @@ impl Presenter for PrivatePopups {
         })
     }
 
+    fn show_own_with_text<'a>(
+        &'a self,
+        notification: &'a DesktopNotification,
+        without_text: &'a DesktopNotification,
+        when_locked: &'a DesktopNotification,
+        replaces: Option<NotificationId>,
+    ) -> BoxFuture<'a, Result<NotificationId, PlatformError>> {
+        let shown = if self.show_text.load(Ordering::Relaxed) {
+            notification
+        } else {
+            without_text
+        };
+        self.show_own(shown, when_locked, replaces)
+    }
+
     fn close(&self, id: NotificationId) -> BoxFuture<'_, Result<(), PlatformError>> {
         if id == NOT_SHOWN {
             return Box::pin(async { Ok(()) });
@@ -622,5 +637,42 @@ mod tests {
             .unwrap();
         rig.popups.next_response().await.unwrap();
         assert_eq!(rig.opened.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn what_the_phone_sent_shows_in_the_apps_own_popups_only_with_the_text() {
+        let rig = rig(false);
+        let own = |summary: &str| DesktopNotification {
+            app_name: "link2linux".into(),
+            summary: summary.into(),
+            ..DesktopNotification::default()
+        };
+        let (with_text, without_text, locked) = (
+            own("Call from Anna"),
+            own("Incoming call on Pixel"),
+            own("Incoming call"),
+        );
+        rig.popups.set_locked(false).await;
+        rig.popups
+            .show_own_with_text(&with_text, &without_text, &locked, None)
+            .await
+            .unwrap();
+        assert_eq!(rig.last_shown().summary, "Incoming call on Pixel");
+
+        rig.popups.set_show_text(true);
+        rig.popups
+            .show_own_with_text(&with_text, &without_text, &locked, None)
+            .await
+            .unwrap();
+        assert_eq!(rig.last_shown().summary, "Call from Anna");
+
+        // A locked screen still gets the form that names nobody.
+        rig.popups.set_locked(true).await;
+        assert_eq!(rig.last_shown().summary, "Incoming call");
+        rig.popups
+            .show_own_with_text(&with_text, &without_text, &locked, None)
+            .await
+            .unwrap();
+        assert_eq!(rig.last_shown().summary, "Incoming call");
     }
 }

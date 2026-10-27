@@ -2789,10 +2789,12 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
         .await;
 
     // A call comes in: a pop-up offers it, and answering it there answers
-    // over Bluetooth.
+    // over Bluetooth. Pop-ups that may not show the phone's text leave
+    // the caller to the calls page.
     calls.ring("+15550100");
     let (id, popup) = rig.sink.wait_for_banners(1).await[0].clone();
-    assert_eq!(popup.summary, "Call from +15550100");
+    assert_eq!(popup.summary, format!("Incoming call on {}", phone.name));
+    assert!(!popup.body.contains("5550100"));
     rig.respond
         .send(NotificationResponse::Action {
             id,
