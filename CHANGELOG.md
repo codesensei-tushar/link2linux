@@ -8,8 +8,29 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-27
+
+Photos, screen mirroring with control, ARM64 builds and a Flatpak.
+
 ### Added
 
+- Photos. The Photos page shows the newest 200 photos the phone's camera
+  took and its screenshots. Open one to see it large and save it into your
+  Pictures folder. Photos is off on the phone until you turn it on, and it
+  asks for access to your photos only then; on Android 14 and later you
+  can share only the photos you pick. The computer keeps thumbnails and
+  photos in memory only, never on disk, until you save one.
+- Screen mirroring. The Screen page shows your phone's screen. The phone
+  asks you each time before it shares, and you can stop it from either
+  device. With an H.264 decoder for GStreamer installed, such as
+  gstreamer1.0-libav, the video is smooth; without one it comes as a
+  series of still pictures, about 12 a second.
+- Control your phone from the computer. Turn on "Allow control from your
+  computer" in the phone's screen settings, and link2linux control in
+  Android's accessibility settings when it asks, to
+  tap, swipe, scroll and type on the phone from the Screen page, and to
+  use Back, Home, Recents and the notification shade. It works only while
+  you share the screen with that computer.
 - Desktop builds for 64-bit ARM computers: a .deb, an .rpm and an
   AppImage. The install script picks them by itself on an ARM computer.
 - The desktop app as a Flatpak bundle, for x86 and ARM. Install it with
@@ -20,6 +41,16 @@ from Unreleased to a version.
 
 ### Known limitations
 
+- Photos, screen mirroring and control have not been tried on many phones
+  yet.
+- Photos lists still pictures only, not videos.
+- Screen mirroring carries no sound.
+- On Android 13 and later, Android blocks the accessibility service of an
+  app installed from a file until you allow its restricted settings: open
+  the app's info, then the three-dot menu, then "Allow restricted
+  settings". The phone's screen settings explain how.
+- Typing into a password field from the computer works only into an empty
+  field, or one holding just what you typed from the computer.
 - The Flatpak, like the AppImage, comes without the firewalld and ufw
   profiles that the .deb and .rpm install. Where a firewall blocks the
   phone's announcements, allow mDNS (UDP 5353) and UDP port 27381 yourself.
@@ -244,7 +275,8 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.1...v0.1.2

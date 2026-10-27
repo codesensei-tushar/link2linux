@@ -21,9 +21,10 @@ No account. No cloud. Open source.
 
 ---
 
-> **Status:** link2linux is in active development. Version 0.3.0 is out as a
+> **Status:** link2linux is in active development. Version 0.4.0 is out as a
 > pre-release, with pairing, notifications, clipboard sharing, file
-> transfer, calls, phone status and ring-my-phone. Get it from the
+> transfer, calls, phone status, ring-my-phone, photos, and screen mirroring
+> with control. Get it from the
 > [releases page](https://github.com/codesensei-tushar/link2linux/releases).
 
 ## Why link2linux
@@ -58,8 +59,8 @@ your terms.
 | Files | Send files both ways with drag and drop or the share sheet | Available (v0.2) |
 | Calls | See who's calling and talk through your computer over Bluetooth | Available (v0.3) |
 | Phone status | Battery, signal and ring-my-phone | Available (v0.3) |
-| Photos | Browse your phone's recent photos on your computer and save the ones you want | In progress (v0.4) |
-| Screen | Mirror your phone in a window on your desktop, and control it from there if you allow it | In progress (v0.4) |
+| Photos | Browse your phone's recent photos on your computer and save the ones you want | Available (v0.4) |
+| Screen | Mirror your phone in a window on your desktop, and control it from there if you allow it | Available (v0.4) |
 
 ## How it works
 
@@ -105,9 +106,12 @@ yourself from the [releases page](https://github.com/codesensei-tushar/link2linu
 | `link2linux_amd64.deb` | Debian, Ubuntu, Linux Mint, Pop!_OS and other derivatives |
 | `link2linux.x86_64.rpm` | Fedora, openSUSE and other RPM-based distributions |
 | `link2linux-x86_64.AppImage` | Any other x86_64 distribution |
+| `link2linux.x86_64.flatpak` | Any distribution with Flatpak, sandboxed: `flatpak install --user ./link2linux.x86_64.flatpak` |
 | `link2linux.apk` | Android 8.0 and newer |
 
-ARM64 builds and Flatpak are planned.
+For 64-bit ARM computers the same packages come as `link2linux_arm64.deb`,
+`link2linux.aarch64.rpm`, `link2linux-aarch64.AppImage` and
+`link2linux.aarch64.flatpak`, and the install script picks them by itself.
 
 **Requirements:** a 64-bit Linux desktop and an Android phone on the same
 network, or the computer joined to the phone's own hotspot. Calls need
@@ -151,6 +155,7 @@ Found a security issue? Please report it privately as described in
 - **v0.2:** clipboard sharing and file transfer.
 - **v0.3:** calls over Bluetooth, phone status and ring-my-phone.
 - **v0.4:** photos, screen mirroring and control, ARM64 builds and Flatpak.
+- **Later:** sound with screen mirroring, Flathub and app store listings.
 
 ## Project structure
 
