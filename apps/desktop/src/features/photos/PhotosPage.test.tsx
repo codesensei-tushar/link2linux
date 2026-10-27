@@ -240,8 +240,8 @@ describe("PhotosPage", () => {
 
     const viewer = await openViewer(user, "IMG_3.jpg");
     expect(within(viewer).getByRole("button", { name: "Close" })).toHaveFocus();
-    expect(api.photoThumbnail).toHaveBeenCalledWith("phone-1", "3", 1600);
     const picture = await within(viewer).findByRole("img", { name: "IMG_3.jpg" });
+    expect(api.photoThumbnail).toHaveBeenCalledWith("phone-1", "3", 1600);
     expect(picture).toHaveAttribute("src", "blob:test/1");
     expect(within(viewer).getByText(/4080 × 3072 · 2\.4 MB$/)).toBeVisible();
 
@@ -271,8 +271,8 @@ describe("PhotosPage", () => {
 
     await user.click(within(viewer).getByRole("button", { name: "Next photo" }));
     viewer = screen.getByRole("dialog", { name: "Screenshot_2.png" });
-    expect(api.photoThumbnail).toHaveBeenLastCalledWith("phone-1", "2", 1600);
     await within(viewer).findByRole("img", { name: "Screenshot_2.png" });
+    expect(api.photoThumbnail).toHaveBeenLastCalledWith("phone-1", "2", 1600);
     expect(urls.revoked).toEqual(["blob:test/1"]);
 
     await user.keyboard("{ArrowRight}");
@@ -287,6 +287,18 @@ describe("PhotosPage", () => {
     await waitFor(() => {
       expect([...urls.revoked].sort()).toEqual([...urls.created].sort());
     });
+  });
+
+  it("fetches only the photo the user stops at when stepping quickly", async () => {
+    const user = userEvent.setup();
+    const { api } = renderPage(listed(photos));
+    const viewer = await openViewer(user, "IMG_3.jpg");
+    await within(viewer).findByRole("img", { name: "IMG_3.jpg" });
+
+    await user.keyboard("{ArrowRight}{ArrowRight}");
+    const last = screen.getByRole("dialog", { name: "IMG_1.jpg" });
+    await within(last).findByRole("img", { name: "IMG_1.jpg" });
+    expect(api.photoThumbnail.mock.calls.map(([, id]) => id)).toEqual(["3", "1"]);
   });
 
   it("keeps Tab within the viewer", async () => {

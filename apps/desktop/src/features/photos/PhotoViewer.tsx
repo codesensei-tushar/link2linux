@@ -21,6 +21,13 @@ import { thumbnailSize } from "./thumbnails";
 type Preview = { key: string; url: string } | { key: string; error: string };
 
 /**
+ * How long the viewer waits before it asks for a photo's picture. A request
+ * can't be taken back, so stepping quickly through the photos fetches only
+ * the one the user stops at.
+ */
+const PREVIEW_DELAY_MS = 150;
+
+/**
  * A larger picture of `photo` for the viewer, as a `blob:` URL that is
  * revoked once another photo, or none, is shown.
  */
@@ -34,18 +41,21 @@ function usePreview(deviceId: string, photo: Photo) {
     let current = true;
     let url: string | null = null;
     const maxSize = thumbnailSize("viewer", globalThis.devicePixelRatio || 1);
-    api.photoThumbnail(deviceId, photo.id, maxSize).then(
-      (image) => {
-        if (!current) return;
-        url = URL.createObjectURL(image);
-        setPreview({ key, url });
-      },
-      (cause: unknown) => {
-        if (current) setPreview({ key, error: errorMessage(cause) });
-      },
-    );
+    const timer = setTimeout(() => {
+      api.photoThumbnail(deviceId, photo.id, maxSize).then(
+        (image) => {
+          if (!current) return;
+          url = URL.createObjectURL(image);
+          setPreview({ key, url });
+        },
+        (cause: unknown) => {
+          if (current) setPreview({ key, error: errorMessage(cause) });
+        },
+      );
+    }, PREVIEW_DELAY_MS);
     return () => {
       current = false;
+      clearTimeout(timer);
       if (url !== null) URL.revokeObjectURL(url);
     };
   }, [api, deviceId, photo.id, key, attempt]);
