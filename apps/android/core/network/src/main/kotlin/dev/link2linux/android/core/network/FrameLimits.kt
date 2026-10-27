@@ -30,7 +30,10 @@ internal object FrameLimits {
     private const val IMAGE_DATA = 18
     private const val NOTIFICATION_SYNC_BATCH = 101
     private const val NOTIFICATION_POSTED = 102
+    private const val PHOTO_LIST_REPLY = 251
+    private const val PHOTO_LIST_CHANGED = 252
     private const val FILE_OFFER = 300
+    private const val SCREEN_INPUT = 406
 
     private class Limit(val field: String, val max: Int) {
         /** Counts one more entry after [count] and returns the new count. */
@@ -56,6 +59,10 @@ internal object FrameLimits {
 
     private val FILES = Limit("FileOffer.files", 500)
 
+    /** Of a `PhotoListReply` and `PhotoListChanged` together. */
+    private val PHOTOS = Limit("Photo", 200)
+    private val GESTURE_POINTS = Limit("ScreenGesture.points", 64)
+
     /**
      * Checks the frame body [body] (one serialized `Envelope`) before it is
      * parsed: the entries of its repeated fields, and that it is at most
@@ -67,6 +74,8 @@ internal object FrameLimits {
         var notifications = 0
         var removedKeys = 0
         var files = 0
+        var photos = 0
+        var gesturePoints = 0
         var imageBytes = 0
         forEachField(body, 0, body.size) { payload, start, end ->
             when (payload) {
@@ -82,7 +91,11 @@ internal object FrameLimits {
                 NOTIFICATION_POSTED -> forEachField(body, start, end) { field, from, to ->
                     if (field == 1) notifications = notification(body, from, to, notifications)
                 }
+                PHOTO_LIST_REPLY, PHOTO_LIST_CHANGED -> photos = count(body, start, end, 1, PHOTOS, photos)
                 FILE_OFFER -> files = count(body, start, end, 3, FILES, files)
+                SCREEN_INPUT -> forEachField(body, start, end) { field, from, to ->
+                    if (field == 1) gesturePoints = count(body, from, to, 2, GESTURE_POINTS, gesturePoints)
+                }
             }
         }
         val length = body.size - imageBytes

@@ -21,9 +21,9 @@ No account. No cloud. Open source.
 
 ---
 
-> **Status:** link2linux is in active development. Version 0.2.0 is out as a
-> pre-release, with pairing, notifications, clipboard sharing and file
-> transfer. Get it from the
+> **Status:** link2linux is in active development. Version 0.3.0 is out as a
+> pre-release, with pairing, notifications, clipboard sharing, file
+> transfer, calls, phone status and ring-my-phone. Get it from the
 > [releases page](https://github.com/codesensei-tushar/link2linux/releases).
 
 ## Why link2linux
@@ -56,10 +56,10 @@ your terms.
 | Notifications | Phone notifications on your desktop: reply inline, texts included, run actions, dismiss on both devices | Available (v0.1) |
 | Clipboard | Copy on one device, paste on the other | Available (v0.2) |
 | Files | Send files both ways with drag and drop or the share sheet | Available (v0.2) |
-| Calls | See who's calling and talk through your computer over Bluetooth | In progress (v0.3) |
-| Phone status | Battery, signal and ring-my-phone | In progress (v0.3) |
-| Photos | Send recent photos to your computer in a couple of taps | Later |
-| Screen | Mirror your phone in a window on your desktop | Later |
+| Calls | See who's calling and talk through your computer over Bluetooth | Available (v0.3) |
+| Phone status | Battery, signal and ring-my-phone | Available (v0.3) |
+| Photos | Browse your phone's recent photos on your computer and save the ones you want | In progress (v0.4) |
+| Screen | Mirror your phone in a window on your desktop, and control it from there if you allow it | In progress (v0.4) |
 
 ## How it works
 
@@ -90,8 +90,7 @@ The full design, including the threat model, is in the
 
 ## Install
 
-The first release is on its way. Once it's out, install the desktop app with
-one command:
+Install the desktop app with one command:
 
 ```sh
 curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh
@@ -151,7 +150,7 @@ Found a security issue? Please report it privately as described in
   and dismiss sync.
 - **v0.2:** clipboard sharing and file transfer.
 - **v0.3:** calls over Bluetooth, phone status and ring-my-phone.
-- **Later:** photos, screen mirroring, ARM64 builds and Flatpak.
+- **v0.4:** photos, screen mirroring and control, ARM64 builds and Flatpak.
 
 ## Project structure
 

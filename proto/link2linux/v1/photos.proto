@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+import "link2linux/v1/common.proto";
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The photos feature, capability token "photos": the desktop shows the
+// phone's recent photos, and the user views and saves them there.
+//
+// The photos stay on the phone. The desktop asks for the list once per
+// session with PhotoListRequest, and the phone then keeps it current with
+// PhotoListChanged until the session ends. The desktop fetches thumbnails
+// and the photos' bytes only when it needs them. docs/protocol.md,
+// "Photos", gives the rules.
+
+// Desktop to phone: send the list of recent photos, then send the new list
+// whenever it changes, for the rest of the session. Answered by
+// PhotoListReply, or by an ErrorReply such as ERROR_CODE_DISABLED or
+// ERROR_CODE_PERMISSION_REQUIRED.
+message PhotoListRequest {}
+
+// Phone to desktop: the answer to PhotoListRequest.
+message PhotoListReply {
+  // At most 200 photos, newest first.
+  repeated Photo photos = 1;
+}
+
+// Phone to desktop, one-way: the list changed. Sent only after the
+// PhotoListReply, and only in a session where the desktop asked. It holds
+// the complete new list, which replaces the previous one.
+message PhotoListChanged {
+  // At most 200 photos, newest first.
+  repeated Photo photos = 1;
+}
+
+// One photo on the phone.
+message Photo {
+  // The phone's name for the photo: 1 to 64 bytes. It stays the same while
+  // the photo exists.
+  string id = 1;
+  // When the photo was taken, in Unix milliseconds, or when it was added to
+  // the phone where that is unknown.
+  int64 taken_unix_ms = 2;
+  // When the photo's file last changed, in Unix milliseconds. A photo whose
+  // id stays the same but whose modified_unix_ms changes is a new version:
+  // the desktop drops what it fetched of the old one.
+  int64 modified_unix_ms = 3;
+  // The file's name, with the same rules as FileInfo.name.
+  string name = 4;
+  // The MIME type, such as "image/jpeg", when the phone knows it.
+  string mime_type = 5;
+  // The file's size in bytes.
+  uint64 size = 6;
+  // The size in pixels as the photo is shown, after any rotation its file
+  // asks for. 0 when unknown.
+  uint32 width = 7;
+  uint32 height = 8;
+}
+
+// Desktop to phone: a smaller copy of a photo, to show it. Answered by
+// PhotoThumbnail, or by an ErrorReply such as ERROR_CODE_NOT_FOUND.
+message PhotoThumbnailRequest {
+  string id = 1;
+  // The longest side the desktop wants, in pixels: 64 to 2048. The phone
+  // never scales a photo up.
+  uint32 max_size = 2;
+}
+
+// Phone to desktop: the answer to PhotoThumbnailRequest.
+message PhotoThumbnail {
+  // IMAGE_FORMAT_JPEG, or another ImageFormat the desktop knows.
+  ImageFormat format = 1;
+  // At most 400 KiB.
+  bytes data = 2;
+  // The image's size in pixels.
+  uint32 width = 3;
+  uint32 height = 4;
+}
+
+// Desktop to phone: the next bytes of a photo's original file. Answered by
+// PhotoData, or by an ErrorReply such as ERROR_CODE_NOT_FOUND.
+message PhotoDataRequest {
+  string id = 1;
+  // Where the bytes start in the file.
+  uint64 offset = 2;
+}
+
+// Phone to desktop: the answer to PhotoDataRequest.
+message PhotoData {
+  // The whole file's size in bytes.
+  uint64 size = 1;
+  // The file's modified_unix_ms, as in Photo.
+  int64 modified_unix_ms = 2;
+  // 256 KiB starting at the requested offset, or fewer where the file ends
+  // first. Empty for an offset at the end of the file.
+  bytes data = 3;
+}

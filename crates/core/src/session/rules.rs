@@ -40,6 +40,12 @@ pub(crate) enum Expects {
     FileAccept,
     /// `PhoneStatusReply`.
     PhoneStatusReply,
+    /// `PhotoListReply`.
+    PhotoListReply,
+    /// `PhotoThumbnail`.
+    PhotoThumbnail,
+    /// `PhotoData`.
+    PhotoData,
 }
 
 impl Expects {
@@ -56,6 +62,9 @@ impl Expects {
                 )
                 | (Self::FileAccept, Payload::FileAccept(_))
                 | (Self::PhoneStatusReply, Payload::PhoneStatusReply(_))
+                | (Self::PhotoListReply, Payload::PhotoListReply(_))
+                | (Self::PhotoThumbnail, Payload::PhotoThumbnail(_))
+                | (Self::PhotoData, Payload::PhotoData(_))
         )
     }
 }
@@ -80,6 +89,8 @@ pub(crate) fn of(payload: &Payload) -> Rules {
     const FILES: Option<Feature> = Some(Feature::Files);
     const CLIPBOARD: Option<Feature> = Some(Feature::Clipboard);
     const CALLS: Option<Feature> = Some(Feature::Calls);
+    const PHOTOS: Option<Feature> = Some(Feature::Photos);
+    const SCREEN: Option<Feature> = Some(Feature::Screen);
     const STATUS: Option<Feature> = Some(Feature::Status);
     const RING: Option<Feature> = Some(Feature::Ring);
     let (name, kind, feature) = match payload {
@@ -117,11 +128,29 @@ pub(crate) fn of(payload: &Payload) -> Rules {
             NOTIFICATIONS,
         ),
         P::BluetoothPairingRequest(_) => ("BluetoothPairingRequest", Request(Expects::Ack), CALLS),
+        P::PhotoListRequest(_) => ("PhotoListRequest", Request(Expects::PhotoListReply), PHOTOS),
+        P::PhotoListReply(_) => ("PhotoListReply", Reply, PHOTOS),
+        P::PhotoListChanged(_) => ("PhotoListChanged", Event, PHOTOS),
+        P::PhotoThumbnailRequest(_) => (
+            "PhotoThumbnailRequest",
+            Request(Expects::PhotoThumbnail),
+            PHOTOS,
+        ),
+        P::PhotoThumbnail(_) => ("PhotoThumbnail", Reply, PHOTOS),
+        P::PhotoDataRequest(_) => ("PhotoDataRequest", Request(Expects::PhotoData), PHOTOS),
+        P::PhotoData(_) => ("PhotoData", Reply, PHOTOS),
         P::FileOffer(_) => ("FileOffer", Request(Expects::FileAccept), FILES),
         P::FileAccept(_) => ("FileAccept", Reply, FILES),
         P::FileChunk(_) => ("FileChunk", Request(Expects::Ack), FILES),
         P::FileCancel(_) => ("FileCancel", Request(Expects::Ack), FILES),
         P::ClipboardPush(_) => ("ClipboardPush", Request(Expects::Ack), CLIPBOARD),
+        P::ScreenStart(_) => ("ScreenStart", Request(Expects::Ack), SCREEN),
+        P::ScreenStop(_) => ("ScreenStop", Request(Expects::Ack), SCREEN),
+        P::ScreenFormat(_) => ("ScreenFormat", Event, SCREEN),
+        P::ScreenFrame(_) => ("ScreenFrame", Event, SCREEN),
+        P::ScreenKeyFrameRequest(_) => ("ScreenKeyFrameRequest", Event, SCREEN),
+        P::ScreenEnded(_) => ("ScreenEnded", Event, SCREEN),
+        P::ScreenInput(_) => ("ScreenInput", Request(Expects::Ack), SCREEN),
         P::PhoneStatusRequest(_) => (
             "PhoneStatusRequest",
             Request(Expects::PhoneStatusReply),
@@ -151,7 +180,9 @@ mod tests {
     use link2linux_protocol::v1::{
         Ack, BluetoothPairingRequest, ClipboardPush, ErrorReply, FileAccept, ImageData,
         ImageRequest, NotificationDismissRequest, NotificationSyncBatch, PhoneStatusChanged,
-        PhoneStatusReply, PhoneStatusRequest, RingEnded, RingStop,
+        PhoneStatusReply, PhoneStatusRequest, PhotoData, PhotoDataRequest, PhotoListChanged,
+        PhotoListReply, PhotoListRequest, PhotoThumbnail, PhotoThumbnailRequest, RingEnded,
+        RingStop, ScreenFrame, ScreenInput, ScreenKeyFrameRequest, ScreenStart,
     };
 
     use super::*;
@@ -186,6 +217,50 @@ mod tests {
         let stop = of(&Payload::RingStop(RingStop {}));
         assert_eq!(stop.kind, Kind::Request(Expects::Ack));
         assert_eq!(stop.feature, Some(Feature::Ring));
+    }
+
+    #[test]
+    fn photo_requests_name_their_answers() {
+        let list = of(&Payload::PhotoListRequest(PhotoListRequest {}));
+        assert_eq!(list.kind, Kind::Request(Expects::PhotoListReply));
+        assert_eq!(list.feature, Some(Feature::Photos));
+        assert!(
+            Expects::PhotoListReply.allows(&Payload::PhotoListReply(PhotoListReply::default()))
+        );
+
+        let thumbnail = of(&Payload::PhotoThumbnailRequest(
+            PhotoThumbnailRequest::default(),
+        ));
+        assert_eq!(thumbnail.kind, Kind::Request(Expects::PhotoThumbnail));
+        assert!(
+            Expects::PhotoThumbnail.allows(&Payload::PhotoThumbnail(PhotoThumbnail::default()))
+        );
+        assert!(!Expects::PhotoThumbnail.allows(&Payload::PhotoData(PhotoData::default())));
+
+        let data = of(&Payload::PhotoDataRequest(PhotoDataRequest::default()));
+        assert_eq!(data.kind, Kind::Request(Expects::PhotoData));
+        assert!(Expects::PhotoData.allows(&Payload::PhotoData(PhotoData::default())));
+
+        let changed = of(&Payload::PhotoListChanged(PhotoListChanged::default()));
+        assert_eq!(changed.kind, Kind::Event);
+        assert_eq!(changed.feature, Some(Feature::Photos));
+    }
+
+    #[test]
+    fn screen_video_is_events_and_its_control_requests() {
+        let start = of(&Payload::ScreenStart(ScreenStart::default()));
+        assert_eq!(start.kind, Kind::Request(Expects::Ack));
+        assert_eq!(start.feature, Some(Feature::Screen));
+        let input = of(&Payload::ScreenInput(ScreenInput::default()));
+        assert_eq!(input.kind, Kind::Request(Expects::Ack));
+        for event in [
+            Payload::ScreenFrame(ScreenFrame::default()),
+            Payload::ScreenKeyFrameRequest(ScreenKeyFrameRequest {}),
+        ] {
+            let rules = of(&event);
+            assert_eq!(rules.kind, Kind::Event);
+            assert_eq!(rules.feature, Some(Feature::Screen));
+        }
     }
 
     #[test]
