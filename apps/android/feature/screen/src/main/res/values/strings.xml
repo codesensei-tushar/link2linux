@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The feature's screen -->
+    <string name="screen_toggle_title">Show this phone\'s screen on your computer</string>
+    <string name="screen_toggle_summary">Your computer can ask to show this screen in a window. Each time, your phone asks you first.</string>
+    <string name="screen_sharing_title">Sharing your screen with %1$s</string>
+    <string name="screen_asking_title">%1$s asks to see your screen</string>
+    <string name="screen_stop_sharing">Stop sharing</string>
+    <string name="screen_control_title">Allow control from your computer</string>
+    <string name="screen_control_summary">Taps, swipes, Back, Home, Recents and typing from the computer\'s window, while you share your screen with it.</string>
+    <string name="screen_control_service_off_title">Turn on the accessibility service</string>
+    <string name="screen_control_service_off_body">Android carries out the computer\'s taps and typing through link2linux\'s accessibility service. In Accessibility settings, open link2linux control and turn it on.</string>
+    <string name="screen_control_restricted_body">If Android says the setting is restricted, which it does for apps installed from outside an app store: open App info, tap the three-dot menu, choose Allow restricted settings, then try again.</string>
+    <string name="screen_open_accessibility_settings">Open settings</string>
+    <string name="screen_open_app_info">App info</string>
+    <string name="screen_control_ready">Control is on while you share your screen.</string>
+    <string name="screen_how_title">How it works</string>
+    <string name="screen_how_body">When a computer asks to see your screen, your phone asks you first, every time, and names the computer. Android then shows that your screen is shared. To stop, tap Stop sharing in the notification, or close the window on the computer. Locking your phone also stops it. Android hides some things from shared screens, such as passwords and the content of notifications. The computer shows your screen only in its window and does not record it.</string>
+    <string name="screen_notifications_needed">Allow notifications, so that your phone can ask you when link2linux is in the background.</string>
+
+    <!-- The disclosure before control turns on -->
+    <string name="screen_control_disclosure_title">Allow control from your computer?</string>
+    <string name="screen_control_disclosure_body">link2linux uses an Android accessibility service to carry out what you do in your computer\'s window: taps, swipes, Back, Home, Recents, opening the notifications, and typing.\n\nIt does this only while you share your screen with that computer and this switch is on. To type, it looks up the text field that has the focus and its text, and changes only that field. It reads nothing else on the screen, and it stores and sends nothing: your computer sees the screen through screen sharing, not through this service.\n\nNext, Android\'s Accessibility settings open: turn on link2linux control there. You can turn it off there or here at any time.</string>
+    <string name="screen_control_disclosure_allow">Allow</string>
+    <string name="screen_control_disclosure_cancel">Not now</string>
+
+    <!-- The accessibility service, as Android lists it -->
+    <string name="screen_control_service_label">link2linux control</string>
+    <string name="screen_control_service_description">Lets the computer that shows this phone\'s screen carry out taps, swipes, Back, Home, Recents, opening the notifications, and typing into the text field that has the focus. It works only while you share your screen with that computer through link2linux and allow control in the app. It reads nothing else on the screen, and stores and sends nothing.</string>
+
+    <!-- The question before sharing -->
+    <string name="screen_ask_channel_name">Screen sharing requests</string>
+    <string name="screen_ask_channel_description">Asks you before a computer sees your screen</string>
+    <string name="screen_ask_title">Share your screen with %1$s?</string>
+    <string name="screen_ask_text">Tap Share to choose. Android asks you next.</string>
+    <string name="screen_ask_share">Share</string>
+    <string name="screen_ask_decline">Don\'t share</string>
+    <string name="screen_ask_dialog_body">%1$s will see everything on your screen until you stop sharing. Android asks you next.</string>
+    <string name="screen_ask_dialog_continue">Continue</string>
+
+    <!-- While sharing -->
+    <string name="screen_sharing_channel_name">Screen sharing</string>
+    <string name="screen_sharing_channel_description">Shown while a computer sees your screen, with a button to stop</string>
+    <string name="screen_sharing_notification_title">Sharing your screen with %1$s</string>
+    <string name="screen_sharing_notification_text">The computer sees everything on your screen.</string>
+</resources>

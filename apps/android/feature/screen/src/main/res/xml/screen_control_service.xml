@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gestures, the navigation keys and typing for the computer that shows this phone's screen. It
+     reads window content only to find the text field that has the focus; the focus and window
+     events keep Android's view of that field current, and are not read. Not an accessibility
+     tool: it does not help people with disabilities use the phone. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:accessibilityEventTypes="typeViewFocused|typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/screen_control_service_description"
+    android:isAccessibilityTool="false"
+    android:notificationTimeout="100"
+    tools:targetApi="31" />
