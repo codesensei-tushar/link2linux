@@ -9,6 +9,7 @@
 
 pub mod files;
 pub mod machine;
+pub mod phone;
 pub mod script;
 pub mod support;
 
@@ -24,10 +25,11 @@ use link2linux_runtime::view::{
 
 use super::{
     Backend, BackendError, Device, EventSink, FileTransfer, PairingMethod, PairingState,
-    PhoneTarget,
+    PhoneStatus, PhoneTarget, RingStatus,
 };
 
 use files::FakeFiles;
+use phone::FakePhone;
 
 pub use machine::Machine;
 pub use script::{Changed, Now, Script};
@@ -119,6 +121,7 @@ pub struct FakeBackend {
     files: FakeFiles,
     timer: Option<JoinHandle<()>>,
     clipboard: Mutex<FakeClipboard>,
+    phone: FakePhone,
 }
 
 /// What the clipboard page shows of the scripted phones.
@@ -191,6 +194,7 @@ impl FakeBackend {
         };
         let machine = Machine::new(script, desktop_name(), clock.now());
         let files = FakeFiles::new(script, sink.clone(), clock.now().unix_ms);
+        let phone = FakePhone::new(sink.clone(), phone::RING_FOR);
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 machine,
@@ -212,6 +216,7 @@ impl FakeBackend {
             files,
             timer,
             clipboard: Mutex::default(),
+            phone,
         }
     }
 
@@ -315,6 +320,22 @@ impl Backend for FakeBackend {
         Ok(self.files.transfers(device_id))
     }
 
+    fn phone_status(&self, device_id: &str) -> Result<PhoneStatus, BackendError> {
+        FakePhone::status(self.device(device_id).as_ref())
+    }
+
+    fn ring_status(&self, device_id: &str) -> Result<RingStatus, BackendError> {
+        self.phone.ring_status(self.device(device_id).as_ref())
+    }
+
+    fn ring_phone(&self, device_id: &str) -> Result<(), BackendError> {
+        self.phone.ring(self.device(device_id).as_ref())
+    }
+
+    fn stop_ringing(&self, device_id: &str) -> Result<(), BackendError> {
+        self.phone.stop(self.device(device_id).as_ref())
+    }
+
     fn send_files(&self, device_id: &str, paths: Vec<PathBuf>) -> Result<(), BackendError> {
         self.files
             .send(device_id, &paths, self.shared.clock.now().unix_ms)
@@ -348,6 +369,11 @@ impl Backend for FakeBackend {
 }
 
 impl FakeBackend {
+    /// The paired phone `id`, if there is one.
+    fn device(&self, id: &str) -> Option<Device> {
+        self.devices().into_iter().find(|device| device.id == id)
+    }
+
     fn lock_clipboard(&self) -> MutexGuard<'_, FakeClipboard> {
         self.clipboard
             .lock()

@@ -1,6 +1,6 @@
 //! The backend that runs the real runtime: discovery, pairing and sessions
 //! with paired phones, phone notifications as desktop banners, the shared
-//! clipboard, and file transfers.
+//! clipboard, file transfers, and the phones' status and ringing.
 //!
 //! Everything it does lives in `link2linux-runtime`; this file only builds
 //! the runtime from what the shell has (the event sink, the D-Bus
@@ -25,7 +25,8 @@ use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
     Backend, BackendError, CachedImage, ClipboardStatus, Device, EventSink, FileTransfer,
-    MirroredNotification, PairingMethod, PairingState, PhoneTarget, Settings,
+    MirroredNotification, PairingMethod, PairingState, PhoneStatus, PhoneTarget, RingStatus,
+    Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -92,6 +93,7 @@ impl LiveBackend {
         let mut config = RuntimeConfig::new(data_dir.clone());
         config.clipboard = settings.clipboard();
         config.files = settings.share_files;
+        config.show_phone_status = settings.show_phone_status;
         let handle = tauri::async_runtime::handle().inner().clone();
         let runtime = Arc::new(Runtime::start(handle, &config, shell)?);
         if runtime.needs_store_key() {
@@ -307,6 +309,22 @@ impl Backend for LiveBackend {
         Ok(())
     }
 
+    fn phone_status(&self, device_id: &str) -> Result<PhoneStatus, BackendError> {
+        self.runtime.phone_status(device_id)
+    }
+
+    fn ring_status(&self, device_id: &str) -> Result<RingStatus, BackendError> {
+        self.runtime.ring_status(device_id)
+    }
+
+    fn ring_phone(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.ring_phone(device_id)
+    }
+
+    fn stop_ringing(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.stop_ringing(device_id)
+    }
+
     fn set_settings(&self, settings: Settings) -> Result<(), BackendError> {
         let before = std::mem::replace(&mut *self.settings.lock().expect("not poisoned"), settings);
         self.popups.set_show_text(settings.show_notification_text);
@@ -315,6 +333,10 @@ impl Backend for LiveBackend {
         }
         if before.share_files != settings.share_files {
             self.runtime.set_files_enabled(settings.share_files);
+        }
+        if before.show_phone_status != settings.show_phone_status {
+            self.runtime
+                .set_phone_status_shown(settings.show_phone_status);
         }
         settings.save(&self.settings_path).map_err(|error| {
             tracing::warn!(%error, "could not save the settings");

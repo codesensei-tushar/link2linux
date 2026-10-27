@@ -19,7 +19,7 @@ pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
     BackendError, ClipboardMode, ClipboardStatus, Device, DeviceStatus, DiscoveredPhone, EventSink,
     FileTransfer, FileTransferEvent, MirroredNotification, NotificationEvent, PairingFailure,
-    PairingMethod, PairingState, PhoneTarget, QrImage, StartupError,
+    PairingMethod, PairingState, PhoneStatus, PhoneTarget, QrImage, RingStatus, StartupError,
 };
 
 use std::path::PathBuf;
@@ -118,6 +118,24 @@ pub trait Backend: Send + Sync {
         _index: usize,
     ) -> Result<(), BackendError> {
         Err(BackendError::NotFound)
+    }
+
+    /// A phone's battery, signal and sound mode, as the UI shows them.
+    fn phone_status(&self, _device_id: &str) -> Result<PhoneStatus, BackendError> {
+        Ok(PhoneStatus::Disconnected)
+    }
+    /// Whether a phone rings, and why it cannot or did not.
+    fn ring_status(&self, _device_id: &str) -> Result<RingStatus, BackendError> {
+        Ok(RingStatus::default())
+    }
+    /// Makes a phone ring for a minute, even when it is set to silent. What
+    /// came of it arrives as a new ring status.
+    fn ring_phone(&self, _device_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotStarted)
+    }
+    /// Stops a phone ringing.
+    fn stop_ringing(&self, _device_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotStarted)
     }
 
     /// The desktop app's settings.
