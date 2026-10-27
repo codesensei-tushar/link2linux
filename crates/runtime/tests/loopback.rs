@@ -2889,6 +2889,26 @@ async fn unpairing_a_phone_closes_its_pairing_window() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn turning_calls_off_closes_pairing() {
+    let (rig, calls, _phone, device, _session) = calls_rig("calls-off-window").await;
+    rig.runtime.start_bluetooth_pairing(&device.id).unwrap();
+    calls.wait_for("open").await;
+    calls.prompt(8, 1);
+    rig.events
+        .calls_where(|s| s.pairing.as_ref().is_some_and(|p| p.prompt.is_some()))
+        .await;
+
+    rig.runtime.set_calls_enabled(false);
+    calls.wait_for("answer pairing 8 false").await;
+    calls.wait_for("close").await;
+    assert!(rig.runtime.calls().pairing.is_none());
+    assert_eq!(
+        rig.runtime.start_bluetooth_pairing(&device.id),
+        Err(link2linux_runtime::view::BackendError::CallsUnavailable)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() {
     let (rig, calls, phone, device, mut session) = calls_rig("calls-1").await;
     pair_over_bluetooth(&rig, &calls, &mut session, &device, &phone.name).await;

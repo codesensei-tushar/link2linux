@@ -333,10 +333,11 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
         );
         let settled = center.settle_choices(&phones);
         // With the window it closed, to close at the adapter once the
-        // phone is trusted.
-        let paired = center
-            .pairing_done()
-            .map(|done| (done, center.windows_opened()));
+        // phone is trusted, and whether its link may come up now.
+        let paired = center.pairing_done().map(|done| {
+            let takes = center.takes_calls(&done.0);
+            (done, center.windows_opened(), takes)
+        });
         let choices = (settled || paired.is_some()).then(|| center.choices().clone());
         let connect = center.take_connects(&phones);
         // While calls are off, here or on the phone, a phone that connects
@@ -348,9 +349,19 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
     if let Some(choices) = choices {
         calls.save(&choices);
     }
-    if let Some(((device_id, address), opened)) = paired {
+    if let Some(((device_id, address), opened, takes)) = paired {
         tracing::info!(%address, "the phone paired over Bluetooth");
-        connect_link(core, port, device_id, address, Connect::Paired(opened));
+        if takes {
+            connect_link(core, port, device_id, address, Connect::Paired(opened));
+        } else {
+            // Calls went off meanwhile, here or on the phone: it stays
+            // paired, and its link waits until they are on.
+            let calls = calls.clone();
+            let port = port.clone();
+            core.handle.spawn(async move {
+                calls.close_adapter(&port, opened).await;
+            });
+        }
     }
     for (device_id, address) in connect {
         connect_link(core, port, device_id, address, Connect::Auto);
@@ -563,12 +574,13 @@ fn takes_calls(center: &Center, device_id: &str) -> Result<(), BackendError> {
 }
 
 /// Turns calls on this desktop on or off. Turned off, the phones'
-/// hands-free links are disconnected; turned on, they are connected.
+/// hands-free links are disconnected and pairing closes; turned on, the
+/// links are connected.
 pub(crate) fn set_enabled(core: &Core, enabled: bool) {
     let calls = &core.calls;
     // Not under the center's lock: the phones' lock comes first.
     let phones = lock(&calls.phones).clone();
-    {
+    let closed = {
         let mut center = lock(&calls.center);
         if center.is_enabled() == enabled {
             return;
@@ -578,7 +590,14 @@ pub(crate) fn set_enabled(core: &Core, enabled: bool) {
             for phone in &phones {
                 center.want_connect(&phone.id);
             }
+            None
+        } else {
+            // Pairing serves calls only: it closes with them.
+            take_window(&mut center, |_| true)
         }
+    };
+    if let Some(closed) = closed {
+        close_taken(core, closed);
     }
     calls.nudge.notify_one();
 }
