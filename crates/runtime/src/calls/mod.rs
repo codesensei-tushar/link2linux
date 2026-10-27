@@ -17,6 +17,7 @@ mod port;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -236,8 +237,14 @@ pub(crate) fn emit(core: &Core) {
 
 /// Follows the desktop's Bluetooth and telephony service until the
 /// runtime stops, and keeps the calls page, the phones and the pop-ups in
-/// step with them.
+/// step with them. It counts as one of [`Core::supervisors`] until pairing
+/// is closed at the end.
 pub(crate) async fn follow(core: Arc<Core>) {
+    following(core.clone()).await;
+    core.supervisors.fetch_sub(1, Ordering::SeqCst);
+}
+
+async fn following(core: Arc<Core>) {
     let calls = core.calls.clone();
     let Some(port) = calls.port.clone() else {
         tell(&core);
@@ -269,7 +276,7 @@ pub(crate) async fn follow(core: Arc<Core>) {
         };
         tokio::select! {
             () = core.cancel.cancelled() => {
-                close_pairing(&core, &port).await;
+                stop_pairing(&core, &port).await;
                 return;
             }
             changed = bluetooth => bluetooth_retry = retry_after(changed),
@@ -534,6 +541,18 @@ fn refuse(port: &Arc<dyn CallsPort>, prompts: &[u64]) {
 async fn close_pairing(core: &Core, port: &Arc<dyn CallsPort>) {
     let _pairing = core.calls.pairing.lock().await;
     close_window(core, port).await;
+}
+
+/// The runtime stops: pairing closes at the adapter whether a window is
+/// open or the phone that just paired is still connecting, which would
+/// close it only afterwards.
+async fn stop_pairing(core: &Core, port: &Arc<dyn CallsPort>) {
+    let _pairing = core.calls.pairing.lock().await;
+    let waiting = lock(&core.calls.center).close_window();
+    refuse(port, &waiting);
+    if let Err(error) = port.close_pairing().await {
+        tracing::debug!(%error, "could not close Bluetooth pairing");
+    }
 }
 
 /// As [`close_pairing`], for a caller that holds the pairing lock.

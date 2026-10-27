@@ -216,8 +216,8 @@ pub(crate) struct Core {
     pub phone: Arc<PhoneBoards>,
     /// The phones' calls through this desktop's Bluetooth.
     pub calls: Arc<Calls>,
-    /// How many device tasks are still running, for a shutdown that waits
-    /// for them to clean up.
+    /// How many device tasks, and the task following calls, are still
+    /// running, for a shutdown that waits for them to clean up.
     pub supervisors: AtomicUsize,
 }
 
@@ -307,6 +307,7 @@ impl Core {
         for record in &records {
             core.spawn_device(record, None);
         }
+        core.supervisors.fetch_add(1, Ordering::SeqCst);
         core.handle.spawn(calls::follow(core.clone()));
         Ok(core)
     }

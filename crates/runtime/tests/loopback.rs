@@ -2889,6 +2889,21 @@ async fn unpairing_a_phone_closes_its_pairing_window() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quitting_while_the_paired_phone_connects_closes_pairing() {
+    let (rig, calls, phone, device, mut session) = calls_rig("calls-quit").await;
+    calls.hold_connects(true);
+    pair_over_bluetooth(&rig, &calls, &mut session, &device, &phone.name).await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+    assert!(calls.is_open());
+
+    // The app quits before the connect ends, which would close pairing:
+    // it is closed before the shutdown returns.
+    tokio::task::block_in_place(|| rig.runtime.shutdown_and_wait(WAIT));
+    assert!(!calls.is_open());
+    calls.hold_connects(false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn turning_calls_off_closes_pairing() {
     let (rig, calls, _phone, device, _session) = calls_rig("calls-off-window").await;
     rig.runtime.start_bluetooth_pairing(&device.id).unwrap();
