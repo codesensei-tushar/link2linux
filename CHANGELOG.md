@@ -8,6 +8,29 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+### Added
+
+- Phone status. The computer shows the phone's battery level, whether it
+  is plugged in, battery saver, its mobile and Wi-Fi signal, and whether it
+  is set to silent, vibrate or Do Not Disturb. The phone shares it without
+  asking for any permission, and nothing in it tells where the phone is.
+  Hide it in the computer's settings, or turn it off on the phone.
+- Ring my phone. "Ring phone" on the computer makes the phone ring at full
+  volume for a minute, even when it is set to silent, until you stop it on
+  either device. It keeps ringing if the connection drops, so you can still
+  find it.
+
+### Changed
+
+- Phone status, ringing and calls are on from the start on the phone,
+  because they share none of your content. You can turn each one off.
+  Every other feature still starts switched off.
+
+### Removed
+
+- The Messages placeholder pages. Replies to texts already work from their
+  notifications.
+
 ## [0.2.0] - 2026-10-27
 
 Clipboard sharing and file transfer between the phone and the desktop.
