@@ -17,10 +17,11 @@ use crate::discovery::{pump_responses, run_discovery, watch_network};
 use crate::files;
 use crate::link::{Command, lock};
 use crate::pairing;
+use crate::phone::PhoneCommand;
 use crate::shared::{Core, RuntimeConfig, RuntimeError, Shell};
 use crate::view::{
     BackendError, ClipboardStatus, Device, FileTransfer, MirroredNotification, PairingMethod,
-    PairingState, PhoneTarget,
+    PairingState, PhoneStatus, PhoneTarget, RingStatus,
 };
 
 /// Discovery, pairing and a session with each paired phone.
@@ -366,6 +367,69 @@ impl Runtime {
             }
         }
         core.clipboard_changed();
+    }
+
+    /// Phone `device_id`'s battery, signal and sound mode, as the UI shows
+    /// them. Changes arrive through the event sink.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn phone_status(&self, device_id: &str) -> Result<PhoneStatus, BackendError> {
+        self.check_paired(device_id)?;
+        Ok(self.core.phone.status(device_id))
+    }
+
+    /// Whether phone `device_id` rings, and why it cannot or did not.
+    /// Changes arrive through the event sink.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn ring_status(&self, device_id: &str) -> Result<RingStatus, BackendError> {
+        self.check_paired(device_id)?;
+        Ok(self.core.phone.ring(device_id))
+    }
+
+    /// Makes phone `device_id` ring for a minute, even when it is set to
+    /// silent. What came of it arrives as a new ring status.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn ring_phone(&self, device_id: &str) -> Result<(), BackendError> {
+        self.send(device_id, Command::Phone(PhoneCommand::Ring))
+    }
+
+    /// Stops phone `device_id` ringing.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn stop_ringing(&self, device_id: &str) -> Result<(), BackendError> {
+        self.send(device_id, Command::Phone(PhoneCommand::StopRinging))
+    }
+
+    /// Shows or hides the phones' status. It applies at once, and the
+    /// phones hear of it.
+    pub fn set_phone_status_shown(&self, shown: bool) {
+        let core = &self.core;
+        if !core.phone.set_shown(shown) {
+            return;
+        }
+        for slot in lock(&core.slots).values() {
+            let _ = slot
+                .commands
+                .send(Command::Phone(PhoneCommand::StatusSwitch));
+        }
+    }
+
+    fn check_paired(&self, device_id: &str) -> Result<(), BackendError> {
+        if lock(&self.core.slots).contains_key(device_id) {
+            Ok(())
+        } else {
+            Err(BackendError::NotFound)
+        }
     }
 
     /// The Bluetooth LE address this computer advertises from, which QR

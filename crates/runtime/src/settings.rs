@@ -27,6 +27,9 @@ pub struct Settings {
     /// default: each phone has its own switch, off until its user turns it
     /// on.
     pub share_files: bool,
+    /// The connected phone's battery, signal and sound mode are shown. On
+    /// by default: they are what the phone's own status bar shows.
+    pub show_phone_status: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +40,7 @@ impl Default for Settings {
             share_clipboard: clipboard.sharing,
             share_passwords: clipboard.share_passwords,
             share_files: true,
+            show_phone_status: true,
         }
     }
 }
@@ -155,6 +159,27 @@ mod tests {
             String::from_utf8(std::fs::read(&path).unwrap())
                 .unwrap()
                 .contains("\"shareFiles\": false")
+        );
+    }
+
+    #[test]
+    fn the_phone_status_shows_unless_the_user_hid_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // A file from before the phone's status was shown.
+        std::fs::write(&path, br#"{ "shareFiles": false }"#).unwrap();
+        assert!(Settings::load(&path).show_phone_status);
+
+        let hidden = Settings {
+            show_phone_status: false,
+            ..Settings::default()
+        };
+        hidden.save(&path).unwrap();
+        assert_eq!(Settings::load(&path), hidden);
+        assert!(
+            String::from_utf8(std::fs::read(&path).unwrap())
+                .unwrap()
+                .contains("\"showPhoneStatus\": false")
         );
     }
 }

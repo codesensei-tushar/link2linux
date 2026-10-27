@@ -9,7 +9,9 @@
 //! [`Command`](crate::link::Command)s, which the loop hands to its driver.
 //! A feature with timers of its own reports them through
 //! [`Features::next_deadline`], and the loop calls [`Features::tick`] then;
-//! banner responses go through [`Features::handle_response`].
+//! banner responses go through [`Features::handle_response`]. What the user
+//! asks of the phone's status or ringing goes through
+//! [`Features::phone_command`].
 
 use link2linux_core::session::SessionEvent;
 use link2linux_platform::NotificationResponse;
@@ -18,6 +20,7 @@ use tokio::time::Instant;
 use crate::clipboard::ClipboardDriver;
 use crate::files::FilesDriver;
 use crate::notify::{DriverError, NotificationsDriver, PhoneSession};
+use crate::phone::{PhoneCommand, RingDriver, StatusDriver};
 
 /// The features of one phone, which stay with it across sessions.
 pub struct Features {
@@ -27,6 +30,10 @@ pub struct Features {
     pub clipboard: ClipboardDriver,
     /// Its file transfers.
     pub files: FilesDriver,
+    /// Its status.
+    pub status: StatusDriver,
+    /// Ringing it.
+    pub ring: RingDriver,
 }
 
 /// The phone broke a feature's rules: the session ends as a protocol error.
@@ -46,6 +53,10 @@ impl Features {
         if let Err(error) = self.files.session_started(session).await {
             tracing::debug!(%error, "files could not start");
         }
+        if let Err(error) = self.status.session_started(session).await {
+            tracing::debug!(%error, "the phone's status could not start");
+        }
+        self.ring.session_started(session);
     }
 
     /// Hands `event` to each feature in turn, and returns what none of them
@@ -66,8 +77,12 @@ impl Features {
                 .await?;
             self.clipboard_event(session, SessionEvent::FeatureStatus(states.clone()))
                 .await;
-            self.files_event(session, SessionEvent::FeatureStatus(states))
+            self.files_event(session, SessionEvent::FeatureStatus(states.clone()))
                 .await;
+            self.status_event(session, SessionEvent::FeatureStatus(states.clone()))
+                .await;
+            self.ring
+                .handle_event(session, SessionEvent::FeatureStatus(states));
             return Ok(Some(event));
         }
         let Some(event) = self.notifications_event(session, event).await? else {
@@ -76,7 +91,13 @@ impl Features {
         let Some(event) = self.clipboard_event(session, event).await else {
             return Ok(None);
         };
-        Ok(self.files_event(session, event).await)
+        let Some(event) = self.files_event(session, event).await else {
+            return Ok(None);
+        };
+        let Some(event) = self.status_event(session, event).await else {
+            return Ok(None);
+        };
+        Ok(self.ring.handle_event(session, event))
     }
 
     async fn notifications_event(
@@ -125,6 +146,38 @@ impl Features {
             })
     }
 
+    async fn status_event(
+        &mut self,
+        session: &mut PhoneSession,
+        event: SessionEvent,
+    ) -> Option<SessionEvent> {
+        self.status
+            .handle_event(session, event)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(%error, "status event failed");
+                None
+            })
+    }
+
+    /// Acts on what the user asked of the phone's status or ringing.
+    /// `session` is `None` between sessions.
+    pub async fn phone_command(
+        &mut self,
+        session: Option<&mut PhoneSession>,
+        command: PhoneCommand,
+    ) {
+        let done = match (command, session) {
+            (PhoneCommand::StatusSwitch, Some(session)) => self.status.switched(session).await,
+            // The next session starts with the new setting.
+            (PhoneCommand::StatusSwitch, None) => Ok(()),
+            (command, session) => self.ring.command(session, command).await,
+        };
+        if let Err(error) = done {
+            tracing::debug!(%error, ?command, "could not act on the phone");
+        }
+    }
+
     /// Acts on what the user did with a banner: each feature looks for its
     /// own. `session` is `None` between sessions.
     ///
@@ -155,7 +208,10 @@ impl Features {
     /// transfer kept too long.
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.files.next_deadline()
+        [self.files.next_deadline(), self.ring.next_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// The time [`Self::next_deadline`] named has come. `session` is `None`
@@ -164,6 +220,7 @@ impl Features {
         if let Err(error) = self.files.tick(session).await {
             tracing::debug!(%error, "files could not go on");
         }
+        self.ring.tick(Instant::now());
     }
 
     /// Whether something the user sees happen is going on, such as a file
@@ -178,5 +235,7 @@ impl Features {
         self.notifications.session_ended();
         self.clipboard.session_ended();
         self.files.session_ended();
+        self.status.session_ended();
+        self.ring.session_ended();
     }
 }
