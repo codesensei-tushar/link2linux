@@ -317,6 +317,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   color: var(--accent);
 }
 
+.release-pill:hover { color: var(--text); }
+.release-pill-sep { color: var(--text-subtle); }
+
 .code {
   position: relative;
   background: var(--surface-muted);
@@ -326,15 +329,21 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   min-width: 0;
 }
 
+/* Commands wrap rather than scroll: the copy button copies the whole line. */
 .code > code {
   display: block;
-  overflow-x: auto;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   padding: 12px 14px;
   margin-right: 48px;
   font-family: var(--font-mono);
   font-size: var(--type-mono);
   line-height: 1.6;
+}
+
+.code-shell code {
+  padding-left: calc(14px + 2ch);
+  text-indent: -2ch;
 }
 
 .code-shell code::before {
@@ -343,7 +352,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   user-select: none;
 }
 
-.code-compact code { font-size: 0.8125rem; }
+.nowrap { white-space: nowrap; }
 
 .code-copy {
   position: absolute;
@@ -537,7 +546,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 
 .hero-command {
-  max-width: 44rem;
+  max-width: 46rem;
   margin: var(--space-4) auto 0;
   text-align: left;
   display: none;
@@ -983,12 +992,6 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   grid-template-columns: minmax(0, 1fr);
 }
 
-.downloads-side {
-  display: grid;
-  gap: var(--space-4);
-  min-width: 0;
-}
-
 .download-card {
   min-width: 0;
 }
@@ -1029,78 +1032,44 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   font-size: var(--type-small);
 }
 
-.dl-sublabel {
-  font-size: var(--type-small);
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: var(--space-3);
-}
-
 .dl-caption {
   margin-top: var(--space-3);
   font-size: var(--type-small);
   color: var(--text-muted);
 }
 
-.dl-caption .btn-quiet {
-  display: inline;
-  margin-top: 0;
-  margin-left: var(--space-2);
-}
-
-.dl-divider {
-  border: none;
+.pkg-table {
+  margin-top: var(--space-5);
   border-top: 1px solid var(--border);
-  margin: var(--space-5) 0;
-}
-
-.pkg-list li {
-  border-top: 1px solid var(--border);
-  padding: var(--space-4) 0;
-}
-
-.pkg-list li:last-child { padding-bottom: 0; }
-
-.pkg-row {
+  padding-top: var(--space-4);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: var(--space-4);
-  align-items: center;
-  margin-bottom: var(--space-3);
-}
-
-.pkg-row-head {
-  min-width: 0;
-}
-
-.pkg-for {
-  display: block;
+  gap: var(--space-3);
   font-size: var(--type-small);
-  font-weight: 400;
-  color: var(--text-muted);
 }
 
-.pkg-list .code {
-  min-width: 0;
+.pkg-line {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: baseline;
 }
 
-.pkg-btns {
+.pkg-line dt {
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+}
+
+.pkg-line dd {
+  margin: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-2) var(--space-4);
 }
 
-.dl-footnote {
-  margin-top: var(--space-4);
-  font-size: var(--type-small);
-  color: var(--text-muted);
-}
-
-.dl-footnote.subtle { color: var(--text-subtle); }
+.pkg-line a { font-weight: 700; }
 
 .dl-apk {
   width: 100%;
-  margin-bottom: var(--space-3);
 }
 
 .android-qr {
@@ -1133,57 +1102,6 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   width: 108px;
   height: 108px;
   max-width: none;
-}
-
-.android-steps {
-  margin-top: var(--space-5);
-  display: grid;
-  gap: var(--space-4);
-  counter-reset: android;
-}
-
-.android-steps li {
-  display: grid;
-  grid-template-columns: 24px 1fr;
-  gap: var(--space-3);
-  align-items: start;
-  font-size: var(--type-small);
-  color: var(--text-muted);
-}
-
-.android-steps li::before {
-  counter-increment: android;
-  content: counter(android);
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 700;
-  font-size: var(--type-small);
-}
-
-.verify-card {
-  background: var(--surface-muted);
-}
-
-.verify-cols {
-  display: grid;
-  gap: var(--space-5);
-  margin: var(--space-4) 0;
-}
-
-.verify-cols > div {
-  min-width: 0;
-}
-
-.verify-cols p {
-  margin-bottom: var(--space-3);
-  color: var(--text-muted);
-  max-width: 34rem;
 }
 
 .faq-layout {
@@ -1236,6 +1154,13 @@ details[open] .faq-chevron { transform: rotate(180deg); }
   max-width: 40rem;
 }
 
+.faq-list .faq-lead { padding-bottom: var(--space-3); }
+
+.faq-list .code {
+  max-width: 40rem;
+  margin-bottom: 20px;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   details::details-content {
     transition: height var(--dur-base) var(--ease-out);
@@ -1243,31 +1168,7 @@ details[open] .faq-chevron { transform: rotate(180deg); }
   }
 }
 
-.section-cta {
-  position: relative;
-  isolation: isolate;
-  padding-block: var(--space-9);
-  text-align: center;
-}
-
-.section-cta::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: radial-gradient(60% 60% at 50% 100%, var(--glow), transparent 70%);
-  pointer-events: none;
-}
-
-.cta-inner {
-  position: relative;
-  max-width: 52rem;
-  margin-inline: auto;
-}
-
 .cta-mark { margin: 0 auto var(--space-5); }
-.cta-lead { color: var(--text-muted); margin: var(--space-4) auto var(--space-6); }
-.cta-star { margin-top: var(--space-4); }
 
 .site-footer {
   border-top: 1px solid var(--border);
@@ -1423,8 +1324,6 @@ html[data-platform="android"] .hide-on-android { display: none !important; }
       "photos photos"
       "screen screen";
   }
-
-  .verify-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (min-width: 860px) {
@@ -1479,18 +1378,8 @@ html[data-platform="android"] .hide-on-android { display: none !important; }
   }
 }
 
-@media (max-width: 1079px) {
-  .downloads-side {
-    display: contents;
-  }
-
-  html[data-platform="android"] .download-android {
-    order: -2;
-  }
-
-  html[data-platform="android"] #linux {
-    order: -1;
-  }
+html[data-platform="android"] .download-android {
+  order: -1;
 }
 
 @media (min-width: 1080px) {
@@ -1504,15 +1393,7 @@ html[data-platform="android"] .hide-on-android { display: none !important; }
   }
 
   .downloads-grid {
-    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  }
-
-  html[data-platform="android"] .downloads-side {
-    order: -1;
-  }
-
-  .downloads-side .verify-cols {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   }
 }
 
@@ -1529,15 +1410,6 @@ html[data-platform="android"] .hide-on-android { display: none !important; }
 
   .section-head { margin-bottom: 40px; }
   .stage { padding: 0 var(--gutter) 48px; }
-
-  .pkg-row {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: var(--space-3);
-  }
-
-  .pkg-btns {
-    flex-wrap: nowrap;
-  }
   .stage-phone {
     width: 30%;
     top: 18%;

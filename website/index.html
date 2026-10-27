@@ -41,7 +41,6 @@
       </nav>
       <div class="header-actions">
         <a class="header-github" href="https://github.com/codesensei-tushar/link2linux" aria-label="link2linux on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true" class="icon-20"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg></a>
-        <a class="btn btn-primary btn-sm" href="#download">Download</a>
       </div>
     </div>
   </header>
@@ -60,7 +59,7 @@
           <a id="hero-download-primary" class="btn btn-primary btn-lg" href="#download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>Download for Linux</a>
           <a id="hero-download-secondary" class="btn btn-secondary btn-lg" href="#android">Get the Android app</a>
         </div>
-        <div class="code code-shell hero-command hero-fade hero-fade-4 hide-on-android"><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></div>
+        <div class="code code-shell hero-command hero-fade hero-fade-4 hide-on-android"><code>curl -fsSL https://codesensei-tushar.github.io/<wbr>link2linux/<wbr>install.sh <span class="nowrap">| sh</span></code></div>
       </div>
 
         <div class="stage">
@@ -184,7 +183,7 @@
               <h3 class="type-h3">Install both apps</h3>
               <p>Install link2linux on your computer with one command or a package, and the APK on your phone.</p>
               <div class="step-visual">
-                <div class="code code-shell"><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></div>
+                <div class="code code-shell"><code>curl -fsSL https://codesensei-tushar.github.io/<wbr>link2linux/<wbr>install.sh <span class="nowrap">| sh</span></code></div>
                 <a class="btn btn-quiet" href="#download">All downloads</a>
               </div>
             </div>
@@ -243,81 +242,47 @@
         <header class="section-head">
           <p class="type-label">Download</p>
           <h2 class="type-h2" id="download-title">Get link2linux</h2>
-          <p class="section-intro">Free for Linux on x86_64 and ARM64, and for Android 8.0 and newer.</p>
-          <p class="pill pill-neutral" id="release-status" role="status"><span class="pill-dot" aria-hidden="true"></span><span data-release-text>Pre-release v0.4.0</span></p>
+          <a class="pill pill-neutral release-pill" id="release-status" href="https://github.com/codesensei-tushar/link2linux/releases/tag/v0.4.0"><span class="pill-dot" aria-hidden="true"></span><span data-release-text>Pre-release v0.4.0</span><span class="release-pill-sep" aria-hidden="true">·</span>Release notes</a>
         </header>
         <div class="downloads-grid">
           <article class="card download-card" id="linux">
             <header class="dl-card-head">
               <span class="dl-icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg></span>
               <div>
-                <h3 class="type-h3">Linux desktop</h3>
-                <p class="dl-sub">GNOME, KDE Plasma and other desktops, on Wayland or X11.</p>
+                <h3 class="type-h3">Linux</h3>
+                <p class="dl-sub">x86_64 and ARM64, on Wayland or X11.</p>
               </div>
             </header>
-            <p class="dl-sublabel">Install with one command</p>
-            <div class="code code-shell"><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></div>
-            <p class="dl-caption">It picks the right package for your system, checks it against the release’s SHA256SUMS, and installs it. <a class="btn btn-quiet" href="install.sh">Read the script</a></p>
-            <hr class="dl-divider">
-            <p class="dl-sublabel">Or download a package</p>
-            <ul class="pkg-list">
-              <li>
-                <div class="pkg-row"><div class="pkg-row-head"><strong>.deb</strong> <span class="pkg-for">Ubuntu, Debian, Linux Mint, Pop!_OS</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_amd64.deb">Download .deb</a><a class="btn btn-secondary btn-sm" data-asset="link2linux_arm64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_arm64.deb" aria-label="Download .deb for ARM64">ARM64</a></div></div>
-                <div class="code code-shell code-compact"><code>sudo apt install ./link2linux_amd64.deb</code></div>
-              </li>
-              <li>
-                <div class="pkg-row"><div class="pkg-row-head"><strong>.rpm</strong> <span class="pkg-for">Fedora, openSUSE and other RPM-based systems</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.rpm">Download .rpm</a><a class="btn btn-secondary btn-sm" data-asset="link2linux.aarch64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.rpm" aria-label="Download .rpm for ARM64">ARM64</a></div></div>
-                <div class="code code-shell code-compact"><code>sudo dnf install ./link2linux.x86_64.rpm</code></div>
-              </li>
-              <li>
-                <div class="pkg-row"><div class="pkg-row-head"><strong>AppImage</strong> <span class="pkg-for">Any distribution, without installing. Needs FUSE 2.</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux-x86_64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-x86_64.AppImage">Download AppImage</a><a class="btn btn-secondary btn-sm" data-asset="link2linux-aarch64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-aarch64.AppImage" aria-label="Download AppImage for ARM64">ARM64</a></div></div>
-                <div class="code code-shell code-compact"><code>chmod +x link2linux-x86_64.AppImage &amp;&amp; ./link2linux-x86_64.AppImage</code></div>
-              </li>
-              <li>
-                <div class="pkg-row"><div class="pkg-row-head"><strong>Flatpak</strong> <span class="pkg-for">Sandboxed, for any distribution with Flatpak. Not on Flathub yet.</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.flatpak">Download Flatpak</a><a class="btn btn-secondary btn-sm" data-asset="link2linux.aarch64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.flatpak" aria-label="Download Flatpak for ARM64">ARM64</a></div></div>
-                <div class="code code-shell code-compact"><code>flatpak install --user ./link2linux.x86_64.flatpak</code></div>
-              </li>
-            </ul>
-            <p class="dl-footnote">ARM64 is for computers with 64-bit ARM processors. The install script picks it by itself.</p>
+            <div class="code code-shell"><code>curl -fsSL https://codesensei-tushar.github.io/<wbr>link2linux/<wbr>install.sh <span class="nowrap">| sh</span></code></div>
+            <p class="dl-caption">Installs the right package for your system after checking it against the release’s SHA256SUMS. <a href="install.sh">Read the script</a></p>
+            <dl class="pkg-table">
+              <div class="pkg-line">
+                <dt>x86_64</dt>
+                <dd><a data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_amd64.deb" aria-label="Download .deb for x86_64">.deb</a><a data-asset="link2linux.x86_64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.rpm" aria-label="Download .rpm for x86_64">.rpm</a><a data-asset="link2linux-x86_64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-x86_64.AppImage" aria-label="Download AppImage for x86_64">AppImage</a><a data-asset="link2linux.x86_64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.flatpak" aria-label="Download Flatpak for x86_64">Flatpak</a></dd>
+              </div>
+              <div class="pkg-line">
+                <dt>ARM64</dt>
+                <dd><a data-asset="link2linux_arm64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_arm64.deb" aria-label="Download .deb for ARM64">.deb</a><a data-asset="link2linux.aarch64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.rpm" aria-label="Download .rpm for ARM64">.rpm</a><a data-asset="link2linux-aarch64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-aarch64.AppImage" aria-label="Download AppImage for ARM64">AppImage</a><a data-asset="link2linux.aarch64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.flatpak" aria-label="Download Flatpak for ARM64">Flatpak</a></dd>
+              </div>
+            </dl>
           </article>
-          <div class="downloads-side">
-            <article class="card download-card download-android" id="android">
-              <header class="dl-card-head">
-                <span class="dl-icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg></span>
-                <div>
-                  <h3 class="type-h3">Android phone</h3>
-                  <p class="dl-sub">Android 8.0 and newer.</p>
-                </div>
-              </header>
-              <a class="btn btn-primary dl-apk" data-asset="link2linux.apk" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.apk">Download APK</a>
-              <div class="android-qr hide-on-android">
-                <div class="android-qr-tile">
-                  <img src="images/qr-android.svg" alt="" width="108" height="108">
-                </div>
-                <p>On your computer? Scan this with your phone to open this page there.</p>
+          <article class="card download-card download-android" id="android">
+            <header class="dl-card-head">
+              <span class="dl-icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg></span>
+              <div>
+                <h3 class="type-h3">Android</h3>
+                <p class="dl-sub">Android 8.0 and newer.</p>
               </div>
-              <ol class="android-steps">
-                <li>Open the downloaded file on your phone.</li>
-                <li>If Android asks, allow your browser to install apps.</li>
-                <li>Open link2linux and scan the code your computer shows.</li>
-              </ol>
-              <p class="dl-footnote subtle">App store listings come later.</p>
-            </article>
-            <article class="card verify-card">
-              <h3 class="type-h3">Check your download</h3>
-              <div class="verify-cols">
-                <div>
-                  <p>Every release has a SHA256SUMS file. Put it next to your download and run:</p>
-                  <div class="code"><code>sha256sum -c SHA256SUMS --ignore-missing</code></div>
-                </div>
-                <div>
-                  <p>Each file also has a GitHub build attestation that shows it was built from this repository:</p>
-                  <div class="code"><code>gh attestation verify link2linux_amd64.deb --repo codesensei-tushar/link2linux</code></div>
-                </div>
+            </header>
+            <a class="btn btn-primary dl-apk" data-asset="link2linux.apk" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.apk">Download APK</a>
+            <p class="dl-caption">If Android asks, allow your browser to install apps.</p>
+            <div class="android-qr hide-on-android">
+              <div class="android-qr-tile">
+                <img src="images/qr-android.svg" alt="" width="108" height="108">
               </div>
-              <a class="btn btn-quiet" href="https://github.com/codesensei-tushar/link2linux/releases">All releases on GitHub</a>
-            </article>
-          </div>
+              <p>On your computer? Scan this with your phone to open this page there.</p>
+            </div>
+          </article>
         </div>
       </div>
     </section>
@@ -337,23 +302,12 @@
           <details><summary>Is screen mirroring smooth?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Yes, when GStreamer has an H.264 decoder installed, such as gstreamer1.0-libav. Without one, you see about 12 still pictures a second. Mirroring has no sound yet.</p></details>
           <details><summary>Is it free?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Yes. link2linux is free and open source under the Apache-2.0 license.</p></details>
           <details><summary>Why is it a pre-release?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Versions before 1.0 come out as pre-releases. Photos, screen mirroring and control haven’t been tried on many phones yet, so reports about yours help.</p></details>
+          <details><summary>How do I check a download?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p class="faq-lead">Every release has a SHA256SUMS file. Put it next to your download and run:</p><div class="code"><code>sha256sum -c SHA256SUMS --ignore-missing</code></div><p class="faq-lead">Each file also has a GitHub build attestation that shows it was built from this repository:</p><div class="code"><code>gh attestation verify link2linux_amd64.deb --repo codesensei-tushar/link2linux</code></div></details>
           <details><summary>How do I report a problem?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p><a href="https://github.com/codesensei-tushar/link2linux/issues">Open an issue on GitHub</a>. Report security issues privately, as <a href="https://github.com/codesensei-tushar/link2linux/blob/main/CONTRIBUTING.md#reporting-security-issues">CONTRIBUTING.md</a> describes.</p></details>
         </div>
       </div>
     </section>
 
-    <section class="section section-cta">
-      <div class="container cta-inner">
-        <img class="cta-mark" src="favicon.svg" alt="" width="56" height="56">
-        <h2 class="type-h2">Get started with link2linux</h2>
-        <p class="type-lead cta-lead">Free and open source, for Linux and Android.</p>
-        <div class="hero-cta">
-          <a class="btn btn-primary btn-lg" href="#linux">Download for Linux</a>
-          <a class="btn btn-secondary btn-lg" href="#android">Get the Android app</a>
-        </div>
-        <a class="btn btn-quiet cta-star" href="https://github.com/codesensei-tushar/link2linux"><svg viewBox="0 0 16 16" aria-hidden="true" class="icon-20"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>Star on GitHub</a>
-      </div>
-    </section>
   </main>
 
   <footer class="site-footer">
