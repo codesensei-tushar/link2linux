@@ -419,6 +419,96 @@ async fn a_new_start_right_after_a_stop_shows_only_the_new_stream() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_restart_ignores_the_previous_stream_until_its_start_is_acked() {
+    let (mut link, _old) = Link::showing(h264(1)).await;
+    let (frames, mut viewer) = hand_off();
+    // The new viewer cannot show the H.264 stream that is already running.
+    link.screen
+        .start(
+            &mut link.session,
+            &ScreenRequest {
+                codecs: vec![Codec::Jpeg],
+                max_size: 1280,
+            },
+            frames,
+        )
+        .unwrap();
+    let start = link.request("ScreenStart").await;
+
+    // The phone has not read the new start. A rotation is still H.264, and
+    // so is the frame after it.
+    link.phone_sends(h264(3)).await;
+    link.phone_sends(frame(10, true)).await;
+    assert_eq!(link.screen.state().phase, ScreenPhase::Showing);
+    assert_eq!(link.screen.state().ended, None);
+    assert!(viewer.try_recv().is_err());
+    link.sent_nothing();
+
+    link.answer(start, ack()).await;
+    link.phone_sends(frame(20, true)).await;
+    assert!(viewer.try_recv().is_err());
+    link.phone_sends(jpeg(4, false)).await;
+    link.phone_sends(frame(30, true)).await;
+    let first = viewer.try_recv().unwrap();
+    assert_eq!(first.format.map(|format| format.id), Some(4));
+    assert_eq!(first.timestamp_us, 30);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_input_change_before_a_restart_is_acked_keeps_the_old_frames_back() {
+    let (mut link, mut old) = Link::showing(h264(1)).await;
+    link.phone_sends(frame(10, true)).await;
+    assert_eq!(shown(&mut old), [10]);
+
+    let mut viewer = link.start();
+    let start = link.request("ScreenStart").await;
+    // Same id and encoding: only control changed. It is not the format
+    // that answers the new start.
+    link.phone_sends(Payload::ScreenFormat(wire::ScreenFormat {
+        id: 1,
+        codec: ScreenCodec::H264.into(),
+        width: 720,
+        height: 1560,
+        codec_config: vec![1, 0x64, 0, 0x1f, 0xff],
+        input: true,
+    }))
+    .await;
+    link.phone_sends(frame(20, true)).await;
+    assert!(viewer.try_recv().is_err());
+    assert!(!link.screen.state().format.unwrap().input);
+
+    link.answer(start, ack()).await;
+    link.phone_sends(frame(30, true)).await;
+    assert!(viewer.try_recv().is_err());
+    link.phone_sends(h264(2)).await;
+    link.phone_sends(frame(40, true)).await;
+    assert_eq!(shown(&mut viewer), [40]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_format_after_the_restart_ack_that_cannot_be_shown_ends_the_stream() {
+    let (mut link, _old) = Link::showing(h264(1)).await;
+    let (frames, _viewer) = hand_off();
+    link.screen
+        .start(
+            &mut link.session,
+            &ScreenRequest {
+                codecs: vec![Codec::Jpeg],
+                max_size: 0,
+            },
+            frames,
+        )
+        .unwrap();
+    let start = link.request("ScreenStart").await;
+    link.phone_sends(h264(3)).await;
+    link.sent_nothing();
+    link.answer(start, ack()).await;
+    link.phone_sends(h264(4)).await;
+    link.request("ScreenStop").await;
+    assert_eq!(link.screen.state().ended, Some(ScreenEnd::Interrupted));
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_phone_ending_the_stream_says_why() {
     let mut link = Link::ready().await;
     let mut viewer = link.start();
@@ -693,6 +783,31 @@ async fn input_goes_to_the_phone_only_while_it_takes_it() {
         link.screen.state().input_problem,
         Some(InputProblem::ControlOff)
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_input_from_a_stream_that_ended_does_not_fail_the_next_one() {
+    let (mut link, _viewer) = Link::showing(jpeg(1, true)).await;
+    link.screen
+        .input(&mut link.session, Input::Key(Key::Home))
+        .unwrap();
+    link.input().await;
+    link.phone_sends(ended(ScreenEndReason::Locked)).await;
+    assert_eq!(link.screen.state().ended, Some(ScreenEnd::Locked));
+
+    let _viewer = link.start();
+    let start = link.request("ScreenStart").await;
+    link.answer(start, ack()).await;
+    link.phone_sends(jpeg(2, true)).await;
+    // The phone never answered the key from the stream that locked.
+    let leftover = link.pump().await;
+    assert!(
+        matches!(leftover, Some(SessionEvent::RequestTimedOut { .. })),
+        "{leftover:?}"
+    );
+    let state = link.screen.state();
+    assert_eq!(state.phase, ScreenPhase::Showing);
+    assert_eq!(state.input_problem, None);
 }
 
 #[tokio::test(start_paused = true)]

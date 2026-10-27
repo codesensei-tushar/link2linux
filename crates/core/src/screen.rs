@@ -859,6 +859,19 @@ impl ScreenService {
         if self.stop_asked.is_some() {
             return Ok(());
         }
+        // A restart waits for the format that answers the new start, which
+        // the phone sends after that start's Ack. Anything before the Ack
+        // is still the previous stream: a format the new viewer did not
+        // ask for must not end this one, and one that only changes input
+        // must not let the old frames through.
+        if self.start_asked.is_some()
+            && self
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.awaiting_format)
+        {
+            return Ok(());
+        }
         let Some(stream) = &mut self.stream else {
             // Video nobody watches, perhaps of a start the desktop gave up
             // on: the phone stops it.
@@ -987,11 +1000,14 @@ impl ScreenService {
         self.ask_to_stop(session)
     }
 
-    /// Closes the viewer's queue and forgets the stream.
+    /// Closes the viewer's queue and forgets the stream. Inputs still
+    /// waiting were for this stream: a late answer must not be reported
+    /// against the next one.
     fn drop_stream(&mut self) {
         self.stream = None;
         self.start_asked = None;
         self.key_due = None;
+        self.inputs.clear();
     }
 
     /// Sends `ScreenStop`, unless one waits for its answer already or the

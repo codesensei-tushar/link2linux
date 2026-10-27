@@ -115,6 +115,15 @@ describe("ScreenDecoder with H.264", () => {
     expect(FakeVideoDecoder.instances[1]?.chunks.map((chunk) => chunk.type)).toEqual(["key"]);
   });
 
+  it("closes a decoder whose configuration was rejected", () => {
+    FakeVideoDecoder.configureError = new Error("rejected");
+    const { decoder, askKeyFrame } = setUp();
+    decoder.push(frame(0, true, { format: h264 }));
+    expect(FakeVideoDecoder.instances[0]?.state).toBe("closed");
+    expect(FakeVideoDecoder.instances[0]?.chunks).toHaveLength(0);
+    expect(askKeyFrame).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up on H.264 the webview cannot decode", async () => {
     FakeVideoDecoder.support = new Map([["avc1.64001F", false]]);
     const { decoder, unsupported } = setUp();
@@ -141,7 +150,7 @@ describe("ScreenDecoder with H.264", () => {
 
 describe("ScreenDecoder with JPEG", () => {
   it("draws each frame and skips frames while two decode", async () => {
-    const { decoder, env, draw } = setUp(false);
+    const { decoder, env, draw, askKeyFrame } = setUp(false);
     decoder.push(frame(0, true, { format: jpeg }));
     decoder.push(frame(1, true));
     decoder.push(frame(2, true));
@@ -149,7 +158,16 @@ describe("ScreenDecoder with JPEG", () => {
     await settle();
     expect(draw).toHaveBeenCalledTimes(2);
     expect(draw).toHaveBeenCalledWith(expect.anything(), 360, 780);
+    expect(askKeyFrame).toHaveBeenCalledTimes(1);
     decoder.push(frame(3, true));
     expect(env.createImageBitmap).toHaveBeenCalledTimes(3);
+  });
+
+  it("asks for a key frame when a JPEG cannot be decoded", async () => {
+    const { decoder, env, askKeyFrame } = setUp(false);
+    env.createImageBitmap.mockRejectedValueOnce(new Error("not a jpeg"));
+    decoder.push(frame(0, true, { format: jpeg }));
+    await settle();
+    expect(askKeyFrame).toHaveBeenCalledTimes(1);
   });
 });
