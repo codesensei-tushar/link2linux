@@ -240,6 +240,7 @@ impl Supervisor {
                 }
                 Some(Command::Phone(command)) => self.features.phone_command(None, command).await,
                 Some(Command::Screen(command)) => self.features.screen_command(None, command),
+                Some(Command::Photos(command)) => self.features.photo_command(None, command),
                 Some(Command::Response(response)) => {
                     // Without a session, no rule can be broken.
                     let _ = self.features.handle_response(None, response).await;

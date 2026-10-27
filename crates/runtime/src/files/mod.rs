@@ -36,6 +36,13 @@ pub trait Opener: Send + Sync {
     /// As [`FileStore::downloads_dir`].
     fn downloads_dir(&self) -> Result<PathBuf, PlatformError>;
 
+    /// See [`FileStore::pictures_dir`].
+    ///
+    /// # Errors
+    ///
+    /// As [`FileStore::pictures_dir`].
+    fn pictures_dir(&self) -> Result<PathBuf, PlatformError>;
+
     /// See [`FileStore::open`].
     fn open<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<(), PlatformError>>;
 
@@ -46,6 +53,10 @@ pub trait Opener: Send + Sync {
 impl<F: FileStore> Opener for F {
     fn downloads_dir(&self) -> Result<PathBuf, PlatformError> {
         FileStore::downloads_dir(self)
+    }
+
+    fn pictures_dir(&self) -> Result<PathBuf, PlatformError> {
+        FileStore::pictures_dir(self)
     }
 
     fn open<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<(), PlatformError>> {

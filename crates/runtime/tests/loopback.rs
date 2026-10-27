@@ -36,7 +36,8 @@ use link2linux_protocol::v1::{
     BluetoothPairingRequest, ClipboardPush, ErrorCode, FileAccept, FileChunk, FileInfo, FileOffer,
     GoodbyeReason, NotificationAction, NotificationCategory, NotificationContent,
     NotificationImportance, NotificationPosted, NotificationSyncBatch, PairingProof,
-    PhoneNotification, PhoneStatusChanged, PhoneStatusReply, RingEndReason, RingEnded, SyncCursor,
+    PhoneNotification, PhoneStatusChanged, PhoneStatusReply, PhotoData, PhotoListReply,
+    PhotoThumbnail, RingEndReason, RingEnded, SyncCursor,
 };
 use link2linux_runtime::calls::CallsPort;
 use link2linux_runtime::clipboard::ClipboardPort;
@@ -52,8 +53,8 @@ use link2linux_runtime::view::{
     CallLink, CallStateView, CallsDesktop, CallsStatus, ClipboardDirection, ClipboardMode,
     ClipboardPhoneState, ClipboardProblemKind, ClipboardStatus, Device, DeviceStatus, EventSink,
     FileTransfer, FileTransferEvent, NotificationEvent, PairingMethod, PairingRequestState,
-    PairingState, PhoneStatus, PhoneTarget, RingEnd, RingPhase, RingProblem, RingStatus,
-    TransferDirection, TransferStatus,
+    PairingState, PhonePhotos, PhoneStatus, PhoneTarget, PhotosStatus, RingEnd, RingPhase,
+    RingProblem, RingStatus, TransferDirection, TransferStatus,
 };
 use link2linux_runtime::{Runtime, RuntimeConfig, Shell};
 use support::{PhoneTls, TestPhone};
@@ -342,6 +343,7 @@ struct Events {
     phone_status: Mutex<Vec<(String, PhoneStatus)>>,
     rings: Mutex<Vec<(String, RingStatus)>>,
     calls: Mutex<Vec<CallsStatus>>,
+    photos: Mutex<Vec<(String, PhonePhotos)>>,
     screens: Mutex<Vec<(String, ScreenStatus)>>,
     changed: Notify,
 }
@@ -375,6 +377,14 @@ impl EventSink for Events {
 
     fn clipboard_changed(&self, status: &ClipboardStatus) {
         self.clipboard.lock().unwrap().push(status.clone());
+        self.changed.notify_waiters();
+    }
+
+    fn photos_changed(&self, device_id: &str, photos: &PhonePhotos) {
+        self.photos
+            .lock()
+            .unwrap()
+            .push((device_id.to_owned(), photos.clone()));
         self.changed.notify_waiters();
     }
 
@@ -456,6 +466,16 @@ impl Events {
     async fn screen_where(&self, id: &str, check: impl Fn(&ScreenStatus) -> bool) -> ScreenStatus {
         wait(&self.changed, || {
             let reported = self.screens.lock().unwrap();
+            let (_, latest) = reported.iter().rev().find(|(device, _)| device == id)?;
+            check(latest).then(|| latest.clone())
+        })
+        .await
+    }
+
+    /// Waits until the latest photos of phone `id` pass `check`.
+    async fn photos_where(&self, id: &str, check: impl Fn(&PhonePhotos) -> bool) -> PhonePhotos {
+        wait(&self.changed, || {
+            let reported = self.photos.lock().unwrap();
             let (_, latest) = reported.iter().rev().find(|(device, _)| device == id)?;
             check(latest).then(|| latest.clone())
         })
@@ -3221,4 +3241,154 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
     calls
         .wait_for_times(&format!("disconnect {PHONE_BT}"), 2)
         .await;
+}
+
+/// The phone side of a session with the paired desktop, for a phone that
+/// shares its photos, once both sides report them ready.
+async fn photos_session(
+    phone: &TestPhone,
+    desktop: CertificateFingerprint,
+) -> Session<TlsStream<TcpStream>> {
+    let connection = phone.accept(PhoneTls::pinned(desktop)).await.unwrap();
+    let info = DeviceInfo::new(
+        phone.id.clone(),
+        phone.name.clone(),
+        DeviceKind::Phone,
+        [Feature::Photos],
+    );
+    let mut session =
+        Session::handshake(connection.wire.into_inner(), info, SessionConfig::phone())
+            .await
+            .unwrap();
+    while !session.is_ready(Feature::Photos) {
+        next_event(&mut session).await;
+    }
+    session
+}
+
+#[tokio::test]
+async fn the_photos_page_shows_the_phones_photos_and_saves_one() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "photos-1").await);
+    let (desktop, device) = pair(&rig, &phone).await;
+    let id = device.id.clone();
+    let mut session = within(photos_session(&phone, desktop)).await;
+
+    // The desktop asks for the list, and shows it.
+    let (asked, request) = within(next_request(&mut session)).await;
+    assert!(
+        matches!(request, Payload::PhotoListRequest(_)),
+        "{request:?}"
+    );
+    let photo = link2linux_protocol::v1::Photo {
+        id: "7".into(),
+        taken_unix_ms: 1,
+        modified_unix_ms: 9,
+        name: "IMG_7.jpg".into(),
+        mime_type: "image/jpeg".into(),
+        size: 5,
+        width: 4000,
+        height: 3000,
+    };
+    session
+        .reply(
+            asked,
+            Payload::PhotoListReply(PhotoListReply {
+                photos: vec![photo],
+            }),
+        )
+        .await
+        .unwrap();
+    let shown = rig
+        .events
+        .photos_where(&id, |photos| photos.state == PhotosStatus::Listed)
+        .await;
+    assert_eq!(shown.photos.len(), 1);
+    assert_eq!(shown.photos[0].name, "IMG_7.jpg");
+    assert_eq!(rig.runtime.photos(&id).unwrap(), shown);
+
+    // A thumbnail comes from the phone.
+    let thumbnail = tokio::spawn(rig.runtime.photo_thumbnail(&id, "7", 256));
+    let (asked, request) = within(next_request(&mut session)).await;
+    assert!(
+        matches!(&request, Payload::PhotoThumbnailRequest(request) if request.id == "7" && request.max_size == 256),
+        "{request:?}"
+    );
+    session
+        .reply(
+            asked,
+            Payload::PhotoThumbnail(PhotoThumbnail {
+                format: link2linux_protocol::v1::ImageFormat::Jpeg.into(),
+                data: b"jpeg".to_vec(),
+                width: 256,
+                height: 192,
+            }),
+        )
+        .await
+        .unwrap();
+    let thumbnail = within(thumbnail).await.unwrap().unwrap();
+    assert_eq!(&*thumbnail.data, b"jpeg");
+
+    // Saving fetches the original and never replaces a file.
+    std::fs::create_dir_all(&rig.files.downloads).unwrap();
+    std::fs::write(rig.files.downloads.join("IMG_7.jpg"), b"theirs").unwrap();
+    let saved = tokio::spawn(rig.runtime.save_photo(&id, "7"));
+    let (asked, request) = within(next_request(&mut session)).await;
+    assert!(
+        matches!(&request, Payload::PhotoDataRequest(request) if request.id == "7" && request.offset == 0),
+        "{request:?}"
+    );
+    session
+        .reply(
+            asked,
+            Payload::PhotoData(PhotoData {
+                size: 5,
+                modified_unix_ms: 9,
+                data: b"bytes".to_vec(),
+            }),
+        )
+        .await
+        .unwrap();
+    let saved = within(saved).await.unwrap().unwrap();
+    assert_eq!(saved.name, "IMG_7 (1).jpg");
+    let path = rig.files.downloads.join("IMG_7 (1).jpg");
+    assert_eq!(std::fs::read(&path).unwrap(), b"bytes");
+    assert_eq!(
+        std::fs::read(rig.files.downloads.join("IMG_7.jpg")).unwrap(),
+        b"theirs"
+    );
+
+    // The shell opens it by its id, and only a photo the user saved.
+    rig.runtime.open_saved_photo(&id, "7").unwrap();
+    within(rig.files.opened("open", &path)).await;
+    rig.runtime.show_saved_photo(&id, "7").unwrap();
+    within(rig.files.opened("show", &path)).await;
+    assert_eq!(
+        rig.runtime.open_saved_photo(&id, "8"),
+        Err(link2linux_runtime::view::BackendError::NotFound)
+    );
+
+    // Turned off on the phone: the page says so.
+    session
+        .set_availability(Feature::Photos, Availability::Disabled)
+        .await
+        .unwrap();
+    rig.events
+        .photos_where(&id, |photos| photos.state == PhotosStatus::TurnedOff)
+        .await;
+
+    // Once the session is over, nothing can be fetched.
+    session
+        .goodbye(GoodbyeReason::Shutdown, "restarting")
+        .await
+        .unwrap();
+    rig.events
+        .photos_where(&id, |photos| photos.state == PhotosStatus::Disconnected)
+        .await;
+    assert_eq!(
+        within(rig.runtime.photo_thumbnail(&id, "7", 256))
+            .await
+            .unwrap_err(),
+        link2linux_runtime::view::BackendError::PhoneNotConnected
+    );
 }

@@ -23,6 +23,7 @@ use crate::clipboard::ClipboardDriver;
 use crate::files::FilesDriver;
 use crate::notify::{DriverError, NotificationsDriver, PhoneSession};
 use crate::phone::{PhoneCommand, RingDriver, StatusDriver};
+use crate::photos::{PhotoCommand, PhotosDriver};
 use crate::screen::{ScreenCommand, ScreenDriver};
 
 /// The features of one phone, which stay with it across sessions.
@@ -41,6 +42,8 @@ pub struct Features {
     pub calls: CallsDriver,
     /// Its screen.
     pub screen: ScreenDriver,
+    /// Its recent photos.
+    pub photos: PhotosDriver,
 }
 
 /// The phone broke a feature's rules: the session ends as a protocol error.
@@ -67,6 +70,9 @@ impl Features {
         self.screen.session_started(session);
         if let Err(error) = self.calls.session_started(session).await {
             tracing::debug!(%error, "calls could not start");
+        }
+        if let Err(error) = self.photos.session_started(session).await {
+            tracing::debug!(%error, "photos could not start");
         }
     }
 
@@ -95,6 +101,8 @@ impl Features {
             self.status_event(session, SessionEvent::FeatureStatus(states.clone()))
                 .await;
             self.screen_event(session, SessionEvent::FeatureStatus(states.clone()));
+            self.photos_event(session, SessionEvent::FeatureStatus(states.clone()))
+                .await;
             self.ring
                 .handle_event(session, SessionEvent::FeatureStatus(states));
             return Ok(Some(event));
@@ -115,6 +123,9 @@ impl Features {
             return Ok(None);
         };
         let Some(event) = self.screen_event(session, event) else {
+            return Ok(None);
+        };
+        let Some(event) = self.photos_event(session, event).await else {
             return Ok(None);
         };
         Ok(self.calls_event(session, event).await)
@@ -198,6 +209,28 @@ impl Features {
     pub fn screen_command(&mut self, session: Option<&mut PhoneSession>, command: ScreenCommand) {
         if let Err(error) = self.screen.command(session, command) {
             tracing::debug!(%error, "could not act on the phone's screen");
+        }
+    }
+
+    async fn photos_event(
+        &mut self,
+        session: &mut PhoneSession,
+        event: SessionEvent,
+    ) -> Option<SessionEvent> {
+        self.photos
+            .handle_event(session, event)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(%error, "photos event failed");
+                None
+            })
+    }
+
+    /// Hands what the shell asked of the phone's photos to its driver.
+    /// `session` is `None` between sessions, when it is answered at once.
+    pub fn photo_command(&mut self, session: Option<&mut PhoneSession>, command: PhotoCommand) {
+        if let Err(error) = self.photos.command(session, command) {
+            tracing::debug!(%error, "could not ask the phone for a photo");
         }
     }
 
@@ -285,6 +318,7 @@ impl Features {
             self.ring.next_deadline(),
             self.status.next_deadline(),
             self.screen.next_deadline(),
+            self.photos.next_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -303,10 +337,13 @@ impl Features {
         {
             tracing::debug!(%error, "could not ask for a key frame");
         }
-        if let Some(session) = session
-            && let Err(error) = self.status.tick(session).await
-        {
-            tracing::debug!(%error, "the phone's status could not be asked for again");
+        if let Some(session) = session {
+            if let Err(error) = self.status.tick(session).await {
+                tracing::debug!(%error, "the phone's status could not be asked for again");
+            }
+            if let Err(error) = self.photos.tick(session).await {
+                tracing::debug!(%error, "photos could not go on");
+            }
         }
         self.ring.tick(Instant::now());
     }
@@ -327,5 +364,6 @@ impl Features {
         self.ring.session_ended();
         self.calls.session_ended();
         self.screen.session_ended();
+        self.photos.session_ended();
     }
 }

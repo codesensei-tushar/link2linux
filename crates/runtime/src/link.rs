@@ -20,6 +20,7 @@ use crate::clipboard::{Copies, Outgoing};
 use crate::features::Features;
 use crate::notify::PhoneSession;
 use crate::phone::PhoneCommand;
+use crate::photos::PhotoCommand;
 use crate::screen::ScreenCommand;
 
 /// What the owner of a session can ask of it.
@@ -66,6 +67,8 @@ pub enum Command {
     Phone(PhoneCommand),
     /// The user asked something of the phone's screen.
     Screen(ScreenCommand),
+    /// The photos page asked for a thumbnail or a photo.
+    Photos(PhotoCommand),
     /// The desktop's calls changed: its availability, whether it shows the
     /// phone's calls itself, or Bluetooth pairing with the phone.
     CallsChanged,
@@ -279,6 +282,7 @@ async fn drive(
                 }
                 Some(Command::Phone(command)) => features.phone_command(Some(session), command).await,
                 Some(Command::Screen(command)) => features.screen_command(Some(session), command),
+                Some(Command::Photos(command)) => features.photo_command(Some(session), command),
                 Some(Command::CallsChanged) => {
                     if let Err(error) = features.calls_changed(Some(session)).await {
                         tracing::debug!(%error, "could not tell the phone about calls");

@@ -39,6 +39,7 @@ use crate::notify::{DriverFactory, Presenter};
 use crate::pairing::PairingCtl;
 use crate::paths::{DataDir, desktop_name};
 use crate::phone::{PhoneBoard, PhoneBoards, RingDriver, StatusDriver};
+use crate::photos::{PhotosDriver, SavedPhotos};
 use crate::screen::ScreenDriver;
 use crate::view::{Device, DeviceStatus, EventSink, StartupError};
 
@@ -217,6 +218,8 @@ pub(crate) struct Core {
     pub phone: Arc<PhoneBoards>,
     /// The phones' calls through this desktop's Bluetooth.
     pub calls: Arc<Calls>,
+    /// Where the user saved the phones' photos.
+    pub saved_photos: SavedPhotos,
     /// How many device tasks, and the task following calls, are still
     /// running, for a shutdown that waits for them to clean up.
     pub supervisors: AtomicUsize,
@@ -249,6 +252,7 @@ impl Core {
                 Feature::Ring,
                 Feature::Calls,
                 Feature::Screen,
+                Feature::Photos,
             ],
         );
         // Before any session, as it cleans up after an earlier run.
@@ -298,6 +302,7 @@ impl Core {
                 config.calls,
                 config.data_dir.root().join("calls.json"),
             )),
+            saved_photos: SavedPhotos::default(),
             supervisors: AtomicUsize::new(0),
         });
         // Following the hub before any phone's service can report.
@@ -402,6 +407,7 @@ impl Core {
             ring: RingDriver::new(phone_board.clone()),
             calls: CallsDriver::new(record.id.clone(), self.calls.clone(), phone_board.clone()),
             screen: ScreenDriver::new(phone_board.clone()),
+            photos: PhotosDriver::new(phone_board.clone()),
         };
         self.calls.task_started(&record.id);
         self.calls.set_phones(self.phone_list());
@@ -483,6 +489,7 @@ impl Core {
         self.drivers.forget(id);
         self.files.forget(id);
         self.phone.forget(id);
+        self.saved_photos.forget(id);
         lock(&self.evidence).forget(id);
         lock(&self.clipboard_page).board.forget(id);
         self.clipboard_hub.forget_phone(id);
