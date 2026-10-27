@@ -97,6 +97,7 @@ fn ringing_note(key: &str, caller: &str) -> CallNotification {
     };
     CallNotification::of(&PhoneNotification {
         key: key.into(),
+        app_id: "com.google.android.dialer".into(),
         app_name: "Phone".into(),
         title: caller.into(),
         category: NotificationCategory::Call.into(),
