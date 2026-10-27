@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Window theme only. Everything drawn by Compose uses the Material 3 theme. -->
-    <style name="Theme.Link2Linux" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Window theme only. Everything drawn by Compose uses the Material 3 theme. The window
+         background is the theme's page color, so no white flashes in before the first frame. -->
+    <style name="Theme.Link2Linux" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/page_background</item>
+    </style>
 </resources>

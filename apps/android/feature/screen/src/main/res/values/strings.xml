@@ -5,6 +5,8 @@
     <string name="screen_toggle_summary">Your computer can ask to show this screen in a window. Each time, your phone asks you first.</string>
     <string name="screen_sharing_title">Sharing your screen with %1$s</string>
     <string name="screen_asking_title">%1$s asks to see your screen</string>
+    <string name="screen_status_sharing">Sharing</string>
+    <string name="screen_status_waiting">Waiting</string>
     <string name="screen_stop_sharing">Stop sharing</string>
     <string name="screen_control_title">Allow control from your computer</string>
     <string name="screen_control_summary">Taps, swipes, Back, Home, Recents and typing from the computer\'s window, while you share your screen with it.</string>

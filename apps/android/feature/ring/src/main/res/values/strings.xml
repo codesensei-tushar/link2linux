@@ -5,6 +5,7 @@
     <string name="ring_how_title">How it rings</string>
     <string name="ring_how_body">Your phone plays its ringtone at full volume and vibrates for a minute, even when it is set to silent or vibrate, and shows a notification with a button to stop it. Afterwards the volume goes back to what it was. It does not ring during a call. link2linux needs no permission for this.</string>
     <string name="ring_ringing_title">Ringing for %1$s</string>
+    <string name="ring_ringing_badge">Ringing</string>
     <string name="ring_stop">Stop</string>
     <string name="ring_stop_ringing">Stop ringing</string>
     <string name="ring_channel_name">Ringing</string>

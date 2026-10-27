@@ -36,6 +36,7 @@
     <string name="feature_pairing_camera_unavailable_body">This phone\'s camera can\'t scan right now. You can pair without it by comparing a short code.</string>
 
     <string name="feature_pairing_waiting_title">Waiting for %1$s</string>
+    <string name="feature_pairing_waiting_badge">Waiting</string>
     <string name="feature_pairing_waiting_body">Keep this screen open and stay on the same network as your computer. This ends in %1$d s.</string>
     <string name="feature_pairing_address_hint">Still nothing? On your computer, choose to enter the phone\'s address, and type one of these:</string>
 
@@ -47,6 +48,7 @@
     <string name="feature_pairing_sas_address_hint">If it is not listed, type one of these addresses on the computer:</string>
 
     <string name="feature_pairing_verifying_title">Checking %1$s</string>
+    <string name="feature_pairing_verifying_badge">Verifying</string>
     <string name="feature_pairing_verifying_body">The two devices are making sure they are talking to each other.</string>
 
     <string name="feature_pairing_confirm_title">Same code on both screens?</string>
@@ -63,6 +65,7 @@
     <string name="feature_pairing_success_body">This phone and the computer now trust each other.</string>
 
     <string name="feature_pairing_failed_title">Pairing did not work</string>
+    <string name="feature_pairing_failed_badge">Failed</string>
     <string name="feature_pairing_failed_verification">The devices could not confirm each other. Check that you scanned the code on your own computer, then try again.</string>
     <string name="feature_pairing_failed_declined">Pairing was declined, so nothing was saved.</string>
     <string name="feature_pairing_failed_timed_out">The computer did not connect in time. Check that both devices are on the same network, then try again.</string>

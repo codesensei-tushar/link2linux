@@ -1,30 +1,35 @@
 package dev.link2linux.android.core.designsystem.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 
 /**
- * The link2linux Material 3 theme. Follows the system light/dark setting and,
- * on Android 12 and later, the wallpaper-based dynamic colors.
+ * The link2linux theme: the desktop app's colors, font and shapes on Material 3. Follows the
+ * system light/dark setting. Wallpaper colors are left out on purpose, so the phone app looks
+ * like the desktop app it pairs with.
  */
 @Composable
 fun L2lTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColors
-        else -> LightColors
+    CompositionLocalProvider(LocalL2lColors provides if (darkTheme) DarkL2lColors else LightL2lColors) {
+        MaterialTheme(
+            colorScheme = if (darkTheme) DarkColors else LightColors,
+            typography = L2lTypography,
+            shapes = L2lShapes,
+            content = content,
+        )
     }
-    MaterialTheme(colorScheme = colorScheme, content = content)
+}
+
+/** The theme's colors that Material 3 has no role for. */
+object L2lTheme {
+    val colors: L2lColors
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalL2lColors.current
 }

@@ -7,8 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -39,17 +37,18 @@ fun EmptyState(
             .padding(horizontal = 32.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // The desktop's empty-state mark: an accent icon on a soft, rounded square.
         Surface(
-            shape = CircleShape,
+            shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.size(96.dp),
+            contentColor = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(72.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(painter = icon, contentDescription = null, modifier = Modifier.size(48.dp))
+                Icon(painter = icon, contentDescription = null, modifier = Modifier.size(36.dp))
             }
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
         Text(
             text = title,
             style = MaterialTheme.typography.headlineSmall,
@@ -72,12 +71,12 @@ fun EmptyState(
 @Preview(showBackground = true)
 @Composable
 private fun EmptyStatePreview() {
-    L2lTheme(dynamicColor = false) {
+    L2lTheme {
         EmptyState(
             icon = painterResource(R.drawable.ic_devices),
             title = "Nothing here yet",
             body = "A short explanation of what will appear here.",
-            action = { Button(onClick = {}) { Text("Do something") } },
+            action = { L2lButton(onClick = {}) { Text("Do something") } },
         )
     }
 }

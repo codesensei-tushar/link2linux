@@ -18,7 +18,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.link2linux.android.core.designsystem.component.L2lTextButton
+import dev.link2linux.android.core.designsystem.component.StatusBadge
+import dev.link2linux.android.core.designsystem.component.Tone
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -126,7 +128,7 @@ private fun Preparing(count: Int, onCancel: () -> Unit) {
         title = { Text(pluralStringResource(R.plurals.files_share_preparing, count, count)) },
         text = { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.files_cancel)) } },
+        dismissButton = { L2lTextButton(onClick = onCancel) { Text(stringResource(R.string.files_cancel)) } },
     )
 }
 
@@ -194,10 +196,19 @@ private fun ConfirmShare(
                             RadioButton(selected = choice.peer.id == selected.peer.id, onClick = null)
                             Column(modifier = Modifier.padding(start = 8.dp)) {
                                 Text(choice.peer.name)
-                                Text(
-                                    stringResource(if (choice.connected) R.string.files_desktop_connected else R.string.files_desktop_away),
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
+                                if (choice.connected) {
+                                    StatusBadge(
+                                        text = stringResource(R.string.files_desktop_connected),
+                                        tone = Tone.Success,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                } else {
+                                    Text(
+                                        stringResource(R.string.files_desktop_away),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                }
                             }
                         }
                     }
@@ -205,9 +216,9 @@ private fun ConfirmShare(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSend(selected) }, enabled = armed) { Text(stringResource(R.string.files_send_now)) }
+            L2lTextButton(onClick = { onSend(selected) }, enabled = armed) { Text(stringResource(R.string.files_send_now)) }
         },
-        dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.files_cancel)) } },
+        dismissButton = { L2lTextButton(onClick = onCancel) { Text(stringResource(R.string.files_cancel)) } },
     )
 }
 
@@ -229,6 +240,6 @@ private fun Notice(@StringRes message: Int, onDone: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDone,
         text = { Text(stringResource(message)) },
-        confirmButton = { TextButton(onClick = onDone) { Text(stringResource(R.string.files_ok)) } },
+        confirmButton = { L2lTextButton(onClick = onDone) { Text(stringResource(R.string.files_ok)) } },
     )
 }
