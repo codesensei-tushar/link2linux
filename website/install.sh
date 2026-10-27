@@ -4,11 +4,12 @@
 #   curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh
 #
 # It installs the .deb on apt systems, the .rpm on dnf and zypper systems,
-# and the AppImage everywhere else. Every download is checked against the
-# release's SHA256SUMS before anything is installed.
+# and the AppImage everywhere else, or the Flatpak when asked. Every download
+# is checked against the release's SHA256SUMS before anything is installed.
 #
 # Options (with curl, pass them as: ... | sh -s -- --appimage):
 #   --appimage   install the AppImage even where a package would fit
+#   --flatpak    install the Flatpak bundle for the current user
 #   --dry-run    show what would be installed, and change nothing
 # Environment:
 #   L2L_VERSION  install this release tag instead of the newest one
@@ -28,6 +29,7 @@ run() { if $dry_run; then say "would run: $*"; else "$@"; fi; }
 for arg in "$@"; do
   case "$arg" in
     --appimage) format=appimage ;;
+    --flatpak) format=flatpak ;;
     --dry-run) dry_run=true ;;
     *) die "unknown option: $arg" ;;
   esac
@@ -55,6 +57,10 @@ case "$format" in
   deb) asset="link2linux_${deb_arch}.deb" ;;
   dnf | zypper) asset="link2linux.${arch}.rpm" ;;
   appimage) asset="link2linux-${arch}.AppImage" ;;
+  flatpak)
+    command -v flatpak >/dev/null || die "--flatpak needs flatpak; install it from your distribution first"
+    asset="link2linux.${arch}.flatpak"
+    ;;
 esac
 
 tag="${L2L_VERSION:-}"
@@ -70,7 +76,7 @@ printf '%s\n' "$tag" | grep -Eqx 'v[0-9]+[.][0-9]+[.][0-9]+' || die "not a relea
 base="https://github.com/$repo/releases/download/$tag"
 
 sudo=""
-if [ "$format" != appimage ] && [ "$(id -u)" -ne 0 ]; then
+if [ "$format" != appimage ] && [ "$format" != flatpak ] && [ "$(id -u)" -ne 0 ]; then
   command -v sudo >/dev/null || die "sudo is needed to install the package; or use --appimage"
   sudo=sudo
 fi
@@ -95,6 +101,8 @@ case "$format" in
   deb) run $sudo apt-get install -y "$file" ;;
   dnf) run $sudo dnf install -y "$file" ;;
   zypper) run $sudo zypper --non-interactive install --allow-unsigned-rpm "$file" ;;
+  # The bundle names Flathub as the place to get the GNOME runtime from.
+  flatpak) run flatpak install --user --noninteractive "$file" ;;
   appimage)
     dest="${XDG_BIN_HOME:-$HOME/.local/bin}"
     run mkdir -p "$dest"

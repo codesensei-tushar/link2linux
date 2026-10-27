@@ -24,9 +24,19 @@ concurrency:
 
 jobs:
   desktop:
-    # The oldest supported runner, so the binaries also run on distributions
-    # with an older glibc.
-    runs-on: ubuntu-22.04
+    # The oldest supported runners, so the binaries also run on
+    # distributions with an older glibc. Each architecture builds on its own
+    # machine: no cross-compiling.
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            deb: amd64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            deb: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -45,8 +55,18 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev \
             libayatana-appindicator3-dev librsvg2-dev protobuf-compiler libfuse2
       - name: Toolchain (from rust-toolchain.toml)
-        run: rustup show active-toolchain || rustup toolchain install
+        run: |
+          # The Arm runners may come without rustup.
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.arch }}
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -58,12 +78,63 @@ jobs:
         run: |
           b=target/release/bundle
           mkdir dist
-          cp $b/deb/*_amd64.deb dist/link2linux_amd64.deb
-          cp $b/rpm/*.x86_64.rpm dist/link2linux.x86_64.rpm
-          cp $b/appimage/*_amd64.AppImage dist/link2linux-x86_64.AppImage
+          cp $b/deb/*_${{ matrix.deb }}.deb dist/link2linux_${{ matrix.deb }}.deb
+          cp $b/rpm/*.${{ matrix.arch }}.rpm dist/link2linux.${{ matrix.arch }}.rpm
+          cp $b/appimage/*.AppImage dist/link2linux-${{ matrix.arch }}.AppImage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: release-desktop
+          name: release-desktop-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  # The Flatpak wraps the .deb built above, so it runs the same binary. The
+  # container has flatpak-builder and the GNOME runtime that the manifest
+  # names; keep its tag and the manifest's runtime-version the same.
+  flatpak:
+    needs: desktop
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            deb: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            deb: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      # gnome-49
+      image: ghcr.io/flathub-infra/flatpak-github-actions@sha256:8a05aca51163a81259cc011302cc5121779c89b8b16f2819cc3fd06817d136e7
+      options: --privileged
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-desktop-${{ matrix.arch }}
+          path: desktop
+      - name: Build the Flatpak
+        run: |
+          m=apps/desktop/packaging/flatpak
+          cp desktop/link2linux_${{ matrix.deb }}.deb $m/link2linux.deb
+          opts="--disable-rofiles-fuse --default-branch=stable --arch=${{ matrix.arch }}"
+          flatpak-builder $opts --build-only --force-clean --install-deps-from=flathub \
+            build $m/dev.link2linux.desktop.yml
+          # The runtime must have every library the binary links: a missing
+          # one would only show when someone starts the app.
+          flatpak-builder --run build $m/dev.link2linux.desktop.yml \
+            ldd /app/bin/link2linux-desktop > libs.txt
+          ! grep 'not found' libs.txt ||
+            { echo "::error::The runtime lacks libraries the app links"; exit 1; }
+          flatpak-builder $opts --finish-only --repo=repo build $m/dev.link2linux.desktop.yml
+          mkdir dist
+          flatpak build-bundle --arch=${{ matrix.arch }} \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            repo dist/link2linux.${{ matrix.arch }}.flatpak dev.link2linux.desktop stable
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-flatpak-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
 
@@ -136,7 +207,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [desktop, android-sign]
+    needs: [desktop, flatpak, android-sign]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

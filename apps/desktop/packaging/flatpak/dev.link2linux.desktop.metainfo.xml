@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.link2linux.desktop</id>
+  <name>link2linux</name>
+  <summary>Connect your Android phone to your Linux desktop</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <developer id="dev.link2linux">
+    <name>The link2linux contributors</name>
+  </developer>
+  <description>
+    <p>
+      link2linux shares your Android phone with your Linux desktop, directly
+      over your own network: no account, no cloud.
+    </p>
+    <ul>
+      <li>See your phone's notifications on the desktop, reply to them and dismiss them</li>
+      <li>Copy on one device and paste on the other</li>
+      <li>Send files both ways</li>
+      <li>Take calls through the computer over Bluetooth</li>
+      <li>See the phone's battery and signal, and make it ring to find it</li>
+      <li>Browse the phone's recent photos and save the ones you want</li>
+      <li>Show the phone's screen in a window, and control it if you allow it</li>
+    </ul>
+    <p>
+      Every connection uses mutual TLS 1.3 between the two devices you
+      paired with a QR code. The phone needs the link2linux Android app.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.link2linux.desktop.desktop</launchable>
+  <url type="homepage">https://codesensei-tushar.github.io/link2linux/</url>
+  <url type="bugtracker">https://github.com/codesensei-tushar/link2linux/issues</url>
+  <url type="vcs-browser">https://github.com/codesensei-tushar/link2linux</url>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>
