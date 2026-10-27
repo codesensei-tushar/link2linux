@@ -109,12 +109,14 @@ install the `.deb` and the APK, and pair them.
    - the APK installs on a phone;
    - the `.deb` installs with `sudo apt install ./link2linux_amd64.deb`.
 5. **Publish it.** The download buttons and `install.sh` pick it up at once.
-6. **Point the website at it** in a small PR: in `website/index.html`,
-   replace the previous version in the four download links, the release
-   status line, the hero note and the FAQ with `X.Y.Z`. The page's script
-   switches the links to the newest release by itself, but the links have to
-   work without it: each one downloads its file directly. Do this only after
-   publishing, since a draft's files can't be downloaded yet.
+6. **Point the website at it** in a small PR: replace the previous version
+   with `X.Y.Z` in `website/index.html` (the nine download links, the
+   `Pre-release vX.Y.Z` release status pill, and the link of the "New" pill
+   at the top of the page, whose text you rewrite to name what the release
+   brings) and in the Android download link in `website/site.js`. The page's
+   script switches the links to the newest release by itself, but the links
+   have to work without it: each one downloads its file directly. Do this
+   only after publishing, since a draft's files can't be downloaded yet.
 
 If something is wrong, delete the draft and the tag, fix it, and tag again:
 `git push origin :refs/tags/vX.Y.Z`.
