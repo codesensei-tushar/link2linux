@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use link2linux_runtime::calls::{are_tones, dialable};
 use link2linux_runtime::view::{
-    BluetoothChoice, BluetoothPairing, CallLink, CallStateView, CallView, CallsDesktop,
-    CallsStatus, PairingCode, PairingRequestState, PhoneCalls,
+    BluetoothChoice, BluetoothPairing, CallLink, CallProblem, CallStateView, CallView,
+    CallsDesktop, CallsStatus, PairingCode, PairingRequestState, PhoneCalls,
 };
 
 use super::script::Script;
@@ -24,20 +24,21 @@ pub struct Delays {
     pub ring: Duration,
     /// One step of pairing or of an outgoing call.
     pub step: Duration,
+    /// How long pairing stays open.
+    pub window: Duration,
 }
 
 impl Delays {
-    /// What a person would see.
+    /// What a person would see: the pairing window is as long as the real
+    /// runtime's.
     pub fn real() -> Self {
         Self {
             ring: Duration::from_secs(4),
             step: Duration::from_millis(1_500),
+            window: Duration::from_secs(120),
         }
     }
 }
-
-/// The pairing window, as the real runtime keeps it.
-const WINDOW_MS: i64 = 120_000;
 
 struct State {
     enabled: bool,
@@ -48,6 +49,7 @@ struct State {
     links: HashMap<String, CallLink>,
     calls: HashMap<String, Vec<CallView>>,
     pairing: Option<BluetoothPairing>,
+    problems: HashMap<String, CallProblem>,
     /// Ends the pending steps of an earlier pairing.
     generation: u64,
     next_call: u32,
@@ -131,7 +133,7 @@ impl Inner {
                         CallLink::Off
                     },
                     calls: state.calls.get(id).cloned().unwrap_or_default(),
-                    problem: None,
+                    problem: state.problems.get(id).copied(),
                 })
                 .collect(),
         }
@@ -194,6 +196,7 @@ impl FakeCalls {
                 links,
                 calls: HashMap::new(),
                 pairing: None,
+                problems: HashMap::new(),
                 generation: 0,
                 next_call: 1,
             }),
@@ -249,11 +252,13 @@ impl FakeCalls {
                 return Err(BackendError::NotFound);
             }
             state.generation += 1;
+            state.problems.remove(device_id);
+            let window = i64::try_from(self.inner.delays.window.as_millis()).unwrap_or(i64::MAX);
             state.pairing = Some(BluetoothPairing {
                 device_id: device_id.to_owned(),
                 adapter_name: self.inner.desktop_name.clone(),
                 adapter_address: "A0:B1:C2:D3:E4:F5".into(),
-                ends_unix_ms: now_ms() + WINDOW_MS,
+                ends_unix_ms: now_ms().saturating_add(window),
                 phone: PairingRequestState::Waiting,
                 prompt: None,
             });
@@ -265,6 +270,16 @@ impl FakeCalls {
                 && state.generation == generation
             {
                 pairing.phone = PairingRequestState::Asked;
+            }
+        });
+        // The window runs out as the real one does.
+        after(&self.inner, self.inner.delays.window, move |state| {
+            if state.generation == generation
+                && let Some(pairing) = state.pairing.take()
+            {
+                state
+                    .problems
+                    .insert(pairing.device_id, CallProblem::PairingTimedOut);
             }
         });
         let name = self
@@ -425,7 +440,7 @@ impl FakeCalls {
 
     pub fn send_tones(&self, device_id: &str, tones: &str) -> Result<(), BackendError> {
         if !are_tones(tones) {
-            return Err(BackendError::WrongState);
+            return Err(BackendError::NotDialable);
         }
         if !self.is_connected(device_id) {
             return Err(BackendError::CallsNotConnected);
@@ -436,7 +451,7 @@ impl FakeCalls {
     pub fn set_muted(&self, device_id: &str, muted: bool) -> Result<(), BackendError> {
         self.inner
             .change(|state| match state.links.get_mut(device_id) {
-                Some(CallLink::Connected { muted: now, .. }) => {
+                Some(CallLink::Connected { muted: now, .. }) if state.enabled => {
                     *now = muted;
                     Ok(())
                 }
@@ -483,6 +498,7 @@ mod tests {
         Delays {
             ring: Duration::ZERO,
             step: Duration::ZERO,
+            window: Duration::from_secs(3600),
         }
     }
 
@@ -584,6 +600,10 @@ mod tests {
                 muted: true
             }
         );
+        assert_eq!(
+            calls.send_tones("demo-1", "1x"),
+            Err(BackendError::NotDialable)
+        );
         calls.set_enabled(false);
         let status = calls.status(&devices());
         assert_eq!(status.desktop, CallsDesktop::Disabled);
@@ -592,5 +612,27 @@ mod tests {
             calls.start_pairing("demo-1"),
             Err(BackendError::CallsUnavailable)
         );
+        assert_eq!(
+            calls.set_muted("demo-1", true),
+            Err(BackendError::CallsNotConnected)
+        );
+    }
+
+    #[test]
+    fn a_pairing_window_that_runs_out_says_so() {
+        let recorder = Arc::new(Recorder::default());
+        let delays = Delays {
+            window: Duration::from_millis(50),
+            ..instant()
+        };
+        let calls = FakeCalls::new(Script::Demo, recorder.clone(), "Desk".into(), delays);
+        calls.status(&devices());
+        calls.start_pairing("new-1").unwrap();
+        let status = recorder.wait_for(|s| s.phones.get(2).is_some_and(|p| p.problem.is_some()));
+        assert!(status.pairing.is_none());
+        assert_eq!(status.phones[2].problem, Some(CallProblem::PairingTimedOut));
+        // Opening it again clears the problem.
+        calls.start_pairing("new-1").unwrap();
+        assert_eq!(calls.status(&devices()).phones[2].problem, None);
     }
 }

@@ -832,6 +832,21 @@ async fn connects_and_disconnects_only_the_hands_free_profile() {
 }
 
 #[tokio::test]
+async fn untrusting_keeps_the_device_paired() {
+    let m = mock().await;
+    let bluetooth = m.bluetooth();
+    let address: BluetoothAddress = PHONE.parse().unwrap();
+    bluetooth.connect_hands_free(address).await.unwrap();
+    bluetooth.untrust(address).await.unwrap();
+    assert_eq!(m.calls().last().unwrap(), &format!("trust {PHONE} false"));
+    let devices = bluetooth.devices().await.unwrap();
+    let device = devices.iter().find(|d| d.address == address).unwrap();
+    assert!(device.paired && !device.trusted);
+    let unknown: BluetoothAddress = "AA:AA:AA:AA:AA:AA".parse().unwrap();
+    assert!(bluetooth.untrust(unknown).await.is_err());
+}
+
+#[tokio::test]
 async fn a_failed_connection_is_reported() {
     let mut failing = state(vec![phone()]);
     failing.connect_error = Some("br-connection-page-timeout");

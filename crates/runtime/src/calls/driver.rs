@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use link2linux_core::calls::{CallsService, Handled, PhoneAnswer};
-use link2linux_core::session::{SessionError, SessionEvent};
+use link2linux_core::device::Feature;
+use link2linux_core::session::{Availability, SessionError, SessionEvent};
 
 use super::Calls;
 use crate::notify::PhoneSession;
@@ -23,6 +24,8 @@ pub struct CallsDriver {
     service: CallsService,
     /// The owner token of this driver's task.
     owner: PhoneBoard,
+    /// Whether this session found calls ready on the phone yet.
+    phone_ready: bool,
 }
 
 impl CallsDriver {
@@ -35,6 +38,7 @@ impl CallsDriver {
             calls,
             service: CallsService::new(),
             owner,
+            phone_ready: false,
         }
     }
 
@@ -60,9 +64,8 @@ impl CallsDriver {
             .await?;
         if self.owner.is_current() {
             self.calls.session_started(&self.device_id);
-            // The phone is around: its hands-free link may come up too.
-            self.calls.phone_connected(&self.device_id);
         }
+        self.phone_status(session);
         self.ask_to_pair(session).await
     }
 
@@ -78,7 +81,8 @@ impl CallsDriver {
     ) -> Result<Option<SessionEvent>, SessionError> {
         match self.service.handle_event(session, event).await? {
             Handled::NotMine(event @ SessionEvent::FeatureStatus(_)) => {
-                // Calls may have become ready on the phone.
+                // Calls may have come on or gone off on the phone.
+                self.phone_status(session);
                 self.ask_to_pair(session).await?;
                 Ok(Some(event))
             }
@@ -113,12 +117,33 @@ impl CallsDriver {
     /// The session is over.
     pub fn session_ended(&mut self) {
         let answer = self.service.session_ended();
+        // The next session finds the phone's calls afresh. What this one
+        // reported still counts meanwhile: the hands-free link may stay up
+        // while the app is away.
+        self.phone_ready = false;
         if !self.owner.is_current() {
             return;
         }
         self.calls.session_ended(&self.device_id);
         if let Some(answer) = answer {
             self.calls.phone_answered(&self.device_id, answer);
+        }
+    }
+
+    /// Reports whether calls are ready on the phone, once its status says.
+    /// The first time in a session that they are, the phone counts as
+    /// connected with calls on, and its hands-free link may come up too.
+    fn phone_status(&mut self, session: &PhoneSession) {
+        let Some(ready) = calls_ready(session) else {
+            return;
+        };
+        if !self.owner.is_current() {
+            return;
+        }
+        self.calls.phone_ready(&self.device_id, ready);
+        if ready && !self.phone_ready {
+            self.phone_ready = true;
+            self.calls.phone_connected(&self.device_id);
         }
     }
 
@@ -138,6 +163,20 @@ impl CallsDriver {
         }
         Ok(())
     }
+}
+
+/// Whether calls are ready on the phone of `session`, or `None` until its
+/// first status arrives. A phone without the feature has none to offer.
+fn calls_ready(session: &PhoneSession) -> Option<bool> {
+    if !session.shared_features().contains(&Feature::Calls) {
+        return Some(false);
+    }
+    let states = session.peer_availability()?;
+    Some(
+        states
+            .get(&Feature::Calls)
+            .is_some_and(Availability::is_ready),
+    )
 }
 
 #[cfg(test)]
@@ -201,5 +240,26 @@ mod tests {
             name: "Pixel".into(),
         }];
         assert_eq!(lock(&calls.center).calls_of(&phones[0], &phones).len(), 1);
+    }
+
+    #[test]
+    fn a_new_task_for_a_phone_hears_of_the_calls_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Calls::new(None, true, dir.path().join("calls.json"));
+        calls.set_phones(vec![("p1".into(), "Pixel".into())]);
+        lock(&calls.told).insert("p1".into(), (Availability::Ready, true, false));
+        lock(&calls.center).set_note("p1", "k1", Some(ringing()));
+        calls.session_started("p1");
+
+        // The phone pairs again: its new task starts from nothing.
+        calls.task_started("p1");
+        assert!(lock(&calls.told).is_empty());
+        let center = lock(&calls.center);
+        assert!(!center.has_note("p1", "k1"));
+        let phones = [Phone {
+            id: "p1".into(),
+            name: "Pixel".into(),
+        }];
+        assert!(center.calls_of(&phones[0], &phones).is_empty());
     }
 }

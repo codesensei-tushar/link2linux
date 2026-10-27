@@ -257,6 +257,9 @@ pub enum BackendError {
     /// The number has characters a phone can't dial.
     #[error("Enter a phone number: digits, and + * # if needed.")]
     NotDialable,
+    /// The phone has calls turned off, or can't take them.
+    #[error("Turn on Calls in the app on your phone first.")]
+    CallsOffOnPhone,
 }
 
 /// Why the app could not start, for the page shown instead of the app.

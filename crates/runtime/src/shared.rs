@@ -216,8 +216,8 @@ pub(crate) struct Core {
     pub phone: Arc<PhoneBoards>,
     /// The phones' calls through this desktop's Bluetooth.
     pub calls: Arc<Calls>,
-    /// How many device tasks are still running, for a shutdown that waits
-    /// for them to clean up.
+    /// How many device tasks, and the task following calls, are still
+    /// running, for a shutdown that waits for them to clean up.
     pub supervisors: AtomicUsize,
 }
 
@@ -307,6 +307,7 @@ impl Core {
         for record in &records {
             core.spawn_device(record, None);
         }
+        core.supervisors.fetch_add(1, Ordering::SeqCst);
         core.handle.spawn(calls::follow(core.clone()));
         Ok(core)
     }
@@ -399,6 +400,7 @@ impl Core {
             ring: RingDriver::new(phone_board.clone()),
             calls: CallsDriver::new(record.id.clone(), self.calls.clone(), phone_board.clone()),
         };
+        self.calls.task_started(&record.id);
         self.calls.set_phones(self.phone_list());
         self.handle.spawn(forward_changes(
             self.clone(),
@@ -481,8 +483,7 @@ impl Core {
         lock(&self.evidence).forget(id);
         lock(&self.clipboard_page).board.forget(id);
         self.clipboard_hub.forget_phone(id);
-        self.calls.forget(id);
-        self.calls.set_phones(self.phone_list());
+        calls::forget(self, id, self.phone_list());
         self.publish_keys();
         self.emit_devices();
         self.clipboard_changed();

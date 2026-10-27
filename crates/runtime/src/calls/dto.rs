@@ -155,6 +155,9 @@ pub enum CallLink {
     /// Calls cannot be used on this desktop now; see
     /// [`CallsStatus::desktop`].
     Off,
+    /// The phone has calls turned off, or cannot take them, by what it
+    /// last reported: the desktop leaves its calls to it.
+    PhoneOff,
     /// The phone is not paired with this desktop over Bluetooth.
     NotPaired,
     /// Several paired devices may be the phone: the user picks one.

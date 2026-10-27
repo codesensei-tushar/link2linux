@@ -71,6 +71,22 @@ pub trait Presenter: Send + Sync {
         self.show(notification, replaces)
     }
 
+    /// As [`Presenter::show_own`], for a pop-up that also tells what the
+    /// phone sent, such as who calls: `notification` says it only while
+    /// the user lets pop-ups show the text of the phone's notifications,
+    /// and `without_text` stands in for it otherwise. A presenter that
+    /// does not know the user's choice shows `without_text`.
+    fn show_own_with_text<'a>(
+        &'a self,
+        notification: &'a DesktopNotification,
+        without_text: &'a DesktopNotification,
+        when_locked: &'a DesktopNotification,
+        replaces: Option<NotificationId>,
+    ) -> BoxFuture<'a, Result<NotificationId, PlatformError>> {
+        let _ = notification;
+        self.show_own(without_text, when_locked, replaces)
+    }
+
     /// See [`NotificationSink::capabilities`].
     fn capabilities(&self) -> BoxFuture<'_, Result<NotificationCapabilities, PlatformError>>;
 

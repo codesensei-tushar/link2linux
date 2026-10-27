@@ -49,6 +49,7 @@ pub enum CommandErrorCode {
     CallsUnavailable,
     CallsNotConnected,
     NotDialable,
+    CallsOffOnPhone,
 }
 
 impl From<BackendError> for CommandError {
@@ -66,6 +67,7 @@ impl From<BackendError> for CommandError {
             BackendError::CallsUnavailable => CommandErrorCode::CallsUnavailable,
             BackendError::CallsNotConnected => CommandErrorCode::CallsNotConnected,
             BackendError::NotDialable => CommandErrorCode::NotDialable,
+            BackendError::CallsOffOnPhone => CommandErrorCode::CallsOffOnPhone,
         };
         Self {
             code,

@@ -166,6 +166,13 @@ pub trait Bluetooth: Send + Sync {
         &self,
         device: BluetoothAddress,
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+
+    /// Takes back the trust [`connect_hands_free`](Self::connect_hands_free)
+    /// gave `device`: it stays paired, but connects only when asked again.
+    fn untrust(
+        &self,
+        device: BluetoothAddress,
+    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
 }
 
 /// Where a call is, as the phone reports it over Bluetooth.

@@ -14,9 +14,11 @@ mod choices;
 mod driver;
 pub mod dto;
 mod port;
+mod trusted;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,6 +50,9 @@ const RETRY: Duration = Duration::from_secs(30);
 /// How often the desktop connects a phone's hands-free link by itself, at
 /// most, when the phone connects to the app without it.
 const RECONNECT_EVERY: Duration = Duration::from_secs(10 * 60);
+/// How long to wait before showing an incoming-call pop-up again after
+/// the desktop refused it: a ringing call may change nothing else.
+const POPUP_RETRY: Duration = Duration::from_secs(2);
 
 /// What each phone's driver was last told: the desktop's availability,
 /// whether the desktop shows the phone's calls, and whether a pairing
@@ -67,7 +72,17 @@ pub struct Calls {
     told: Mutex<HashMap<String, Told>>,
     /// Wakes [`follow`] to read the services again and report.
     nudge: Notify,
-    choices_path: PathBuf,
+    /// Held while pairing opens or closes at the adapter, so that a close
+    /// meant for one window never lands after a newer window opened.
+    pairing: tokio::sync::Mutex<()>,
+    /// `calls.json`, which keeps each phone's device.
+    choices_file: Arc<ChoicesFile>,
+    /// How many snapshots of the choices were taken, each under the
+    /// center's lock, so that they are written in that order.
+    snapshots: AtomicU64,
+    /// The devices this desktop trusted itself, kept at `trusted_path`.
+    trusted: Mutex<HashSet<BluetoothAddress>>,
+    trusted_path: PathBuf,
 }
 
 impl Calls {
@@ -79,6 +94,7 @@ impl Calls {
         choices_path: PathBuf,
     ) -> Self {
         let choices = choices::load(&choices_path);
+        let trusted_path = choices_path.with_file_name("calls-trusted.json");
         Self {
             center: Mutex::new(Center::new(port.is_some(), enabled, choices)),
             port,
@@ -86,7 +102,49 @@ impl Calls {
             reconnected: Mutex::default(),
             told: Mutex::default(),
             nudge: Notify::new(),
-            choices_path,
+            pairing: tokio::sync::Mutex::new(()),
+            choices_file: Arc::new(ChoicesFile {
+                path: choices_path,
+                written: Mutex::new(0),
+            }),
+            snapshots: AtomicU64::new(0),
+            trusted: Mutex::new(trusted::load(&trusted_path)),
+            trusted_path,
+        }
+    }
+
+    /// The desktop trusts `address` to connect its hands-free link, which
+    /// it was not: noted, so that forgetting the phone takes the trust back.
+    fn note_trust(&self, address: BluetoothAddress) {
+        let mut trusted = lock(&self.trusted);
+        if trusted.insert(address)
+            && let Err(error) = trusted::save(&self.trusted_path, &trusted)
+        {
+            tracing::warn!(%error, "could not keep the Bluetooth devices this computer trusted");
+        }
+    }
+
+    /// Whether the desktop trusted `address` itself. It no longer counts
+    /// as such afterwards.
+    fn take_trust(&self, address: BluetoothAddress) -> bool {
+        let mut trusted = lock(&self.trusted);
+        let ours = trusted.remove(&address);
+        if ours && let Err(error) = trusted::save(&self.trusted_path, &trusted) {
+            tracing::warn!(%error, "could not keep the Bluetooth devices this computer trusted");
+        }
+        ours
+    }
+
+    /// Closes pairing at the adapter for the window that opened as the
+    /// `opened`-th, unless a newer one opened since: that one replaced it
+    /// at the adapter, and stays open.
+    async fn close_adapter(&self, port: &Arc<dyn CallsPort>, opened: u64) {
+        let _pairing = self.pairing.lock().await;
+        if lock(&self.center).windows_opened() != opened {
+            return;
+        }
+        if let Err(error) = port.close_pairing().await {
+            tracing::debug!(%error, "could not close Bluetooth pairing");
         }
     }
 
@@ -120,8 +178,21 @@ impl Calls {
         self.nudge.notify_one();
     }
 
-    /// Phone `device_id` connected: its hands-free link is connected too,
-    /// unless that was tried lately.
+    /// Phone `device_id` reported whether calls are ready on it. While
+    /// they are not, the desktop neither takes its calls nor keeps its
+    /// hands-free link up; once its user turns them on again, the link is
+    /// connected.
+    pub fn phone_ready(&self, device_id: &str, ready: bool) {
+        let mut center = lock(&self.center);
+        if center.set_phone_ready(device_id, ready) {
+            center.want_connect(device_id);
+        }
+        drop(center);
+        self.nudge.notify_one();
+    }
+
+    /// Phone `device_id` connected with calls on: its hands-free link is
+    /// connected too, unless that was tried lately.
     pub fn phone_connected(&self, device_id: &str) {
         let now = Instant::now();
         let mut reconnected = lock(&self.reconnected);
@@ -143,6 +214,16 @@ impl Calls {
     /// reports this (see [`CallsDriver`]).
     pub fn session_started(&self, device_id: &str) {
         lock(&self.center).session_started(device_id);
+        self.nudge.notify_one();
+    }
+
+    /// A new task starts for phone `device_id`, as when it pairs again:
+    /// its drivers know nothing yet, so it hears of the calls afresh, and
+    /// the call notifications of the task it replaces go, since the new
+    /// one's notifications start from nothing too.
+    pub(crate) fn task_started(&self, device_id: &str) {
+        lock(&self.center).task_started(device_id);
+        lock(&self.told).remove(device_id);
         self.nudge.notify_one();
     }
 
@@ -179,26 +260,58 @@ impl Calls {
         self.nudge.notify_one();
     }
 
-    /// Phone `device_id` is no longer paired.
-    pub(crate) fn forget(&self, device_id: &str) {
-        let choices = {
-            let mut center = lock(&self.center);
-            center.forget(device_id);
-            center.choices().clone()
-        };
-        lock(&self.told).remove(device_id);
-        self.save(&choices);
-        self.nudge.notify_one();
+    /// The choices as they stand in `center`, which the caller holds
+    /// locked, numbered in the order taken.
+    fn snapshot(&self, center: &Center) -> Choices {
+        Choices {
+            number: self.snapshots.fetch_add(1, Ordering::SeqCst) + 1,
+            devices: center.choices().clone(),
+        }
     }
 
-    fn save(&self, choices: &std::collections::BTreeMap<String, BluetoothAddress>) {
-        if let Err(error) = choices::save(&self.choices_path, choices) {
-            tracing::warn!(%error, "could not keep the phones' Bluetooth devices");
+    /// Writes `choices` to `calls.json`, unless newer ones are there. The
+    /// write syncs to disk, so it does not run on an async worker.
+    fn save(&self, choices: Choices) {
+        let file = self.choices_file.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(move || file.write(&choices));
+            }
+            Err(_) => file.write(&choices),
         }
     }
 
     fn deadline(&self) -> Option<Instant> {
         lock(&self.center).window().map(PairingWindow::deadline)
+    }
+}
+
+/// Each phone's device as the center kept it, numbered in the order the
+/// snapshots were taken.
+struct Choices {
+    number: u64,
+    devices: BTreeMap<String, BluetoothAddress>,
+}
+
+/// `calls.json`, written in the order its contents were taken: saves run
+/// on several threads, and an older snapshot must not overwrite a newer
+/// one.
+struct ChoicesFile {
+    path: PathBuf,
+    /// The number of the snapshot written last.
+    written: Mutex<u64>,
+}
+
+impl ChoicesFile {
+    fn write(&self, choices: &Choices) {
+        let mut written = lock(&self.written);
+        if choices.number <= *written {
+            return;
+        }
+        *written = choices.number;
+        if let Err(error) = choices::save(&self.path, &choices.devices) {
+            tracing::warn!(%error, "could not keep the phones' Bluetooth devices");
+        }
     }
 }
 
@@ -215,8 +328,14 @@ pub(crate) fn emit(core: &Core) {
 
 /// Follows the desktop's Bluetooth and telephony service until the
 /// runtime stops, and keeps the calls page, the phones and the pop-ups in
-/// step with them.
+/// step with them. It counts as one of [`Core::supervisors`] until pairing
+/// is closed at the end.
 pub(crate) async fn follow(core: Arc<Core>) {
+    following(core.clone()).await;
+    core.supervisors.fetch_sub(1, Ordering::SeqCst);
+}
+
+async fn following(core: Arc<Core>) {
     let calls = core.calls.clone();
     let Some(port) = calls.port.clone() else {
         tell(&core);
@@ -248,13 +367,14 @@ pub(crate) async fn follow(core: Arc<Core>) {
         };
         tokio::select! {
             () = core.cancel.cancelled() => {
-                close_pairing(&core, &port).await;
+                stop_pairing(&core, &port).await;
                 return;
             }
             changed = bluetooth => bluetooth_retry = retry_after(changed),
             changed = telephony => telephony_retry = retry_after(changed),
             event = port.next_pairing_event() => pairing_event(&core, &port, event),
             () = sleep_until(deadline) => {
+                let _pairing = calls.pairing.lock().await;
                 let waiting = lock(&calls.center).expire(Instant::now());
                 if let Some(waiting) = waiting {
                     tracing::info!("the Bluetooth pairing window ran out");
@@ -298,9 +418,14 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
         .await
         .inspect_err(|error| tracing::debug!(%error, "no hands-free call control"))
         .ok();
-    let phones = lock(&calls.phones).clone();
     let (choices, paired, connect, disconnect) = {
+        // The phones stay locked until the center is, as when a phone is
+        // forgotten: it is then gone from both or from neither, and its
+        // device is not kept again.
+        let known = lock(&calls.phones);
         let mut center = lock(&calls.center);
+        let phones = known.clone();
+        drop(known);
         center.update(
             Seen {
                 adapter,
@@ -310,34 +435,42 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
             now_unix_ms(),
         );
         let settled = center.settle_choices(&phones);
-        let paired = center.pairing_done();
-        let choices = (settled || paired.is_some()).then(|| center.choices().clone());
+        // With the window it closed, to close at the adapter once the
+        // phone is trusted, and whether its link may come up now.
+        let paired = center.pairing_done().map(|done| {
+            let takes = center.takes_calls(&done.0);
+            (done, center.windows_opened(), takes)
+        });
+        let choices = (settled || paired.is_some()).then(|| calls.snapshot(&center));
         let connect = center.take_connects(&phones);
-        // While calls are off, a phone that connects its hands-free link
-        // by itself is disconnected again, so it keeps its calls.
-        let disconnect: Vec<BluetoothAddress> = if center.is_enabled() {
-            Vec::new()
-        } else {
-            phones
-                .iter()
-                .filter(|p| center.gateway_of(p, &phones).is_some())
-                .filter_map(|p| center.found(p))
-                .collect()
-        };
+        // While calls are off, here or on the phone, a phone that connects
+        // its hands-free link by itself is disconnected again, so it keeps
+        // its calls.
+        let disconnect = center.to_disconnect(&phones);
         (choices, paired, connect, disconnect)
     };
     if let Some(choices) = choices {
-        calls.save(&choices);
+        calls.save(choices);
     }
-    if let Some((device_id, address)) = paired {
+    if let Some(((device_id, address), opened, takes)) = paired {
         tracing::info!(%address, "the phone paired over Bluetooth");
-        connect_link(core, port, device_id, address, Connect::Paired);
+        if takes {
+            connect_link(core, port, device_id, address, Connect::Paired(opened));
+        } else {
+            // Calls went off meanwhile, here or on the phone: it stays
+            // paired, and its link waits until they are on.
+            let calls = calls.clone();
+            let port = port.clone();
+            core.handle.spawn(async move {
+                calls.close_adapter(&port, opened).await;
+            });
+        }
     }
     for (device_id, address) in connect {
         connect_link(core, port, device_id, address, Connect::Auto);
     }
     for address in disconnect {
-        tracing::info!(%address, "calls are off: disconnecting the phone's hands-free link");
+        tracing::info!(%address, "calls are off: disconnecting a phone's hands-free link");
         if let Err(error) = port.disconnect_hands_free(address).await {
             tracing::debug!(%error, "could not disconnect the hands-free link");
         }
@@ -350,9 +483,10 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
 /// Why the desktop connects a phone's hands-free link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Connect {
-    /// The phone just paired: pairing closes once the phone is trusted,
-    /// so its own connection right after pairing is still let in.
-    Paired,
+    /// The phone just paired in the window that opened as the given one:
+    /// pairing closes once the phone is trusted, so its own connection
+    /// right after pairing is still let in.
+    Paired(u64),
     /// The user asked to.
     User,
     /// The phone connected to the app. A failure is not reported: the
@@ -368,15 +502,22 @@ fn connect_link(
     address: BluetoothAddress,
     why: Connect,
 ) {
-    lock(&core.calls.center).set_connecting(&device_id, true);
+    let trusted = {
+        let mut center = lock(&core.calls.center);
+        center.set_connecting(&device_id, true);
+        center.is_trusted(address)
+    };
+    // Connecting trusts the device. A trust the desktop gives is noted,
+    // so that forgetting the phone takes back that one only.
+    if !trusted {
+        core.calls.note_trust(address);
+    }
     let core = core.clone();
     let port = port.clone();
     core.clone().handle.spawn(async move {
         let result = port.connect_hands_free(address).await;
-        if why == Connect::Paired
-            && let Err(error) = port.close_pairing().await
-        {
-            tracing::debug!(%error, "could not close Bluetooth pairing");
+        if let Connect::Paired(opened) = why {
+            core.calls.close_adapter(&port, opened).await;
         }
         let mut center = lock(&core.calls.center);
         center.set_connecting(&device_id, false);
@@ -443,11 +584,34 @@ async fn popups(core: &Core) {
             tracing::debug!(%error, "could not take down a call pop-up");
         }
     }
-    for (call, popup, locked, replaces) in plan.show {
-        match core.presenter.show_own(&popup, &locked, replaces).await {
-            Ok(id) => lock(&core.calls.center).popup_shown(&call, id),
-            Err(error) => tracing::warn!(%error, "could not show an incoming call"),
+    let mut failed = false;
+    for planned in plan.show {
+        // The caller shows only where the phone's notifications show
+        // their text.
+        let shown = core
+            .presenter
+            .show_own_with_text(
+                &planned.popup,
+                &planned.without_text,
+                &planned.locked,
+                planned.replaces,
+            )
+            .await;
+        match shown {
+            Ok(id) => lock(&core.calls.center).popup_shown(&planned.call, id),
+            Err(error) => {
+                tracing::warn!(%error, "could not show an incoming call");
+                lock(&core.calls.center).popup_failed(&planned.call);
+                failed = true;
+            }
         }
+    }
+    if failed {
+        let calls = core.calls.clone();
+        core.handle.spawn(async move {
+            tokio::time::sleep(POPUP_RETRY).await;
+            calls.nudge.notify_one();
+        });
     }
 }
 
@@ -477,7 +641,27 @@ fn refuse(port: &Arc<dyn CallsPort>, prompts: &[u64]) {
     }
 }
 
+/// Closes the pairing window, if one is open: refuses the prompts that
+/// still wait, and closes pairing at the adapter.
 async fn close_pairing(core: &Core, port: &Arc<dyn CallsPort>) {
+    let _pairing = core.calls.pairing.lock().await;
+    close_window(core, port).await;
+}
+
+/// The runtime stops: pairing closes at the adapter whether a window is
+/// open or the phone that just paired is still connecting, which would
+/// close it only afterwards.
+async fn stop_pairing(core: &Core, port: &Arc<dyn CallsPort>) {
+    let _pairing = core.calls.pairing.lock().await;
+    let waiting = lock(&core.calls.center).close_window();
+    refuse(port, &waiting);
+    if let Err(error) = port.close_pairing().await {
+        tracing::debug!(%error, "could not close Bluetooth pairing");
+    }
+}
+
+/// As [`close_pairing`], for a caller that holds the pairing lock.
+async fn close_window(core: &Core, port: &Arc<dyn CallsPort>) {
     let waiting = {
         let mut center = lock(&core.calls.center);
         center.window().is_some().then(|| center.close_window())
@@ -501,23 +685,118 @@ fn phone_of(core: &Core, device_id: &str) -> Result<(Phone, Vec<Phone>), Backend
     core.calls.phone(device_id).ok_or(BackendError::NotFound)
 }
 
+/// Why the desktop does not take phone `device_id`'s calls now, if it
+/// does not.
+fn takes_calls(center: &Center, device_id: &str) -> Result<(), BackendError> {
+    if center.availability() != Availability::Ready {
+        return Err(BackendError::CallsUnavailable);
+    }
+    if center.phone_off(device_id) {
+        return Err(BackendError::CallsOffOnPhone);
+    }
+    Ok(())
+}
+
 /// Turns calls on this desktop on or off. Turned off, the phones'
-/// hands-free links are disconnected; turned on, they are connected.
+/// hands-free links are disconnected and pairing closes; turned on, the
+/// links are connected.
 pub(crate) fn set_enabled(core: &Core, enabled: bool) {
     let calls = &core.calls;
-    {
+    // Not under the center's lock: the phones' lock comes first.
+    let phones = lock(&calls.phones).clone();
+    let closed = {
         let mut center = lock(&calls.center);
         if center.is_enabled() == enabled {
             return;
         }
         center.set_enabled(enabled);
         if enabled {
-            for phone in lock(&calls.phones).iter() {
+            for phone in &phones {
                 center.want_connect(&phone.id);
             }
+            None
+        } else {
+            // Pairing serves calls only: it closes with them.
+            take_window(&mut center, |_| true)
         }
+    };
+    if let Some(closed) = closed {
+        close_taken(core, closed);
     }
     calls.nudge.notify_one();
+}
+
+/// Phone `device_id` is no longer paired, and `phones` are: what the
+/// desktop kept for it goes, pairing open for it closes, and its
+/// hands-free link goes down. Its device stays paired with the desktop,
+/// but loses a trust the desktop gave it, so it no longer connects by
+/// itself.
+pub(crate) fn forget(core: &Core, device_id: &str, phones: Vec<(String, String)>) {
+    let calls = &core.calls;
+    let (choices, closed, device) = {
+        // The phones and the center change as one step (see `refresh`).
+        let mut known = lock(&calls.phones);
+        *known = phones
+            .into_iter()
+            .map(|(id, name)| Phone { id, name })
+            .collect();
+        let mut center = lock(&calls.center);
+        drop(known);
+        let closed = take_window(&mut center, |window| window.device_id() == device_id);
+        let device = center.choices().get(device_id).copied();
+        center.forget(device_id);
+        (calls.snapshot(&center), closed, device)
+    };
+    if let Some(closed) = closed {
+        close_taken(core, closed);
+    }
+    if let (Some(address), Some(port)) = (device, calls.port.clone()) {
+        let calls = calls.clone();
+        core.handle.spawn(async move {
+            tracing::info!(%address, "a phone is forgotten: disconnecting its hands-free link");
+            if let Err(error) = port.disconnect_hands_free(address).await {
+                tracing::debug!(%error, "could not disconnect the hands-free link");
+            }
+            if calls.take_trust(address)
+                && let Err(error) = port.untrust(address).await
+            {
+                tracing::debug!(%error, "could not take back the device's trust");
+            }
+        });
+    }
+    lock(&calls.told).remove(device_id);
+    calls.save(choices);
+    calls.nudge.notify_one();
+}
+
+/// A window taken from the center: the prompts that still waited, and
+/// its number.
+type TakenWindow = (Vec<u64>, u64);
+
+/// Takes the pairing window from `center` if one is open and `which`
+/// picks it.
+fn take_window(
+    center: &mut Center,
+    which: impl FnOnce(&PairingWindow) -> bool,
+) -> Option<TakenWindow> {
+    center
+        .window()
+        .is_some_and(which)
+        .then(|| (center.close_window(), center.windows_opened()))
+}
+
+/// Ends a window taken from the center without waiting: its prompts are
+/// refused now, and pairing closes at the adapter soon after, unless a
+/// newer window opens first.
+fn close_taken(core: &Core, (waiting, opened): TakenWindow) {
+    let Some(port) = core.calls.port.clone() else {
+        return;
+    };
+    refuse(&port, &waiting);
+    let calls = core.calls.clone();
+    core.handle.spawn(async move {
+        calls.close_adapter(&port, opened).await;
+    });
 }
 
 /// Opens Bluetooth pairing for phone `device_id` for
@@ -525,13 +804,14 @@ pub(crate) fn set_enabled(core: &Core, enabled: bool) {
 pub(crate) fn start_pairing(core: &Arc<Core>, device_id: &str) -> Result<(), BackendError> {
     let port = port(core)?;
     phone_of(core, device_id)?;
-    if lock(&core.calls.center).availability() != Availability::Ready {
-        return Err(BackendError::CallsUnavailable);
-    }
+    takes_calls(&lock(&core.calls.center), device_id)?;
     let core = core.clone();
     let device_id = device_id.to_owned();
     core.clone().handle.spawn(async move {
-        close_pairing(&core, &port).await;
+        // The window opens at the adapter and here as one step: a close
+        // for an earlier window then sees that a newer one opened.
+        let pairing = core.calls.pairing.lock().await;
+        close_window(&core, &port).await;
         match port.open_pairing(PAIRING_WINDOW).await {
             Ok(adapter) => {
                 let window = PairingWindow::open(device_id, adapter, Instant::now());
@@ -542,6 +822,7 @@ pub(crate) fn start_pairing(core: &Arc<Core>, device_id: &str) -> Result<(), Bac
                 lock(&core.calls.center).set_problem(&device_id, Some(CallProblem::PairingFailed));
             }
         }
+        drop(pairing);
         core.calls.nudge.notify_one();
     });
     Ok(())
@@ -586,9 +867,9 @@ pub(crate) fn choose_device(
             return Err(BackendError::NotFound);
         }
         center.want_connect(device_id);
-        center.choices().clone()
+        core.calls.snapshot(&center)
     };
-    core.calls.save(&choices);
+    core.calls.save(choices);
     core.calls.nudge.notify_one();
     Ok(())
 }
@@ -599,9 +880,7 @@ pub(crate) fn connect(core: &Arc<Core>, device_id: &str) -> Result<(), BackendEr
     let (phone, _) = phone_of(core, device_id)?;
     let address = {
         let center = lock(&core.calls.center);
-        if center.availability() != Availability::Ready {
-            return Err(BackendError::CallsUnavailable);
-        }
+        takes_calls(&center, device_id)?;
         center
             .found(&phone)
             .ok_or(BackendError::CallsNotConnected)?
@@ -652,6 +931,9 @@ pub(crate) fn act(
 fn gateway_id(core: &Core, device_id: &str) -> Result<(String, Option<bool>), BackendError> {
     let (phone, phones) = phone_of(core, device_id)?;
     let center = lock(&core.calls.center);
+    if center.phone_off(device_id) {
+        return Err(BackendError::CallsOffOnPhone);
+    }
     if !center.shows_calls(&phone, &phones) {
         return Err(BackendError::CallsNotConnected);
     }
@@ -677,7 +959,7 @@ pub(crate) fn send_tones(
     tones: &str,
 ) -> Result<(), BackendError> {
     if !are_tones(tones) {
-        return Err(BackendError::WrongState);
+        return Err(BackendError::NotDialable);
     }
     let tones = tones.to_owned();
     let (gateway, _) = gateway_id(core, device_id)?;
@@ -742,5 +1024,31 @@ pub(crate) fn popup_response(core: &Arc<Core>, response: &NotificationResponse) 
     };
     if let Err(error) = act(core, &device_id, &call, action) {
         tracing::debug!(%error, "could not act on the call pop-up");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_older_snapshot_of_the_choices_never_overwrites_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calls.json");
+        let calls = Calls::new(None, true, path.clone());
+        let center = Center::new(true, true, BTreeMap::new());
+        let older = calls.snapshot(&center);
+        let mut devices = BTreeMap::new();
+        devices.insert("p1".to_owned(), "0C:1A:2B:3C:4D:5E".parse().unwrap());
+        let newer = Choices {
+            number: calls.snapshot(&center).number,
+            devices: devices.clone(),
+        };
+        assert!(older.number < newer.number);
+
+        // Saves outside a runtime write at once.
+        calls.save(newer);
+        calls.save(older);
+        assert_eq!(choices::load(&path), devices);
     }
 }

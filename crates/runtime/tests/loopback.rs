@@ -2441,6 +2441,9 @@ struct FakeCallState {
     devices: Vec<BluetoothDevice>,
     gateways: Vec<Gateway>,
     open: bool,
+    /// Hands-free connects wait until this is off, and then bring no
+    /// gateway.
+    hold_connects: bool,
     /// What the desktop asked of them, in order.
     log: Vec<String>,
 }
@@ -2489,14 +2492,14 @@ impl FakeCalls {
     }
 
     async fn wait_for(&self, entry: &str) {
+        self.wait_for_times(entry, 1).await;
+    }
+
+    /// Waits until the desktop asked for `entry` `times` times.
+    async fn wait_for_times(&self, entry: &str, times: usize) {
         wait(&self.changed, || {
-            self.state
-                .lock()
-                .unwrap()
-                .log
-                .iter()
-                .any(|e| e == entry)
-                .then_some(())
+            let state = self.state.lock().unwrap();
+            (state.log.iter().filter(|e| *e == entry).count() >= times).then_some(())
         })
         .await;
     }
@@ -2515,16 +2518,33 @@ impl FakeCalls {
 
     /// The phone named `name` is now paired.
     fn pair_device(&self, name: &str) {
+        self.add_device(name, false);
+    }
+
+    /// The phone named `name` is paired, and trusted when `trusted`, as
+    /// the desktop's Bluetooth settings may have done.
+    fn add_device(&self, name: &str, trusted: bool) {
         self.state.lock().unwrap().devices.push(BluetoothDevice {
             address: PHONE_BT.parse().unwrap(),
             name: name.into(),
             paired: true,
-            trusted: false,
+            trusted,
             connected: true,
             phone: true,
             hands_free_gateway: true,
         });
         self.bluetooth.send_modify(|v| *v += 1);
+    }
+
+    /// Holds the hands-free connects that come, or lets them end.
+    fn hold_connects(&self, hold: bool) {
+        self.state.lock().unwrap().hold_connects = hold;
+        self.changed.notify_waiters();
+    }
+
+    /// Whether pairing is open at the adapter.
+    fn is_open(&self) -> bool {
+        self.state.lock().unwrap().open
     }
 
     /// A call to `number` rings on the phone's gateway.
@@ -2608,6 +2628,13 @@ impl CallsPort for FakeCalls {
     ) -> BoxFuture<'_, Result<(), PlatformError>> {
         Box::pin(async move {
             self.record(format!("connect {device}"));
+            if self.state.lock().unwrap().hold_connects {
+                wait(&self.changed, || {
+                    (!self.state.lock().unwrap().hold_connects).then_some(())
+                })
+                .await;
+                return Ok(());
+            }
             self.state.lock().unwrap().gateways = vec![Gateway {
                 id: GATEWAY.into(),
                 address: Some(device),
@@ -2627,6 +2654,13 @@ impl CallsPort for FakeCalls {
             self.record(format!("disconnect {device}"));
             self.state.lock().unwrap().gateways.clear();
             self.telephony.send_modify(|v| *v += 1);
+            Ok(())
+        })
+    }
+
+    fn untrust(&self, device: BluetoothAddress) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("untrust {device}"));
             Ok(())
         })
     }
@@ -2722,30 +2756,22 @@ async fn calls_session(
     session
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() {
-    let calls = FakeCalls::new();
-    let rig = start_rig(None, None, Some(calls.clone()));
-    let phone = Arc::new(TestPhone::bind(LOCALHOST, "calls-1").await);
-    let (desktop, device) = pair(&rig, &phone).await;
-    let mut session = within(calls_session(&phone, desktop)).await;
-    let status = rig
-        .events
-        .calls_where(|s| {
-            s.phones
-                .first()
-                .is_some_and(|p| p.link == CallLink::NotPaired)
-        })
-        .await;
-    assert_eq!(status.desktop, CallsDesktop::Ready);
-
-    // The user pairs the phone over Bluetooth: the phone is asked to.
+/// Pairs the phone of `session`, the app's `device`, over Bluetooth as the
+/// user does: the user opens pairing, the phone is asked to pair, and the
+/// user confirms the code here. Returns once the phone is paired.
+async fn pair_over_bluetooth(
+    rig: &Rig,
+    calls: &FakeCalls,
+    session: &mut Session<TlsStream<TcpStream>>,
+    device: &Device,
+    phone_name: &str,
+) {
     rig.runtime.start_bluetooth_pairing(&device.id).unwrap();
     let (seq, request) = loop {
         if let SessionEvent::Request {
             seq,
             payload: Payload::BluetoothPairingRequest(request),
-        } = next_event(&mut session).await
+        } = next_event(session).await
         {
             break (seq, request);
         }
@@ -2776,7 +2802,175 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
     assert_eq!(status.pairing.unwrap().prompt.unwrap().code, "123456");
     rig.runtime.confirm_bluetooth_code(5, true).unwrap();
     calls.wait_for("answer pairing 5 true").await;
-    calls.pair_device(&phone.name);
+    calls.pair_device(phone_name);
+}
+
+/// Waits until the calls page, as the desktop would show it now, passes
+/// `check`. Unlike [`Events::calls_where`], what it showed earlier does
+/// not count.
+async fn calls_now(rig: &Rig, check: impl Fn(&CallsStatus) -> bool) -> CallsStatus {
+    within(async {
+        loop {
+            let status = rig.runtime.calls();
+            if check(&status) {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+}
+
+/// A rig with calls and a phone paired with the app, in a session where
+/// calls are ready on both sides, and the desktop knows it.
+async fn calls_rig(
+    name: &str,
+) -> (
+    Rig,
+    Arc<FakeCalls>,
+    Arc<TestPhone>,
+    Device,
+    Session<TlsStream<TcpStream>>,
+) {
+    let calls = FakeCalls::new();
+    let rig = start_rig(None, None, Some(calls.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, name).await);
+    let (desktop, device) = pair(&rig, &phone).await;
+    let session = within(calls_session(&phone, desktop)).await;
+    // The pairing's own session offered no calls, which counts as calls
+    // off on the phone until this session's status arrives.
+    let status = calls_now(&rig, |s| {
+        s.phones
+            .first()
+            .is_some_and(|p| p.link == CallLink::NotPaired)
+    })
+    .await;
+    assert_eq!(status.desktop, CallsDesktop::Ready);
+    (rig, calls, phone, device, session)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_opened_while_the_paired_phone_connects_stays_open() {
+    let (rig, calls, phone, device, mut session) = calls_rig("calls-reopen").await;
+    calls.hold_connects(true);
+    pair_over_bluetooth(&rig, &calls, &mut session, &device, &phone.name).await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+
+    // The user opens pairing again while the phone's link connects: the
+    // end of that connect leaves the new window open at the adapter.
+    rig.runtime.start_bluetooth_pairing(&device.id).unwrap();
+    calls.wait_for_times("open", 2).await;
+    calls.hold_connects(false);
+    rig.events
+        .calls_where(|s| {
+            s.pairing.is_some()
+                && s.phones
+                    .first()
+                    .is_some_and(|p| matches!(p.link, CallLink::Disconnected { .. }))
+        })
+        .await;
+    assert!(calls.is_open());
+    assert!(
+        !calls
+            .state
+            .lock()
+            .unwrap()
+            .log
+            .contains(&"close".to_owned())
+    );
+
+    rig.runtime.cancel_bluetooth_pairing();
+    calls.wait_for("close").await;
+    assert!(!calls.is_open());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_a_phone_closes_its_pairing_window() {
+    let (rig, calls, _phone, device, _session) = calls_rig("calls-unpair-window").await;
+    rig.runtime.start_bluetooth_pairing(&device.id).unwrap();
+    calls.wait_for("open").await;
+    calls.prompt(7, 1);
+    rig.events
+        .calls_where(|s| s.pairing.as_ref().is_some_and(|p| p.prompt.is_some()))
+        .await;
+
+    rig.runtime.unpair(&device.id).unwrap();
+    calls.wait_for("answer pairing 7 false").await;
+    calls.wait_for("close").await;
+    assert!(!calls.is_open());
+    assert!(rig.runtime.calls().pairing.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_a_phone_takes_down_its_link_and_the_trust_given_to_it() {
+    let (rig, calls, phone, device, mut session) = calls_rig("calls-unpair-link").await;
+    pair_over_bluetooth(&rig, &calls, &mut session, &device, &phone.name).await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+
+    rig.runtime.unpair(&device.id).unwrap();
+    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    calls.wait_for(&format!("untrust {PHONE_BT}")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unpairing_a_phone_keeps_a_trust_the_user_gave() {
+    // The phone was paired and trusted in the desktop's Bluetooth settings:
+    // its link connects once the phone connects to the app with calls on.
+    let calls = FakeCalls::new();
+    let rig = start_rig(None, None, Some(calls.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "calls-unpair-trusted").await);
+    calls.add_device(&phone.name, true);
+    let (desktop, device) = pair(&rig, &phone).await;
+    let _session = within(calls_session(&phone, desktop)).await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+
+    rig.runtime.unpair(&device.id).unwrap();
+    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    // The trust would be taken back right after the disconnect.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let log = calls.state.lock().unwrap().log.clone();
+    assert!(!log.contains(&format!("untrust {PHONE_BT}")), "{log:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quitting_while_the_paired_phone_connects_closes_pairing() {
+    let (rig, calls, phone, device, mut session) = calls_rig("calls-quit").await;
+    calls.hold_connects(true);
+    pair_over_bluetooth(&rig, &calls, &mut session, &device, &phone.name).await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+    assert!(calls.is_open());
+
+    // The app quits before the connect ends, which would close pairing:
+    // it is closed before the shutdown returns.
+    tokio::task::block_in_place(|| rig.runtime.shutdown_and_wait(WAIT));
+    assert!(!calls.is_open());
+    calls.hold_connects(false);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn turning_calls_off_closes_pairing() {
+    let (rig, calls, _phone, device, _session) = calls_rig("calls-off-window").await;
+    rig.runtime.start_bluetooth_pairing(&device.id).unwrap();
+    calls.wait_for("open").await;
+    calls.prompt(8, 1);
+    rig.events
+        .calls_where(|s| s.pairing.as_ref().is_some_and(|p| p.prompt.is_some()))
+        .await;
+
+    rig.runtime.set_calls_enabled(false);
+    calls.wait_for("answer pairing 8 false").await;
+    calls.wait_for("close").await;
+    assert!(rig.runtime.calls().pairing.is_none());
+    assert_eq!(
+        rig.runtime.start_bluetooth_pairing(&device.id),
+        Err(link2linux_runtime::view::BackendError::CallsUnavailable)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() {
+    let (rig, calls, phone, device, mut session) = calls_rig("calls-1").await;
+    pair_over_bluetooth(&rig, &calls, &mut session, &device, &phone.name).await;
     calls.wait_for("close").await;
     calls.wait_for(&format!("connect {PHONE_BT}")).await;
     rig.events
@@ -2789,10 +2983,12 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
         .await;
 
     // A call comes in: a pop-up offers it, and answering it there answers
-    // over Bluetooth.
+    // over Bluetooth. Pop-ups that may not show the phone's text leave
+    // the caller to the calls page.
     calls.ring("+15550100");
     let (id, popup) = rig.sink.wait_for_banners(1).await[0].clone();
-    assert_eq!(popup.summary, "Call from +15550100");
+    assert_eq!(popup.summary, format!("Incoming call on {}", phone.name));
+    assert!(!popup.body.contains("5550100"));
     rig.respond
         .send(NotificationResponse::Action {
             id,
@@ -2825,6 +3021,32 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
         .unwrap();
     calls.wait_for(&format!("hang up {GATEWAY}/call0")).await;
 
+    // Calls turned off on the phone: its link goes down and the desktop
+    // leaves its calls to it, until they are on again.
+    session
+        .set_availability(Feature::Calls, Availability::Disabled)
+        .await
+        .unwrap();
+    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    rig.events
+        .calls_where(|s| {
+            s.phones
+                .first()
+                .is_some_and(|p| p.link == CallLink::PhoneOff)
+        })
+        .await;
+    assert_eq!(
+        rig.runtime.dial(&device.id, "123"),
+        Err(link2linux_runtime::view::BackendError::CallsOffOnPhone)
+    );
+    session
+        .set_availability(Feature::Calls, Availability::Ready)
+        .await
+        .unwrap();
+    calls
+        .wait_for_times(&format!("connect {PHONE_BT}"), 2)
+        .await;
+
     // Calls turned off here: the phone hears of it, and the hands-free
     // link goes down so the phone keeps its calls.
     rig.runtime.set_calls_enabled(false);
@@ -2838,5 +3060,7 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
             break;
         }
     }
-    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    calls
+        .wait_for_times(&format!("disconnect {PHONE_BT}"), 2)
+        .await;
 }

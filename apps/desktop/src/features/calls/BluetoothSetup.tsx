@@ -149,6 +149,15 @@ export function LinkPanel({ phone, onError }: { phone: PhoneCalls; onError: OnEr
   switch (link.state) {
     case "off":
       return null;
+    case "phoneOff":
+      title = `Calls are off on ${name}`;
+      body = (
+        <p className="calls-setup__text">
+          The phone keeps its calls to itself. To take them on this computer, turn on Calls in the
+          link2linux app on the phone.
+        </p>
+      );
+      break;
     case "notPaired":
       title = `Pair ${name} over Bluetooth`;
       body = (
