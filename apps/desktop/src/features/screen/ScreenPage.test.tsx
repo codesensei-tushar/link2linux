@@ -84,6 +84,41 @@ describe("ScreenPage", () => {
     expect(screen.getByText(/gstreamer1.0-libav/)).toBeInTheDocument();
   });
 
+  it("falls back to JPEG once when the webview cannot decode the phone's H.264", async () => {
+    FakeVideoDecoder.support = new Map([["avc1.64001F", false]]);
+    const { api } = await showing({ ...jpegFormat, codec: "h264", width: 720, height: 1560 });
+    const h264 = encodePacket({
+      keyFrame: true,
+      formatId: 1,
+      timestampUs: 0,
+      format: {
+        codec: "h264",
+        width: 720,
+        height: 1560,
+        config: new Uint8Array([1, 0x64, 0, 0x1f, 0xff, 0xe1, 0]),
+      },
+      data: new Uint8Array([0, 0, 0, 1, 0x65]),
+    });
+    api.emitScreenPacket(h264);
+    await waitFor(() => {
+      expect(api.startScreen).toHaveBeenLastCalledWith(
+        "phone-1",
+        ["jpeg"],
+        1280,
+        expect.any(Function),
+      );
+    });
+
+    // H.264 again, though only JPEG was asked for: the page gives up.
+    api.emitScreenPacket(h264);
+    await waitFor(() => {
+      expect(api.stopScreen).toHaveBeenCalledWith("phone-1");
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("can't show the video Pixel sends");
+    api.emitScreen("phone-1", testScreen());
+    expect(screen.getByText(/gstreamer1.0-libav/)).toBeInTheDocument();
+  });
+
   it("says the user has to agree on the phone, and can cancel", async () => {
     const { api } = renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "Show Pixel's screen" }));

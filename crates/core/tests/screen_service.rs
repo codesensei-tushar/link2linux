@@ -565,9 +565,10 @@ async fn a_second_start_hands_the_stream_to_the_new_viewer() {
     let mut viewer = link.start();
     let start = link.request("ScreenStart").await;
     assert_eq!(old.try_recv().unwrap_err(), TryRecvError::Disconnected);
-    // The new viewer cannot start from a delta frame.
-    link.phone_sends(frame(20, false)).await;
-    link.key_frame_request().await;
+    // Frames sent before the phone took the new start are in what the old
+    // viewer asked for: the new one waits for the format that answers it.
+    link.phone_sends(frame(20, true)).await;
+    link.phone_sends(frame(21, false)).await;
     link.answer(start, ack()).await;
     assert_eq!(link.screen.state().phase, ScreenPhase::Showing);
     link.phone_sends(h264(2)).await;
@@ -575,6 +576,7 @@ async fn a_second_start_hands_the_stream_to_the_new_viewer() {
     let first = viewer.try_recv().unwrap();
     assert_eq!(first.format.map(|format| format.id), Some(2));
     assert_eq!(first.timestamp_us, 30);
+    link.sent_nothing();
 }
 
 #[tokio::test(start_paused = true)]

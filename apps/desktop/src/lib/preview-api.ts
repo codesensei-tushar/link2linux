@@ -382,7 +382,11 @@ export function createPreviewApi(search: string = globalThis.location.search): D
       screenTimers.set(
         deviceId,
         setTimeout(() => {
-          setScreen(deviceId, { ...screenOf(deviceId), phase: "showing", format: demoScreenFormat });
+          setScreen(deviceId, {
+            ...screenOf(deviceId),
+            phase: "showing",
+            format: demoScreenFormat,
+          });
           play();
         }, 1500),
       );

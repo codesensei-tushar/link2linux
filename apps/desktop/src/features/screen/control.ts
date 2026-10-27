@@ -122,7 +122,8 @@ export function wheelSwipe(
   // Scrolling down moves the content up: the finger goes up.
   const direction = amount > 0 ? -1 : 1;
   const along = vertical ? at.y : at.x;
-  const from = direction < 0 ? clamp(along, distance, side - 1) : clamp(along, 0, side - 1 - distance);
+  const from =
+    direction < 0 ? clamp(along, distance, side - 1) : clamp(along, 0, side - 1 - distance);
   const steps = 6;
   const points: ScreenPoint[] = [];
   for (let i = 0; i < steps; i++) {

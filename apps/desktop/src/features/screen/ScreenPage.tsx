@@ -71,6 +71,7 @@ function PhoneScreen({ phone }: { phone: Device }) {
   const typingRef = useRef<HTMLTextAreaElement>(null);
   const decoderRef = useRef<ScreenDecoder | null>(null);
   const startedRef = useRef(false);
+  const fellBackRef = useRef(false);
   const gestureRef = useRef<GestureRecorder | null>(null);
   const inputsRef = useRef<Promise<void>>(Promise.resolve());
   const wheelRef = useRef<{ delta: FramePoint; at: FramePoint; timer: number } | null>(null);
@@ -86,7 +87,13 @@ function PhoneScreen({ phone }: { phone: Device }) {
         void api.requestScreenKeyFrame(phone.id).catch(() => undefined);
       },
       unsupported: () => {
+        if (fellBackRef.current) {
+          stop();
+          setError(`This computer can't show the video ${phone.name} sends.`);
+          return;
+        }
         // The phone's H.264 is one this webview can't decode: start again in JPEG.
+        fellBackRef.current = true;
         setJpegOnly(true);
         start(["jpeg"]);
       },

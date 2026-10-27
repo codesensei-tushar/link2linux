@@ -17,7 +17,8 @@ import {
 const size = { width: 360, height: 780 };
 
 function pointsOf(input: ScreenInput | null): ScreenPoint[] {
-  if (input?.kind !== "gesture") throw new Error(`expected a gesture, got ${JSON.stringify(input)}`);
+  if (input?.kind !== "gesture")
+    throw new Error(`expected a gesture, got ${JSON.stringify(input)}`);
   return input.points;
 }
 

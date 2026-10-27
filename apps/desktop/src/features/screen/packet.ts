@@ -68,8 +68,7 @@ export function parsePacket(buffer: ArrayBuffer): ScreenPacket | null {
  */
 export function avcCodecString(avcC: Uint8Array): string | null {
   if (avcC.length < 7 || avcC[0] !== 1) return null;
-  const hex = (index: number) =>
-    (avcC[index] ?? 0).toString(16).padStart(2, "0").toUpperCase();
+  const hex = (index: number) => (avcC[index] ?? 0).toString(16).padStart(2, "0").toUpperCase();
   return `avc1.${hex(1)}${hex(2)}${hex(3)}`;
 }
 

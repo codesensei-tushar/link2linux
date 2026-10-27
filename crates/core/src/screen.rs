@@ -380,6 +380,10 @@ struct Stream {
     input: bool,
     /// The viewer has not got the format yet.
     format_unsent: bool,
+    /// The desktop started the stream again, and its frames wait for the
+    /// format that answers that start: the ones before it are in what the
+    /// earlier viewer asked for.
+    awaiting_format: bool,
     /// Frames are dropped up to the next key frame.
     awaiting_key: bool,
 }
@@ -541,6 +545,7 @@ impl ScreenService {
                 stream.codecs = codecs;
                 stream.format_unsent = true;
                 stream.awaiting_key = true;
+                stream.awaiting_format = true;
             }
             None => {
                 self.stream = Some(Stream {
@@ -551,6 +556,7 @@ impl ScreenService {
                     input: false,
                     format_unsent: true,
                     awaiting_key: true,
+                    awaiting_format: false,
                 });
             }
         }
@@ -835,6 +841,7 @@ impl ScreenService {
         };
         stream.acked = true;
         stream.input = format.input;
+        stream.awaiting_format = false;
         if stream.format.as_ref() != Some(&next) {
             tracing::debug!(
                 id = next.id,
@@ -864,7 +871,7 @@ impl ScreenService {
         let Some(stream) = &mut self.stream else {
             return Ok(());
         };
-        let Some(format) = &stream.format else {
+        let Some(format) = stream.format.as_ref().filter(|_| !stream.awaiting_format) else {
             return Ok(());
         };
         if frame.data.len() > MAX_FRAME {

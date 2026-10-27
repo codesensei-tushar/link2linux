@@ -359,7 +359,9 @@ export function createFakeApi(): FakeApi {
     }),
     stopScreen: vi.fn<DesktopApi["stopScreen"]>().mockResolvedValue(undefined),
     sendScreenInput: vi.fn<DesktopApi["sendScreenInput"]>().mockResolvedValue(undefined),
-    requestScreenKeyFrame: vi.fn<DesktopApi["requestScreenKeyFrame"]>().mockResolvedValue(undefined),
+    requestScreenKeyFrame: vi
+      .fn<DesktopApi["requestScreenKeyFrame"]>()
+      .mockResolvedValue(undefined),
     emitScreen: (deviceId, screen) => {
       act(() => {
         screenListeners.forEach((listener) => {

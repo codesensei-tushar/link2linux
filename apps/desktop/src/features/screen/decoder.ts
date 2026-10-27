@@ -209,18 +209,16 @@ export class ScreenDecoder {
     if (this.jpegDecoding >= MAX_JPEG_DECODING) return;
     this.jpegDecoding += 1;
     const formatId = this.format?.id;
-    this.env
-      .createImageBitmap(new Blob([data], { type: "image/jpeg" }))
-      .then(
-        (bitmap) => {
-          this.jpegDecoding -= 1;
-          if (this.closed || this.format?.id !== formatId) bitmap.close();
-          else this.options.draw(bitmap, width, height);
-        },
-        () => {
-          this.jpegDecoding -= 1;
-        },
-      );
+    this.env.createImageBitmap(new Blob([data], { type: "image/jpeg" })).then(
+      (bitmap) => {
+        this.jpegDecoding -= 1;
+        if (this.closed || this.format?.id !== formatId) bitmap.close();
+        else this.options.draw(bitmap, width, height);
+      },
+      () => {
+        this.jpegDecoding -= 1;
+      },
+    );
   }
 
   private dropToKeyFrame(): void {
