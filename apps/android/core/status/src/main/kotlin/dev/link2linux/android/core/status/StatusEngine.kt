@@ -11,9 +11,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The phone's side of the phone status feature (docs/protocol.md, "Phone
@@ -27,6 +29,11 @@ import kotlinx.coroutines.launch
  * the platform with a value the protocol does not allow goes out corrected:
  * an operator name shortened to [MAX_OPERATOR_NAME_BYTES] at a character
  * boundary, and a percent or level held to its range.
+ *
+ * A source that fails is started again after [retryMillis], and [onFailure]
+ * hears of it; sharing never ends with it. A desktop that asks while the
+ * source has nothing to tell within [answerMillis] gets an empty status,
+ * which shows nothing, instead of no answer.
  */
 class StatusEngine(
     scope: CoroutineScope,
@@ -35,16 +42,26 @@ class StatusEngine(
     val enabled: StateFlow<Boolean>,
     keepListeningMillis: Long = KEEP_LISTENING_MILLIS,
     private val intervalMillis: Long = CHANGE_INTERVAL_MILLIS,
+    private val retryMillis: Long = RETRY_MILLIS,
+    private val answerMillis: Long = ANSWER_MILLIS,
+    /** Called with each failure of the source; it must not log what the failure carries. */
+    onFailure: (Throwable) -> Unit = {},
 ) {
 
     // The replay ends with the listeners: a status from before then may be stale.
     private val statuses: SharedFlow<PhoneStatus> = source.statuses()
+        .retryWhen { cause, _ ->
+            onFailure(cause)
+            delay(retryMillis)
+            true
+        }
         .map(::checked)
         .distinctUntilChanged()
         .shareIn(scope, SharingStarted.WhileSubscribed(keepListeningMillis, replayExpirationMillis = 0), replay = 1)
 
     /** The phone's status now, for a `PhoneStatusReply`. */
-    suspend fun current(): PhoneStatus = statuses.first()
+    suspend fun current(): PhoneStatus =
+        withTimeoutOrNull(answerMillis) { statuses.first() } ?: PhoneStatus.getDefaultInstance()
 
     /**
      * Keeps one desktop current, which has [sent], until cancelled or until
@@ -88,5 +105,10 @@ class StatusEngine(
         const val CHANGE_INTERVAL_MILLIS: Long = 5_000
 
         const val KEEP_LISTENING_MILLIS: Long = 5_000
+
+        const val RETRY_MILLIS: Long = 2_000
+
+        /** Under the 30 seconds a desktop waits for the reply, and over a few retries. */
+        const val ANSWER_MILLIS: Long = 10_000
     }
 }

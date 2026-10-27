@@ -190,4 +190,45 @@ class StatusEngineTest {
         assertEquals("ab$face", truncateUtf8("ab$face", 6))
         assertEquals("\u4e2d".repeat(21), truncateUtf8("\u4e2d".repeat(30), MAX_OPERATOR_NAME_BYTES))
     }
+
+    @Test
+    fun aSourceThatFailsIsStartedAgainAndTheStatusStillComes() = runTest {
+        var starts = 0
+        val failures = mutableListOf<Throwable>()
+        val flaky = StatusSource {
+            flow {
+                if (starts++ == 0) throw IllegalStateException("registration failed")
+                emit(battery(60))
+            }
+        }
+        val engine = StatusEngine(backgroundScope, flaky, enabled, onFailure = { failures += it })
+
+        assertEquals(battery(60), engine.current())
+        assertEquals(2, starts)
+        assertEquals(1, failures.size)
+    }
+
+    @Test
+    fun aSourceThatKeepsFailingGetsAnEmptyStatusInsteadOfNoAnswer() = runTest {
+        val broken = StatusSource { flow { throw IllegalStateException("no") } }
+        val engine = StatusEngine(backgroundScope, broken, enabled)
+
+        assertEquals(PhoneStatus.getDefaultInstance(), engine.current())
+        assertTrue(testScheduler.currentTime >= StatusEngine.ANSWER_MILLIS)
+    }
+
+    @Test
+    fun theSourceRecoversAfterItFailedForALongTime() = runTest {
+        var starts = 0
+        val recovering = StatusSource {
+            flow {
+                if (starts++ < 6) throw IllegalStateException("no")
+                emit(battery(40))
+            }
+        }
+        val engine = StatusEngine(backgroundScope, recovering, enabled)
+
+        assertEquals(PhoneStatus.getDefaultInstance(), engine.current())
+        assertEquals(battery(40), engine.current())
+    }
 }
