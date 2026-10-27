@@ -509,6 +509,37 @@ fn ringing_calls_get_one_popup_while_the_desktop_shows_them() {
 }
 
 #[test]
+fn a_popup_the_desktop_refused_is_shown_again() {
+    let phones = phones();
+    let ringing = |caller: &str| {
+        seen(
+            vec![device(PIXEL, "Pixel 8")],
+            vec![gateway(
+                Some(PIXEL),
+                vec![call("/ag0/call0", caller, CallState::Incoming)],
+            )],
+        )
+    };
+    let mut center = ready(vec![], vec![]);
+    feed(&mut center, ringing("+15550100"), 0);
+    assert_eq!(center.plan_popups(&phones).show.len(), 1);
+    center.popup_failed("bt:/ag0/call0");
+    let plan = center.plan_popups(&phones);
+    assert_eq!(plan.show.len(), 1);
+    assert_eq!(plan.show[0].3, None);
+
+    // A replacement that fails keeps the pop-up on screen to replace.
+    center.popup_shown("bt:/ag0/call0", NotificationId(4));
+    feed(&mut center, ringing("+15550199"), 0);
+    assert_eq!(center.plan_popups(&phones).show.len(), 1);
+    center.popup_failed("bt:/ag0/call0");
+    let plan = center.plan_popups(&phones);
+    assert_eq!(plan.show.len(), 1);
+    assert_eq!(plan.show[0].3, Some(NotificationId(4)));
+    assert!(center.plan_popups(&phones).show.is_empty());
+}
+
+#[test]
 fn without_the_link_the_phones_own_banner_shows_the_call() {
     let phones = phones();
     let mut center = ready(vec![device(PIXEL, "Pixel 8")], vec![]);

@@ -629,6 +629,14 @@ impl Center {
         }
     }
 
+    /// The pop-up of call `call` could not be shown: the next plan shows
+    /// it again, replacing the one on screen, if any.
+    pub fn popup_failed(&mut self, call: &str) {
+        if let Some(popup) = self.popups.get_mut(call) {
+            popup.summary.clear();
+        }
+    }
+
     /// The phone and call of pop-up `id`.
     pub fn popup_call(&self, id: NotificationId) -> Option<(String, String)> {
         self.popups

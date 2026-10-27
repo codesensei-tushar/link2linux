@@ -48,6 +48,9 @@ const RETRY: Duration = Duration::from_secs(30);
 /// How often the desktop connects a phone's hands-free link by itself, at
 /// most, when the phone connects to the app without it.
 const RECONNECT_EVERY: Duration = Duration::from_secs(10 * 60);
+/// How long to wait before showing an incoming-call pop-up again after
+/// the desktop refused it: a ringing call may change nothing else.
+const POPUP_RETRY: Duration = Duration::from_secs(2);
 
 /// What each phone's driver was last told: the desktop's availability,
 /// whether the desktop shows the phone's calls, and whether a pairing
@@ -443,11 +446,23 @@ async fn popups(core: &Core) {
             tracing::debug!(%error, "could not take down a call pop-up");
         }
     }
+    let mut failed = false;
     for (call, popup, locked, replaces) in plan.show {
         match core.presenter.show_own(&popup, &locked, replaces).await {
             Ok(id) => lock(&core.calls.center).popup_shown(&call, id),
-            Err(error) => tracing::warn!(%error, "could not show an incoming call"),
+            Err(error) => {
+                tracing::warn!(%error, "could not show an incoming call");
+                lock(&core.calls.center).popup_failed(&call);
+                failed = true;
+            }
         }
+    }
+    if failed {
+        let calls = core.calls.clone();
+        core.handle.spawn(async move {
+            tokio::time::sleep(POPUP_RETRY).await;
+            calls.nudge.notify_one();
+        });
     }
 }
 
