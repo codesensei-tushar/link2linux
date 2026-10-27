@@ -16,9 +16,9 @@ pub mod dto;
 mod port;
 mod trusted;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -75,7 +75,11 @@ pub struct Calls {
     /// Held while pairing opens or closes at the adapter, so that a close
     /// meant for one window never lands after a newer window opened.
     pairing: tokio::sync::Mutex<()>,
-    choices_path: PathBuf,
+    /// `calls.json`, which keeps each phone's device.
+    choices_file: Arc<ChoicesFile>,
+    /// How many snapshots of the choices were taken, each under the
+    /// center's lock, so that they are written in that order.
+    snapshots: AtomicU64,
     /// The devices this desktop trusted itself, kept at `trusted_path`.
     trusted: Mutex<HashSet<BluetoothAddress>>,
     trusted_path: PathBuf,
@@ -99,7 +103,11 @@ impl Calls {
             told: Mutex::default(),
             nudge: Notify::new(),
             pairing: tokio::sync::Mutex::new(()),
-            choices_path,
+            choices_file: Arc::new(ChoicesFile {
+                path: choices_path,
+                written: Mutex::new(0),
+            }),
+            snapshots: AtomicU64::new(0),
             trusted: Mutex::new(trusted::load(&trusted_path)),
             trusted_path,
         }
@@ -252,14 +260,58 @@ impl Calls {
         self.nudge.notify_one();
     }
 
-    fn save(&self, choices: &std::collections::BTreeMap<String, BluetoothAddress>) {
-        if let Err(error) = choices::save(&self.choices_path, choices) {
-            tracing::warn!(%error, "could not keep the phones' Bluetooth devices");
+    /// The choices as they stand in `center`, which the caller holds
+    /// locked, numbered in the order taken.
+    fn snapshot(&self, center: &Center) -> Choices {
+        Choices {
+            number: self.snapshots.fetch_add(1, Ordering::SeqCst) + 1,
+            devices: center.choices().clone(),
+        }
+    }
+
+    /// Writes `choices` to `calls.json`, unless newer ones are there. The
+    /// write syncs to disk, so it does not run on an async worker.
+    fn save(&self, choices: Choices) {
+        let file = self.choices_file.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(move || file.write(&choices));
+            }
+            Err(_) => file.write(&choices),
         }
     }
 
     fn deadline(&self) -> Option<Instant> {
         lock(&self.center).window().map(PairingWindow::deadline)
+    }
+}
+
+/// Each phone's device as the center kept it, numbered in the order the
+/// snapshots were taken.
+struct Choices {
+    number: u64,
+    devices: BTreeMap<String, BluetoothAddress>,
+}
+
+/// `calls.json`, written in the order its contents were taken: saves run
+/// on several threads, and an older snapshot must not overwrite a newer
+/// one.
+struct ChoicesFile {
+    path: PathBuf,
+    /// The number of the snapshot written last.
+    written: Mutex<u64>,
+}
+
+impl ChoicesFile {
+    fn write(&self, choices: &Choices) {
+        let mut written = lock(&self.written);
+        if choices.number <= *written {
+            return;
+        }
+        *written = choices.number;
+        if let Err(error) = choices::save(&self.path, &choices.devices) {
+            tracing::warn!(%error, "could not keep the phones' Bluetooth devices");
+        }
     }
 }
 
@@ -366,9 +418,14 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
         .await
         .inspect_err(|error| tracing::debug!(%error, "no hands-free call control"))
         .ok();
-    let phones = lock(&calls.phones).clone();
     let (choices, paired, connect, disconnect) = {
+        // The phones stay locked until the center is, as when a phone is
+        // forgotten: it is then gone from both or from neither, and its
+        // device is not kept again.
+        let known = lock(&calls.phones);
         let mut center = lock(&calls.center);
+        let phones = known.clone();
+        drop(known);
         center.update(
             Seen {
                 adapter,
@@ -384,7 +441,7 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
             let takes = center.takes_calls(&done.0);
             (done, center.windows_opened(), takes)
         });
-        let choices = (settled || paired.is_some()).then(|| center.choices().clone());
+        let choices = (settled || paired.is_some()).then(|| calls.snapshot(&center));
         let connect = center.take_connects(&phones);
         // While calls are off, here or on the phone, a phone that connects
         // its hands-free link by itself is disconnected again, so it keeps
@@ -393,7 +450,7 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
         (choices, paired, connect, disconnect)
     };
     if let Some(choices) = choices {
-        calls.save(&choices);
+        calls.save(choices);
     }
     if let Some(((device_id, address), opened, takes)) = paired {
         tracing::info!(%address, "the phone paired over Bluetooth");
@@ -669,18 +726,26 @@ pub(crate) fn set_enabled(core: &Core, enabled: bool) {
     calls.nudge.notify_one();
 }
 
-/// Phone `device_id` is no longer paired: what the desktop kept for it
-/// goes, pairing open for it closes, and its hands-free link goes down.
-/// Its device stays paired with the desktop, but loses a trust the desktop
-/// gave it, so it no longer connects by itself.
-pub(crate) fn forget(core: &Core, device_id: &str) {
+/// Phone `device_id` is no longer paired, and `phones` are: what the
+/// desktop kept for it goes, pairing open for it closes, and its
+/// hands-free link goes down. Its device stays paired with the desktop,
+/// but loses a trust the desktop gave it, so it no longer connects by
+/// itself.
+pub(crate) fn forget(core: &Core, device_id: &str, phones: Vec<(String, String)>) {
     let calls = &core.calls;
     let (choices, closed, device) = {
+        // The phones and the center change as one step (see `refresh`).
+        let mut known = lock(&calls.phones);
+        *known = phones
+            .into_iter()
+            .map(|(id, name)| Phone { id, name })
+            .collect();
         let mut center = lock(&calls.center);
+        drop(known);
         let closed = take_window(&mut center, |window| window.device_id() == device_id);
         let device = center.choices().get(device_id).copied();
         center.forget(device_id);
-        (center.choices().clone(), closed, device)
+        (calls.snapshot(&center), closed, device)
     };
     if let Some(closed) = closed {
         close_taken(core, closed);
@@ -700,7 +765,7 @@ pub(crate) fn forget(core: &Core, device_id: &str) {
         });
     }
     lock(&calls.told).remove(device_id);
-    calls.save(&choices);
+    calls.save(choices);
     calls.nudge.notify_one();
 }
 
@@ -802,9 +867,9 @@ pub(crate) fn choose_device(
             return Err(BackendError::NotFound);
         }
         center.want_connect(device_id);
-        center.choices().clone()
+        core.calls.snapshot(&center)
     };
-    core.calls.save(&choices);
+    core.calls.save(choices);
     core.calls.nudge.notify_one();
     Ok(())
 }
@@ -959,5 +1024,31 @@ pub(crate) fn popup_response(core: &Arc<Core>, response: &NotificationResponse) 
     };
     if let Err(error) = act(core, &device_id, &call, action) {
         tracing::debug!(%error, "could not act on the call pop-up");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_older_snapshot_of_the_choices_never_overwrites_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calls.json");
+        let calls = Calls::new(None, true, path.clone());
+        let center = Center::new(true, true, BTreeMap::new());
+        let older = calls.snapshot(&center);
+        let mut devices = BTreeMap::new();
+        devices.insert("p1".to_owned(), "0C:1A:2B:3C:4D:5E".parse().unwrap());
+        let newer = Choices {
+            number: calls.snapshot(&center).number,
+            devices: devices.clone(),
+        };
+        assert!(older.number < newer.number);
+
+        // Saves outside a runtime write at once.
+        calls.save(newer);
+        calls.save(older);
+        assert_eq!(choices::load(&path), devices);
     }
 }

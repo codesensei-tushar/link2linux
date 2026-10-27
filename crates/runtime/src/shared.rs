@@ -483,8 +483,7 @@ impl Core {
         lock(&self.evidence).forget(id);
         lock(&self.clipboard_page).board.forget(id);
         self.clipboard_hub.forget_phone(id);
-        calls::forget(self, id);
-        self.calls.set_phones(self.phone_list());
+        calls::forget(self, id, self.phone_list());
         self.publish_keys();
         self.emit_devices();
         self.clipboard_changed();
