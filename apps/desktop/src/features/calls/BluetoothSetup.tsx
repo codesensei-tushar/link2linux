@@ -170,8 +170,9 @@ export function LinkPanel({ phone, onError }: { phone: PhoneCalls; onError: OnEr
       body = (
         <>
           <p className="calls-setup__text">
-            Several devices paired with this computer could be it. Pick it once; link2linux keeps
-            your choice.
+            {link.candidates.length === 1
+              ? "One device paired with this computer could be it. Pick it only if it's this phone; link2linux keeps your choice."
+              : "Several devices paired with this computer could be it. Pick it once; link2linux keeps your choice."}
           </p>
           <ul className="calls-choices">
             {link.candidates.map((candidate) => (

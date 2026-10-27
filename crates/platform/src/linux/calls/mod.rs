@@ -34,8 +34,11 @@ type Objects = HashMap<OwnedObjectPath, Interfaces>;
 /// How long one call to a service may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Changes that come in a burst, such as a call's properties one by one,
-/// are reported once they settle for this long.
+/// are reported once they settle for this long...
 const SETTLE: Duration = Duration::from_millis(50);
+/// ...or after this long while signals keep coming: another app's scan
+/// brings one for each device it hears, and never settles.
+const SETTLE_LIMIT: Duration = Duration::from_millis(500);
 
 /// Takes property `key` out of `properties`, if it has the type `T`.
 fn take<T: TryFrom<OwnedValue>>(
@@ -117,7 +120,9 @@ impl Signals {
                 None => return Err("the D-Bus connection closed".to_owned()),
             }
         }
-        while let Ok(Some(_)) = tokio::time::timeout(SETTLE, self.stream.next()).await {}
+        let limit = tokio::time::Instant::now() + SETTLE_LIMIT;
+        let quiet = || (tokio::time::Instant::now() + SETTLE).min(limit);
+        while let Ok(Some(_)) = tokio::time::timeout_at(quiet(), self.stream.next()).await {}
         Ok(())
     }
 }

@@ -21,6 +21,8 @@ use crate::notifications::present::withheld_text;
 pub struct CallNotification {
     /// The notification's key.
     pub key: String,
+    /// The package of the app that posted it.
+    pub app_id: String,
     /// The app that posted it, such as the phone's dialer.
     pub app_name: String,
     /// The caller as the notification names them: a contact's name or a
@@ -64,6 +66,7 @@ impl CallNotification {
         };
         let call = Self {
             key: notification.key.clone(),
+            app_id: notification.app_id.clone(),
             app_name: if notification.app_name.is_empty() {
                 notification.app_id.clone()
             } else {
@@ -168,6 +171,18 @@ pub fn merge(gateway: Option<&Gateway>, notifications: &[CallNotification]) -> V
                 *slot = Some(left.remove(index));
             }
         }
+        // The rest match without a caller in common, so only the dialer's
+        // notifications take part: another app's call, such as a
+        // messenger's, never comes over the link. The dialer is a known
+        // one, or the app whose notification matched a call by its caller.
+        let dialers: Vec<&str> = matched
+            .iter()
+            .flatten()
+            .map(|&n| n.app_id.as_str())
+            .collect();
+        let from_dialer = |n: &CallNotification| {
+            DIALERS.contains(&n.app_id.as_str()) || dialers.contains(&n.app_id.as_str())
+        };
         // Then by state, where one ringing (or one ongoing) call of each
         // side is left: the caller may be a contact the link names only by
         // number.
@@ -176,18 +191,19 @@ pub fn merge(gateway: Option<&Gateway>, notifications: &[CallNotification]) -> V
                 .filter(|&i| matched[i].is_none() && calls[i].state.is_ringing() == ringing)
                 .collect();
             let notes_left: Vec<usize> = (0..left.len())
-                .filter(|&i| left[i].is_ringing() == ringing)
+                .filter(|&i| left[i].is_ringing() == ringing && from_dialer(left[i]))
                 .collect();
             if let ([call], [note]) = (calls_left.as_slice(), notes_left.as_slice()) {
                 matched[*call] = Some(left.remove(*note));
             }
         }
-        // Last, one call and one notification left are the same call in
-        // two states: the dialer updates its notification a moment after
-        // the call was answered or put through.
+        // Last, one call and one dialer notification left are the same
+        // call in two states: the dialer updates its notification a moment
+        // after the call was answered or put through.
         let calls_left: Vec<usize> = (0..calls.len()).filter(|&i| matched[i].is_none()).collect();
-        if let ([call], [_]) = (calls_left.as_slice(), left.as_slice()) {
-            matched[*call] = Some(left.remove(0));
+        let notes_left: Vec<usize> = (0..left.len()).filter(|&i| from_dialer(left[i])).collect();
+        if let ([call], [note]) = (calls_left.as_slice(), notes_left.as_slice()) {
+            matched[*call] = Some(left.remove(*note));
         }
         for (call, note) in calls.into_iter().zip(matched) {
             let name = if call.name.trim().is_empty() {
@@ -239,6 +255,17 @@ pub fn merge(gateway: Option<&Gateway>, notifications: &[CallNotification]) -> V
     }));
     shown
 }
+
+/// The packages of the phone apps known to post the notifications of the
+/// calls the hands-free link carries: dialers and their in-call screens.
+const DIALERS: [&str; 6] = [
+    "com.android.dialer",
+    "com.android.incallui",
+    "com.google.android.dialer",
+    "com.oneplus.dialer",
+    "com.samsung.android.dialer",
+    "com.samsung.android.incallui",
+];
 
 /// How many final digits two long numbers share when they are the same
 /// number written in national and international form, as "0151 1234567"
@@ -378,6 +405,14 @@ mod tests {
         }
     }
 
+    fn messenger(key: &str, caller: &str) -> PhoneNotification {
+        PhoneNotification {
+            app_id: "org.example.messenger".into(),
+            app_name: "Messenger".into(),
+            ..ringing(key, caller)
+        }
+    }
+
     fn note(notification: &PhoneNotification) -> CallNotification {
         CallNotification::of(notification).unwrap()
     }
@@ -490,9 +525,10 @@ mod tests {
             "Anna",
             CallState::Active,
         )]);
-        let mut messenger = ringing("m1", "Carol");
-        messenger.app_name = "Messenger".into();
-        let notes = [note(&ongoing("k1", "Anna")), note(&messenger)];
+        let notes = [
+            note(&ongoing("k1", "Anna")),
+            note(&messenger("m1", "Carol")),
+        ];
         let shown = merge(Some(&link), &notes);
         assert_eq!(shown.len(), 2);
         let other = &shown[1];
@@ -564,6 +600,49 @@ mod tests {
         assert_eq!(shown[0].state, CallState::Active);
         assert_eq!(shown[0].name, "Anna");
         assert_eq!(shown[0].notification.as_deref(), Some("k1"));
+    }
+
+    #[test]
+    fn another_apps_call_is_not_taken_for_the_links_call() {
+        // A call over the link without its dialer notification (the user
+        // hid the dialer's notifications), while a messenger call rings.
+        for state in [CallState::Active, CallState::Incoming] {
+            let link = gateway(vec![call("/ag0/call0", "+15550100", "", state)]);
+            let shown = merge(Some(&link), &[note(&messenger("m1", "Carol"))]);
+            let ids: Vec<(&str, Option<&str>, &str)> = shown
+                .iter()
+                .map(|s| (s.id.as_str(), s.notification.as_deref(), s.name.as_str()))
+                .collect();
+            assert_eq!(
+                ids,
+                [("bt:/ag0/call0", None, ""), ("app:m1", Some("m1"), "Carol")]
+            );
+        }
+    }
+
+    #[test]
+    fn a_dialer_is_known_by_its_notification_that_names_the_caller() {
+        // A dialer of no known package: its notification of the ongoing
+        // call names the caller's number, so the ringing one is its too.
+        let dialer = |n: PhoneNotification| PhoneNotification {
+            app_id: "org.example.dialer".into(),
+            ..n
+        };
+        let link = gateway(vec![
+            call("/ag0/call0", "+15550100", "", CallState::Active),
+            call("/ag0/call1", "", "", CallState::Waiting),
+        ]);
+        let notes = [
+            note(&dialer(ongoing("k1", "+1 555 0100"))),
+            note(&dialer(ringing("k2", "Bob"))),
+        ];
+        let shown = merge(Some(&link), &notes);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[1].notification.as_deref(), Some("k2"));
+        assert_eq!(shown[1].name, "Bob");
+        // Without that, the unknown app's notification stays apart.
+        let alone = gateway(vec![call("/ag0/call1", "", "", CallState::Waiting)]);
+        assert_eq!(merge(Some(&alone), &notes[1..]).len(), 2);
     }
 
     #[test]

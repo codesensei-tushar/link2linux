@@ -1,5 +1,6 @@
 //! The desktop's Bluetooth through BlueZ on the system bus.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +34,36 @@ struct Opened {
     discoverable: bool,
     discoverable_timeout: u32,
     pairable: bool,
+    /// The earlier `PairableTimeout`, when opening pairing changed it.
+    pairable_timeout: Option<u32>,
+    /// The devices paired in any way when pairing opened.
+    paired: HashSet<BluetoothAddress>,
+    /// The devices bonded when pairing opened.
+    bonded: HashSet<BluetoothAddress>,
 }
+
+impl Opened {
+    /// Whether the device with `properties` paired, or bonded, since
+    /// pairing opened without a code the user confirmed here (`confirmed`
+    /// says whose they did), and nobody trusted it since. The kernel
+    /// accepts "just works" pairing by itself, without asking any agent,
+    /// so such a device paired with no prompt at all; the desktop's
+    /// Bluetooth settings trust a device the user paired there.
+    fn stranger(
+        &self,
+        properties: &Properties,
+        confirmed: impl Fn(BluetoothAddress) -> bool,
+    ) -> bool {
+        let Some(address) = address(properties) else {
+            return false;
+        };
+        let paired_since = (any_pairing(properties) && !self.paired.contains(&address))
+            || (bonded(properties) && !self.bonded.contains(&address));
+        paired_since && !confirmed(address) && !flag(properties, "Trusted")
+    }
+}
+
+type Properties = HashMap<String, OwnedValue>;
 
 /// [`Bluetooth`] through BlueZ.
 ///
@@ -132,41 +162,139 @@ impl BluezBluetooth {
         connection: &Connection,
         device: BluetoothAddress,
     ) -> Result<OwnedObjectPath, PlatformError> {
+        Ok(self.device_object(connection, device).await?.0)
+    }
+
+    /// The object of `device` and its properties.
+    async fn device_object(
+        &self,
+        connection: &Connection,
+        device: BluetoothAddress,
+    ) -> Result<(OwnedObjectPath, Properties), PlatformError> {
         let (adapter, _, objects) = self
             .adapter_objects(connection)
             .await?
             .ok_or_else(|| unavailable(SERVICE, "no Bluetooth adapter"))?;
         objects
             .into_iter()
-            .find(|(_, interfaces)| {
-                interfaces.get(DEVICE).is_some_and(|properties| {
-                    belongs_to(properties, &adapter) && address(properties) == Some(device)
-                })
+            .filter_map(|(path, mut interfaces)| Some((path, interfaces.remove(DEVICE)?)))
+            .find(|(_, properties)| {
+                belongs_to(properties, &adapter) && address(properties) == Some(device)
             })
-            .map(|(path, _)| path)
             .ok_or_else(|| unavailable(SERVICE, "the device is not known to the adapter"))
     }
 
-    /// Restores what [`Bluetooth::open_pairing`] changed and drops the agent.
+    /// Restores what [`Bluetooth::open_pairing`] changed, drops the agent,
+    /// and removes the devices that paired meanwhile without the user.
     async fn undo(&self, connection: &Connection, opened: Opened) {
+        // Closing the agent forgets whom the user confirmed.
+        let confirmed = self.agent.confirmed();
         self.agent.close();
-        let adapter = &opened.adapter;
-        if !opened.discoverable {
-            set(connection, adapter.as_ref(), ADAPTER, "Discoverable", false).await;
+        let adapter = opened.adapter.as_ref();
+        // Setting the timeout restarts BlueZ's timer on a discoverable
+        // adapter, which may have run out meanwhile, so Discoverable is set
+        // after it when it was on, and before it when it was off.
+        if opened.discoverable {
+            set(
+                connection,
+                adapter.clone(),
+                ADAPTER,
+                "DiscoverableTimeout",
+                opened.discoverable_timeout,
+            )
+            .await;
+            set(connection, adapter.clone(), ADAPTER, "Discoverable", true).await;
+        } else {
+            set(connection, adapter.clone(), ADAPTER, "Discoverable", false).await;
+            set(
+                connection,
+                adapter.clone(),
+                ADAPTER,
+                "DiscoverableTimeout",
+                opened.discoverable_timeout,
+            )
+            .await;
         }
-        set(
-            connection,
-            adapter.as_ref(),
-            ADAPTER,
-            "DiscoverableTimeout",
-            opened.discoverable_timeout,
-        )
-        .await;
         if !opened.pairable {
-            set(connection, adapter.as_ref(), ADAPTER, "Pairable", false).await;
+            set(connection, adapter.clone(), ADAPTER, "Pairable", false).await;
+        }
+        if let Some(timeout) = opened.pairable_timeout {
+            set(connection, adapter, ADAPTER, "PairableTimeout", timeout).await;
         }
         drop_agent(connection).await;
+        self.remove_strangers(connection, &opened, &confirmed).await;
     }
+
+    /// Removes the devices that paired while pairing was open without the
+    /// user (see [`Opened::stranger`]).
+    async fn remove_strangers(
+        &self,
+        connection: &Connection,
+        opened: &Opened,
+        confirmed: &HashSet<BluetoothAddress>,
+    ) {
+        let objects = match self.objects(connection).await {
+            Ok(objects) => objects,
+            Err(error) => {
+                tracing::warn!(%error, "could not look for devices that paired unasked");
+                return;
+            }
+        };
+        let strangers: Vec<(OwnedObjectPath, BluetoothAddress)> = objects
+            .into_iter()
+            .filter_map(|(path, mut interfaces)| {
+                let properties = interfaces.remove(DEVICE)?;
+                (belongs_to(&properties, &opened.adapter)
+                    && opened.stranger(&properties, |a| confirmed.contains(&a)))
+                .then_some((path, address(&properties)?))
+            })
+            .collect();
+        if strangers.is_empty() {
+            return;
+        }
+        let adapter = match Proxy::new(connection, BLUEZ, opened.adapter.clone(), ADAPTER).await {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                tracing::warn!(error = %describe(&error), "could not remove devices that paired unasked");
+                return;
+            }
+        };
+        for (path, address) in strangers {
+            tracing::warn!(%address, "removing a device that paired without a confirmed code");
+            let removed = bounded(
+                CALL_TIMEOUT,
+                adapter.call::<_, _, ()>("RemoveDevice", &(&path,)),
+            )
+            .await;
+            if let Err(error) = removed {
+                tracing::warn!(%address, error = %describe(&error), "could not remove the device");
+            }
+        }
+    }
+}
+
+/// The boolean property `key`, false when it is missing.
+fn flag(properties: &Properties, key: &str) -> bool {
+    properties
+        .get(key)
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false)
+}
+
+/// Whether a device paired in any way: bonded, or for its current
+/// connection only.
+fn any_pairing(properties: &Properties) -> bool {
+    flag(properties, "Paired") || flag(properties, "Bonded")
+}
+
+/// Whether a device is paired for good: bonded, where BlueZ reports that
+/// apart from `Paired` (5.70 and later), which is also true for a pairing
+/// that keeps no keys.
+fn bonded(properties: &Properties) -> bool {
+    flag(properties, "Paired")
+        && properties
+            .get("Bonded")
+            .is_none_or(|value| bool::try_from(value).unwrap_or(false))
 }
 
 fn adapter_info(
@@ -204,6 +332,7 @@ fn device_info(
     mut properties: std::collections::HashMap<String, OwnedValue>,
 ) -> Option<BluetoothDevice> {
     let address = address(&properties)?;
+    let paired = bonded(&properties);
     let alias: Option<String> = take(&mut properties, "Alias");
     let name = alias
         .filter(|alias| !alias.is_empty())
@@ -215,7 +344,7 @@ fn device_info(
     Some(BluetoothDevice {
         address,
         name,
-        paired: take(&mut properties, "Paired").unwrap_or(false),
+        paired,
         trusted: take(&mut properties, "Trusted").unwrap_or(false),
         connected: take(&mut properties, "Connected").unwrap_or(false),
         phone: class.is_some_and(|class| (class >> 8) & 0x1f == MAJOR_CLASS_PHONE)
@@ -290,11 +419,12 @@ async fn drop_agent(connection: &Connection) {
 /// Whether a BlueZ signal may change what [`Bluetooth::adapter`] or
 /// [`Bluetooth::devices`] report.
 fn relevant(message: &Message) -> bool {
-    const KEYS: [&str; 12] = [
+    const KEYS: [&str; 13] = [
         "Address",
         "Alias",
         "Name",
         "Paired",
+        "Bonded",
         "Trusted",
         "Connected",
         "Class",
@@ -336,12 +466,23 @@ impl Bluetooth for BluezBluetooth {
         let Some((adapter, _, objects)) = self.adapter_objects(&connection).await? else {
             return Ok(Vec::new());
         };
+        let opened = self.opened.lock().await;
         let mut devices: Vec<BluetoothDevice> = objects
             .into_values()
             .filter_map(|mut interfaces| interfaces.remove(DEVICE))
             .filter(|properties| belongs_to(properties, &adapter))
-            .filter_map(device_info)
+            .filter_map(|properties| {
+                let stranger = opened.as_ref().is_some_and(|opened| {
+                    opened.stranger(&properties, |a| self.agent.is_confirmed(a))
+                });
+                let mut device = device_info(properties)?;
+                // Not a pairing the desktop accepts: it is removed when
+                // pairing closes.
+                device.paired &= !stranger;
+                Some(device)
+            })
             .collect();
+        drop(opened);
         devices.sort_by_key(|device| device.address.0);
         Ok(devices)
     }
@@ -357,7 +498,7 @@ impl Bluetooth for BluezBluetooth {
         if let Some(earlier) = opened.take() {
             self.undo(&connection, earlier).await;
         }
-        let (path, mut interfaces, _) = self
+        let (path, mut interfaces, objects) = self
             .adapter_objects(&connection)
             .await?
             .ok_or_else(|| unavailable(SERVICE, "no Bluetooth adapter"))?;
@@ -365,6 +506,7 @@ impl Bluetooth for BluezBluetooth {
         let discoverable = take(&mut properties, "Discoverable").unwrap_or(false);
         let discoverable_timeout = take(&mut properties, "DiscoverableTimeout").unwrap_or(180);
         let pairable = take(&mut properties, "Pairable").unwrap_or(false);
+        let pairable_timeout: u32 = take(&mut properties, "PairableTimeout").unwrap_or(0);
         let info = adapter_info(&mut properties)
             .ok_or_else(|| unavailable(SERVICE, "the adapter reports no address"))?;
         if !info.powered {
@@ -385,11 +527,32 @@ impl Bluetooth for BluezBluetooth {
         if !served {
             tracing::debug!("the pairing agent was still exported");
         }
+        let devices = objects
+            .values()
+            .filter_map(|interfaces| interfaces.get(DEVICE))
+            .filter(|properties| belongs_to(properties, &path));
+        let (mut paired, mut bonded_now) = (HashSet::new(), HashSet::new());
+        for properties in devices {
+            if let Some(address) = address(properties) {
+                if any_pairing(properties) {
+                    paired.insert(address);
+                }
+                if bonded(properties) {
+                    bonded_now.insert(address);
+                }
+            }
+        }
+        // A pairable adapter with a timeout may have a timer running that
+        // would end pairing early, so the window's timeout replaces it.
+        let limit_pairable = !pairable || pairable_timeout != 0;
         let earlier = Opened {
             adapter: path.clone(),
             discoverable,
             discoverable_timeout,
             pairable,
+            pairable_timeout: limit_pairable.then_some(pairable_timeout),
+            paired,
+            bonded: bonded_now,
         };
         let seconds = u32::try_from(window.as_secs()).unwrap_or(u32::MAX).max(1);
         let started = async {
@@ -405,8 +568,8 @@ impl Bluetooth for BluezBluetooth {
                 manager.call::<_, _, ()>("RequestDefaultAgent", &(&agent,)),
             )
             .await?;
-            // BlueZ ends discoverability by itself when the time is up,
-            // even if this app is gone by then.
+            // BlueZ ends discoverability and pairing by itself when the
+            // time is up, even if this app is gone by then.
             try_set(
                 &connection,
                 path.as_ref(),
@@ -415,6 +578,16 @@ impl Bluetooth for BluezBluetooth {
                 seconds,
             )
             .await?;
+            if limit_pairable {
+                try_set(
+                    &connection,
+                    path.as_ref(),
+                    ADAPTER,
+                    "PairableTimeout",
+                    seconds,
+                )
+                .await?;
+            }
             try_set(&connection, path.as_ref(), ADAPTER, "Pairable", true).await?;
             try_set(&connection, path.as_ref(), ADAPTER, "Discoverable", true).await
         }
@@ -452,7 +625,16 @@ impl Bluetooth for BluezBluetooth {
 
     async fn connect_hands_free(&self, device: BluetoothAddress) -> Result<(), PlatformError> {
         let connection = self.connect().await?;
-        let path = self.device_path(&connection, device).await?;
+        let (path, properties) = self.device_object(&connection, device).await?;
+        if let Some(opened) = &*self.opened.lock().await
+            && opened.stranger(&properties, |a| self.agent.is_confirmed(a))
+        {
+            // Trusted, it could connect any service unasked.
+            return Err(unavailable(
+                SERVICE,
+                "the device paired without a code confirmed on this computer",
+            ));
+        }
         try_set(&connection, path.as_ref(), DEVICE, "Trusted", true)
             .await
             .map_err(|e| {

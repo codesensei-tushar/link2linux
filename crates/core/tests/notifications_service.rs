@@ -19,9 +19,9 @@ use link2linux_platform::{
     NotificationResponse, NotificationSink, PlatformError,
 };
 use link2linux_protocol::v1::{
-    Ack, ImageData, ImageFormat, ImageRef, NotificationAction, NotificationCategory,
-    NotificationContent, NotificationImportance, NotificationPosted, NotificationRemoved,
-    NotificationSyncBatch, PhoneNotification, SyncCursor,
+    Ack, ImageData, ImageFormat, ImageRef, NotificationAction, NotificationActionKind,
+    NotificationCategory, NotificationContent, NotificationImportance, NotificationPosted,
+    NotificationRemoved, NotificationSyncBatch, PhoneNotification, SyncCursor,
 };
 use link2linux_protocol::{Envelope, Payload};
 use session_common::{
@@ -421,6 +421,12 @@ async fn call_banners_stay_off_while_the_calls_feature_shows_the_calls() {
     let mut s = synced_setup(vec![]).await;
     let call = |revision| PhoneNotification {
         category: NotificationCategory::Call.into(),
+        actions: vec![NotificationAction {
+            id: "answer".into(),
+            label: "Answer".into(),
+            kind: NotificationActionKind::AnswerCall.into(),
+            ..NotificationAction::default()
+        }],
         ..note("call", revision)
     };
     let mut seq = 4;
@@ -455,4 +461,30 @@ async fn call_banners_stay_off_while_the_calls_feature_shows_the_calls() {
     s.service.set_call_banners(true).await;
     post(&mut s, call(5)).await;
     assert_eq!(s.desktop.lock().unwrap().shown.len(), 3);
+}
+
+#[tokio::test]
+async fn a_call_notification_without_call_actions_keeps_its_banner() {
+    let mut s = synced_setup(vec![]).await;
+    // A calling app that posts no answer, decline or hang-up action: the
+    // calls feature does not list it, so its banner is the only alert.
+    let call = PhoneNotification {
+        category: NotificationCategory::Call.into(),
+        actions: vec![NotificationAction {
+            id: "open".into(),
+            label: "Open".into(),
+            ..NotificationAction::default()
+        }],
+        ..note("voip", 2)
+    };
+    s.service.set_call_banners(false).await;
+    s.phone
+        .send(&envelope(4, posted(call, true)))
+        .await
+        .unwrap();
+    let event = next(&mut s.session).await;
+    s.service.handle_event(&mut s.session, event).await.unwrap();
+    let desktop = s.desktop.lock().unwrap();
+    assert_eq!(desktop.shown.len(), 1);
+    assert!(desktop.closed.is_empty());
 }

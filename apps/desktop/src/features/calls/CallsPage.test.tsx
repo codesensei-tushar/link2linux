@@ -101,6 +101,21 @@ describe("CallsPage", () => {
     expect(api.startBluetoothPairing).toHaveBeenCalledWith("phone-1");
   });
 
+  it("asks before taking the only paired device that could be the phone", async () => {
+    renderPage({
+      phones: [
+        phone({
+          link: {
+            state: "choose",
+            candidates: [{ address: "00:11:22:33:44:55", name: "Pixel" }],
+          },
+        }),
+      ],
+    });
+    expect(await screen.findByText(/Pick it only if it's this phone/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Pixel, 00:11:22:33:44:55" })).toBeVisible();
+  });
+
   it("connects a phone whose link is down", async () => {
     const user = userEvent.setup();
     const api = renderPage({

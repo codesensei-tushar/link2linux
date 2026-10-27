@@ -135,8 +135,13 @@ impl AgentShared {
         accepted
     }
 
-    fn is_confirmed(&self, device: BluetoothAddress) -> bool {
+    pub(super) fn is_confirmed(&self, device: BluetoothAddress) -> bool {
         self.is_open() && lock(&self.confirmed).contains(&device)
+    }
+
+    /// The devices whose pairing the user confirmed since pairing opened.
+    pub(super) fn confirmed(&self) -> HashSet<BluetoothAddress> {
+        lock(&self.confirmed).clone()
     }
 }
 

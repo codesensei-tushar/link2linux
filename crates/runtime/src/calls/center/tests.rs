@@ -37,6 +37,16 @@ fn device(at: &str, name: &str) -> BluetoothDevice {
     }
 }
 
+/// A device paired with no prompt, as "just works" pairing allows: nobody
+/// trusted it.
+fn stranger(at: &str, name: &str) -> BluetoothDevice {
+    BluetoothDevice {
+        trusted: false,
+        connected: false,
+        ..device(at, name)
+    }
+}
+
 fn adapter(powered: bool) -> BluetoothAdapter {
     BluetoothAdapter {
         address: address("A0:B1:C2:D3:E4:F5"),
@@ -97,6 +107,7 @@ fn ringing_note(key: &str, caller: &str) -> CallNotification {
     };
     CallNotification::of(&PhoneNotification {
         key: key.into(),
+        app_id: "com.google.android.dialer".into(),
         app_name: "Phone".into(),
         title: caller.into(),
         category: NotificationCategory::Call.into(),
@@ -316,6 +327,91 @@ fn the_pairing_window_runs_until_the_phone_pairs() {
     assert_eq!(center.pairing_done(), Some(("p1".into(), address(PIXEL))));
     assert!(center.window().is_none());
     assert_eq!(center.choices().get("p1"), Some(&address(PIXEL)));
+}
+
+#[test]
+fn a_device_nobody_trusted_is_offered_and_never_connected_by_itself() {
+    let phones = phones();
+    // Alone and named like the phone, it is only offered.
+    let mut center = ready(vec![stranger(PIXEL, "Pixel 8")], vec![]);
+    assert!(center.choices().is_empty());
+    let status = center.status(&phones, Instant::now(), 0);
+    let CallLink::Choose { candidates } = &status.phones[0].link else {
+        panic!("expected a choice, got {:?}", status.phones[0].link);
+    };
+    assert_eq!(candidates.len(), 1);
+    center.want_connect("p1");
+    assert!(center.take_connects(&phones).is_empty());
+
+    // The user picks it: it is the phone's, and connecting it trusts it.
+    assert!(center.choose("p1", address(PIXEL)));
+    center.want_connect("p1");
+    assert_eq!(
+        center.take_connects(&phones),
+        [("p1".to_owned(), address(PIXEL))]
+    );
+}
+
+#[test]
+fn a_kept_device_nobody_trusted_is_offered_again_after_a_restart() {
+    let phones = phones();
+    let kept = BTreeMap::from([("p1".to_owned(), address(PIXEL))]);
+    let mut center = Center::new(true, true, kept);
+    feed(
+        &mut center,
+        seen(vec![stranger(PIXEL, "Pixel 8")], vec![]),
+        0,
+    );
+    center.session_started("p1");
+    // The phone connects to the app: its device is not trusted behind the
+    // user's back.
+    center.want_connect("p1");
+    assert!(center.take_connects(&phones).is_empty());
+    assert_eq!(
+        center.device_of(&phones[0]),
+        PhoneDevice::Choose(vec![address(PIXEL)])
+    );
+    // Trusted meanwhile, in the desktop's Bluetooth settings: the phone's
+    // again.
+    feed(&mut center, seen(vec![device(PIXEL, "Pixel 8")], vec![]), 0);
+    assert_eq!(center.found(&phones[0]), Some(address(PIXEL)));
+}
+
+#[test]
+fn only_the_device_whose_code_the_user_confirmed_pairs_in_the_window() {
+    let phones = phones();
+    let now = Instant::now();
+    let mut center = ready(vec![], vec![]);
+    center.open_window(PairingWindow::open("p1", adapter(true), now));
+    // A device pairs with no prompt meanwhile: pairing is not done, and
+    // nothing is chosen.
+    feed(
+        &mut center,
+        seen(vec![stranger(GALAXY, "Pixel 8")], vec![]),
+        0,
+    );
+    assert_eq!(center.pairing_done(), None);
+    assert!(center.choices().is_empty());
+    assert!(center.window().is_some());
+
+    // The phone pairs once the user confirmed its code: it is chosen, and
+    // connected before the Bluetooth stack trusts it.
+    let window = center.window_mut().unwrap();
+    window.prompted(
+        PairingPrompt {
+            id: 7,
+            device: address(PIXEL),
+            device_name: "Pixel 8".into(),
+            code: 12_345,
+        },
+        now,
+    );
+    assert_eq!(window.answer(7, true, now), Some(true));
+    let both = vec![stranger(GALAXY, "Pixel 8"), stranger(PIXEL, "Pixel 8")];
+    feed(&mut center, seen(both, vec![]), 0);
+    assert_eq!(center.pairing_done(), Some(("p1".into(), address(PIXEL))));
+    assert_eq!(center.found(&phones[0]), Some(address(PIXEL)));
+    assert_eq!(center.found(&phones[1]), None);
 }
 
 #[test]
