@@ -47,18 +47,20 @@ export function Sidebar() {
         </ul>
       </nav>
 
-      <nav className="sidebar__nav" aria-label="App">
-        <ul>
-          <li>
-            <NavLink to="/settings" className="nav-link" onKeyDown={moveFocus}>
-              <Settings aria-hidden="true" />
-              Settings
-            </NavLink>
-          </li>
-        </ul>
-      </nav>
+      <div className="sidebar__footer">
+        <nav className="sidebar__nav" aria-label="App">
+          <ul>
+            <li>
+              <NavLink to="/settings" className="nav-link" onKeyDown={moveFocus}>
+                <Settings aria-hidden="true" />
+                Settings
+              </NavLink>
+            </li>
+          </ul>
+        </nav>
 
-      <ConnectionStatus />
+        <ConnectionStatus />
+      </div>
     </aside>
   );
 }
