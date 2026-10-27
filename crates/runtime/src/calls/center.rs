@@ -391,6 +391,13 @@ impl Center {
         self.sessions.remove(device_id);
     }
 
+    /// A new task starts for phone `device_id`: the call notifications
+    /// and the session of the task it replaces no longer count.
+    pub fn task_started(&mut self, device_id: &str) {
+        self.notes.remove(device_id);
+        self.sessions.remove(device_id);
+    }
+
     /// Whether notification `key` of phone `device_id` is a call
     /// notification.
     pub fn has_note(&self, device_id: &str, key: &str) -> bool {

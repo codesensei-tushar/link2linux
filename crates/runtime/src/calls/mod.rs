@@ -209,6 +209,16 @@ impl Calls {
         self.nudge.notify_one();
     }
 
+    /// A new task starts for phone `device_id`, as when it pairs again:
+    /// its drivers know nothing yet, so it hears of the calls afresh, and
+    /// the call notifications of the task it replaces go, since the new
+    /// one's notifications start from nothing too.
+    pub(crate) fn task_started(&self, device_id: &str) {
+        lock(&self.center).task_started(device_id);
+        lock(&self.told).remove(device_id);
+        self.nudge.notify_one();
+    }
+
     /// A session with phone `device_id` ended.
     pub fn session_ended(&self, device_id: &str) {
         lock(&self.center).session_ended(device_id);

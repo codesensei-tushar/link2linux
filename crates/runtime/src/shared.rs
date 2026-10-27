@@ -400,6 +400,7 @@ impl Core {
             ring: RingDriver::new(phone_board.clone()),
             calls: CallsDriver::new(record.id.clone(), self.calls.clone(), phone_board.clone()),
         };
+        self.calls.task_started(&record.id);
         self.calls.set_phones(self.phone_list());
         self.handle.spawn(forward_changes(
             self.clone(),

@@ -241,4 +241,25 @@ mod tests {
         }];
         assert_eq!(lock(&calls.center).calls_of(&phones[0], &phones).len(), 1);
     }
+
+    #[test]
+    fn a_new_task_for_a_phone_hears_of_the_calls_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Calls::new(None, true, dir.path().join("calls.json"));
+        calls.set_phones(vec![("p1".into(), "Pixel".into())]);
+        lock(&calls.told).insert("p1".into(), (Availability::Ready, true, false));
+        lock(&calls.center).set_note("p1", "k1", Some(ringing()));
+        calls.session_started("p1");
+
+        // The phone pairs again: its new task starts from nothing.
+        calls.task_started("p1");
+        assert!(lock(&calls.told).is_empty());
+        let center = lock(&calls.center);
+        assert!(!center.has_note("p1", "k1"));
+        let phones = [Phone {
+            id: "p1".into(),
+            name: "Pixel".into(),
+        }];
+        assert!(center.calls_of(&phones[0], &phones).is_empty());
+    }
 }
