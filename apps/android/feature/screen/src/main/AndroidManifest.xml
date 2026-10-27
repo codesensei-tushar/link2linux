@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Capture the screen in a foreground service of its own type, started only once the user
+         agreed to share it with a computer, for that one stream. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <application>
+        <!-- Asks the user whether to share the screen with a computer, then shows Android's own
+             question. Not exported: only the app and its notification start it. -->
+        <activity
+            android:name=".ScreenShareActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Captures and encodes the screen while it is shared. -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- Carries out what the user does in the computer's window, only while the screen is
+             shared with that computer and the user turned control on. Exported because the system
+             binds it, and protected by the permission only the system holds. -->
+        <service
+            android:name=".ScreenControlService"
+            android:exported="true"
+            android:label="@string/screen_control_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/screen_control_service" />
+        </service>
+
+        <!-- Don't share and Stop sharing on the notifications; reached only through the app's
+             PendingIntents. -->
+        <receiver
+            android:name=".ScreenActionReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

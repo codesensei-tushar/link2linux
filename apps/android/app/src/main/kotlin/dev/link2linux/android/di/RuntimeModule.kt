@@ -14,6 +14,7 @@ import dev.link2linux.android.core.network.features.FileSessionHooks
 import dev.link2linux.android.core.network.features.NotificationSessionHooks
 import dev.link2linux.android.core.network.features.PhotoSessionHooks
 import dev.link2linux.android.core.network.features.RingSessionHooks
+import dev.link2linux.android.core.network.features.ScreenSessionHooks
 import dev.link2linux.android.core.network.features.StatusSessionHooks
 import dev.link2linux.android.core.network.pairing.SessionHooks
 import dev.link2linux.android.feature.calls.CallsRuntime
@@ -22,6 +23,7 @@ import dev.link2linux.android.feature.files.FilesRuntime
 import dev.link2linux.android.feature.notifications.NotificationsRuntime
 import dev.link2linux.android.feature.photos.PhotosRuntime
 import dev.link2linux.android.feature.ring.RingRuntime
+import dev.link2linux.android.feature.screen.ScreenRuntime
 import dev.link2linux.android.feature.status.StatusRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +44,7 @@ internal object RuntimeModule {
         ring: RingRuntime,
         calls: CallsRuntime,
         photos: PhotosRuntime,
+        screen: ScreenRuntime,
     ): SessionHooks = CompositeSessionHooks(
         NotificationSessionHooks(
             engine = NotificationsRuntime.get(context).engine,
@@ -66,5 +69,6 @@ internal object RuntimeModule {
             // Each session's workers and follower live as long as the session; the app outlives them all.
             scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the photo sessions")),
         ),
+        ScreenSessionHooks(screen.engine),
     )
 }

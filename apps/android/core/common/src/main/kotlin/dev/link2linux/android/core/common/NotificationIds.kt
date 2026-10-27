@@ -18,9 +18,15 @@ object NotificationIds {
     /** The prompt to pair a computer over Bluetooth. */
     const val PAIRING = 3
 
+    /** The question whether to share the screen with a computer. */
+    const val SCREEN_ASK = 6
+
+    /** The foreground notification of the screen capture service, while a computer sees the screen. */
+    const val SCREEN_SHARING = 7
+
     /** The tag of the file transfer notifications, whose IDs come from the transfer. */
     const val FILES_TAG = "files"
 
     /** The IDs of the notifications posted without a tag. */
-    val untagged: List<Int> = listOf(CONNECTION, RING, PAIRING)
+    val untagged: List<Int> = listOf(CONNECTION, RING, PAIRING, SCREEN_ASK, SCREEN_SHARING)
 }
