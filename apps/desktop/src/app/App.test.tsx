@@ -27,7 +27,6 @@ describe("app shell", () => {
     expect(links.map((link) => link.textContent)).toEqual([
       "Pairing",
       "Notifications",
-      "Messages",
       "Calls",
       "Photos",
       "Files",
@@ -46,11 +45,11 @@ describe("app shell", () => {
     const user = userEvent.setup();
     const { router } = renderApp();
 
-    await user.click(screen.getByRole("link", { name: "Messages" }));
+    await user.click(screen.getByRole("link", { name: "Photos" }));
 
-    expect(router.state.location.pathname).toBe("/messages");
-    expect(screen.getByRole("heading", { level: 1, name: "Messages" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Messages" })).toHaveAttribute("aria-current", "page");
+    expect(router.state.location.pathname).toBe("/photos");
+    expect(screen.getByRole("heading", { level: 1, name: "Photos" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
   });
 
   it("opens the settings from the sidebar", async () => {
@@ -73,7 +72,7 @@ describe("app shell", () => {
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("link", { name: "Photos" })).toHaveFocus();
     await user.keyboard("{ArrowUp}{ArrowUp}");
-    expect(screen.getByRole("link", { name: "Messages" })).toHaveFocus();
+    expect(screen.getByRole("link", { name: "Notifications" })).toHaveFocus();
     await user.keyboard("{End}");
     expect(screen.getByRole("link", { name: "Screen" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");

@@ -4,8 +4,6 @@ import { ClipboardPage } from "./clipboard/ClipboardPage";
 import { clipboardMeta } from "./clipboard/meta";
 import { FilesPage } from "./files/FilesPage";
 import { filesMeta } from "./files/meta";
-import { messagesMeta } from "./messages/meta";
-import { MessagesPage } from "./messages/MessagesPage";
 import { notificationsMeta } from "./notifications/meta";
 import { NotificationsPage } from "./notifications/NotificationsPage";
 import { pairingMeta } from "./pairing/meta";
@@ -22,7 +20,6 @@ export type { Feature, FeatureId, FeatureMeta } from "./types";
 export const features: readonly Feature[] = [
   { ...pairingMeta, Page: PairingPage },
   { ...notificationsMeta, Page: NotificationsPage },
-  { ...messagesMeta, Page: MessagesPage },
   { ...callsMeta, Page: CallsPage },
   { ...photosMeta, Page: PhotosPage },
   { ...filesMeta, Page: FilesPage },

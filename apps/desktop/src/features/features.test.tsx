@@ -4,12 +4,11 @@ import { describe, expect, it } from "vitest";
 import { features } from ".";
 
 describe("features", () => {
-  it("lists the eight features once each, pairing first", () => {
+  it("lists the seven features once each, pairing first", () => {
     const ids = features.map((f) => f.id);
     expect(ids).toEqual([
       "pairing",
       "notifications",
-      "messages",
       "calls",
       "photos",
       "files",
