@@ -14,7 +14,13 @@
     }
     const date = new Date(release.published_at).toLocaleDateString(undefined, { dateStyle: "long" });
     const kind = release.prerelease ? "Pre-release" : "Latest release";
-    status.textContent = `${kind} ${release.tag_name}, published ${date}.`;
+    const releaseText = status?.querySelector("[data-release-text]");
+    if (releaseText) {
+      releaseText.textContent = `${kind} ${release.tag_name}, published ${date}.`;
+    }
+    for (const el of document.querySelectorAll("[data-release-tag]")) {
+      el.textContent = release.tag_name;
+    }
   } catch {
     // Keep the links to the release named in index.html.
   }

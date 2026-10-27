@@ -2,338 +2,405 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://api.github.com; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>link2linux · Your Android phone on your Linux desktop</title>
-  <meta name="description" content="link2linux connects your Android phone to your Linux desktop: notifications, calls, phone status, files and clipboard, directly over your own network. Free and open source.">
+  <meta name="description" content="Use your Android phone from your Linux desktop: notifications and replies, calls, files, clipboard, photos and screen mirroring, directly over your own network. Free and open source.">
   <link rel="canonical" href="https://codesensei-tushar.github.io/link2linux/">
-  <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f9fafb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1214" media="(prefers-color-scheme: dark)">
   <meta property="og:type" content="website">
   <meta property="og:title" content="link2linux">
-  <meta property="og:description" content="Your Android phone, right on your Linux desktop. Open source and local-first.">
+  <meta property="og:description" content="Your Android phone on your Linux desktop. Open source, local network only, no account.">
   <meta property="og:url" content="https://codesensei-tushar.github.io/link2linux/">
+  <meta property="og:image" content="https://codesensei-tushar.github.io/link2linux/og.png">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="preload" href="fonts/noto-sans-regular.woff" as="font" type="font/woff" crossorigin>
   <link rel="stylesheet" href="styles.css">
   <script src="download.js" defer></script>
+  <script src="site.js" defer></script>
 </head>
 <body>
+  <div class="scroll-sentinel" aria-hidden="true"></div>
   <a class="skip-link" href="#main">Skip to content</a>
 
   <header class="site-header">
-    <div class="container nav">
+    <div class="container header-inner">
       <a class="brand" href="./">
-        <img src="favicon.svg" alt="" width="28" height="28">
-        link2linux
+        <img class="brand-mark" src="favicon.svg" alt="" width="28" height="28">
+        <span class="wordmark">link2linux</span>
       </a>
-      <ul class="nav-links">
-        <li><a href="#features">Features</a></li>
-        <li><a href="#how-it-works">How it works</a></li>
-        <li><a href="#privacy">Privacy</a></li>
-        <li><a href="#download">Download</a></li>
-        <li><a href="#faq">FAQ</a></li>
-      </ul>
-      <a class="btn btn-ghost btn-sm" href="https://github.com/codesensei-tushar/link2linux">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>
-        GitHub
-      </a>
+      <nav class="header-nav" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#download">Download</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <div class="header-actions">
+        <a class="header-github" href="https://github.com/codesensei-tushar/link2linux" aria-label="link2linux on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true" class="icon-20"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg></a>
+        <a class="btn btn-primary btn-sm" href="#download">Download</a>
+      </div>
     </div>
   </header>
 
   <main id="main">
     <section class="hero">
-      <div class="container hero-grid">
-        <div>
-          <span class="eyebrow"><span class="dot"></span>Open source · In early development</span>
-          <h1>Your Android phone, <em>right on your Linux desktop</em>.</h1>
-          <p class="lead">See notifications and reply to messages, take calls, browse recent photos and mirror your phone's screen, and move files and your clipboard between devices. link2linux connects them directly over your own network, with no account and no cloud.</p>
-          <div class="cta-row">
-            <a class="btn btn-primary" href="#download">Download</a>
-            <a class="btn btn-ghost" href="https://github.com/codesensei-tushar/link2linux">View on GitHub</a>
+      <div class="container hero-inner">
+        <a class="announce-pill hero-fade hero-fade-0" href="https://github.com/codesensei-tushar/link2linux/releases/tag/v0.4.0">
+          <span class="pill pill-accent">New</span>
+          Photos and screen mirroring in 0.4
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-14"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </a>
+        <h1 class="type-display hero-fade hero-fade-1">Your Android phone,<br class="br-wide"> on your Linux desktop.</h1>
+        <p class="type-lead hero-lead hero-fade hero-fade-2">Answer notifications, take calls, send files and copy and paste between your phone and your computer. They connect directly over your own network, with no account and no cloud.</p>
+        <div class="hero-cta hero-fade hero-fade-3">
+          <a id="hero-download-primary" class="btn btn-primary btn-lg" href="#download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>Download for Linux</a>
+          <a id="hero-download-secondary" class="btn btn-secondary btn-lg" href="#android">Get the Android app</a>
+        </div>
+        <div class="code code-shell hero-command hero-fade hero-fade-4 hide-on-android"><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></div>
+      </div>
+
+        <div class="stage">
+          <div class="stage-window hero-stage-window">
+            <div class="stage-titlebar">
+              <span class="stage-title">link2linux</span>
+              <span class="stage-close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-14"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></span>
+            </div>
+            <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/hero-desktop-dark@1x.webp 1040w, images/hero-desktop-dark@2x.webp 2080w" sizes="(min-width: 1120px) 1040px, calc(100vw - 48px)">
+  <img src="images/hero-desktop-light@1x.webp" srcset="images/hero-desktop-light@1x.webp 1040w, images/hero-desktop-light@2x.webp 2080w" sizes="(min-width: 1120px) 1040px, calc(100vw - 48px)" width="1040" height="644" alt="The link2linux Notifications page on a Linux desktop: a chat with Reply and Mark as read, a hidden one-time code and a calendar reminder." fetchpriority="high" class="stage-desktop-img">
+</picture>
           </div>
-          <p class="hero-note">Free and open source under Apache-2.0. Version 0.4.0 is out as a pre-release, with pairing, notifications, calls, phone status, ring my phone, clipboard sharing, file transfer, recent photos and screen mirroring.</p>
+          <div class="stage-phone hero-stage-phone">
+            <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/hero-phone-dark@1x.webp 411w, images/hero-phone-dark@2x.webp 822w" sizes="(min-width: 640px) 250px, 30vw">
+  <img src="images/hero-phone-light@1x.webp" srcset="images/hero-phone-light@1x.webp 411w, images/hero-phone-light@2x.webp 822w" sizes="(min-width: 640px) 250px, 30vw" width="411" height="890" alt="The link2linux phone app, connected to a computer named workstation." loading="lazy" decoding="async">
+</picture>
+          </div>
+          <div class="stage-call hero-stage-call">
+            <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/hero-call-dark@1x.webp 506w, images/hero-call-dark@2x.webp 1012w" sizes="(min-width: 640px) 440px, 1px">
+  <img src="images/hero-call-light@1x.webp" srcset="images/hero-call-light@1x.webp 506w, images/hero-call-light@2x.webp 1012w" sizes="(min-width: 640px) 440px, 1px" width="506" height="157" alt="An incoming call on the desktop, with Answer and Decline." decoding="async" class="shot">
+</picture>
+          </div>
         </div>
 
-        <div class="showcase" aria-hidden="true">
-          <div class="window">
-            <div class="window-bar"><span>link2linux</span><span class="window-controls"><i></i><i></i><i></i></span></div>
-            <div class="window-body">
-              <div class="mock-nav">
-                <span class="active">Notifications</span><span>Calls</span><span>Files</span><span>Clipboard</span>
-              </div>
-              <div class="mock-list">
-                <div class="mock-card">
-                  <span class="avatar a1">A</span>
-                  <div><b>Ana</b><p>Running five minutes late, save me a seat!</p></div>
-                  <time>now</time>
-                  <span class="mock-reply">Reply from your desktop…</span>
-                </div>
-                <div class="mock-card">
-                  <span class="avatar a2">C</span>
-                  <div><b>Calendar</b><p>Team sync starts in 10 minutes</p></div>
-                  <time>2m</time>
-                </div>
-                <div class="mock-card">
-                  <span class="avatar a3">P</span>
-                  <div><b>Photos</b><p>12 new photos ready to send to this PC</p></div>
-                  <time>5m</time>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="phone">
-            <div class="phone-screen">
-              <div class="phone-link"><span class="pulse"></span><span>Connected to <b>workstation</b></span></div>
-              <div class="phone-toggles">
-                <span>Notifications<i class="on"></i></span><span>Clipboard<i class="on"></i></span><span>Files<i class="on"></i></span><span>Calls<i></i></span>
-              </div>
-            </div>
-          </div>
-        </div>
+      <div class="container">
+        <p class="hero-facts">Free and open source<span class="fact-sep" aria-hidden="true"></span>GNOME, KDE Plasma and other desktops<span class="fact-sep" aria-hidden="true"></span>Wayland and X11<span class="fact-sep" aria-hidden="true"></span>x86_64 and ARM64<span class="fact-sep" aria-hidden="true"></span>Android 8.0 and newer</p>
       </div>
     </section>
 
-    <section class="section section-alt" id="features" aria-labelledby="features-title">
+    <section class="section" id="features" aria-labelledby="features-title">
       <div class="container">
-        <div class="section-head">
-          <span class="kicker">Features</span>
-          <h2 id="features-title">The parts of your phone you reach for, on your desktop</h2>
-          <p>link2linux is built feature by feature. This is what it does today.</p>
+        <header class="section-head">
+          <p class="type-label">Features</p>
+          <h2 class="type-h2" id="features-title">Use your phone without picking it up.</h2>
+          <p class="section-intro">Each feature has its own switch on your phone, so you share only what you choose.</p>
+        </header>
+        <div class="bento">
+          <article class="card bento-notifications">
+            <h3 class="type-h3">Notifications</h3>
+            <p>Your phone’s notifications appear on your computer as they arrive. Reply to messages, press their buttons, and dismiss them on both devices at once. One-time codes stay on your phone.</p>
+            <div class="tile-well well--center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/feat-notifications-dark@1x.webp 616w, images/feat-notifications-dark@2x.webp 1232w" sizes="616px">
+  <img src="images/feat-notifications-light@1x.webp" srcset="images/feat-notifications-light@1x.webp 616w, images/feat-notifications-light@2x.webp 1232w" sizes="616px" width="616" height="644" alt="Desktop notification list with chat, bank code and calendar cards." loading="lazy" decoding="async" class="shot shot--notifications">
+</picture></div>
+          </article>
+          <article class="card bento-calls">
+            <h3 class="type-h3">Calls</h3>
+            <p>Answer, decline and dial from your computer, and talk through its microphone and speakers over Bluetooth.</p>
+            <div class="tile-well well--peek"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/feat-call-dark@1x.webp 708w, images/feat-call-dark@2x.webp 1416w" sizes="708px">
+  <img src="images/feat-call-light@1x.webp" srcset="images/feat-call-light@1x.webp 708w, images/feat-call-light@2x.webp 1416w" sizes="708px" width="708" height="263" alt="Incoming call card with Answer, Decline and Bluetooth connection status." loading="lazy" decoding="async" class="shot shot--call">
+</picture></div>
+          </article>
+          <article class="card bento-status">
+            <h3 class="type-h3">Phone status and ring</h3>
+            <p>See your phone’s battery, signal and sound mode, and make it ring at full volume when you can’t find it, even on silent.</p>
+            <div class="tile-well well--center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/feat-status-dark@1x.webp 228w, images/feat-status-dark@2x.webp 456w" sizes="228px">
+  <img src="images/feat-status-light@1x.webp" srcset="images/feat-status-light@1x.webp 228w, images/feat-status-light@2x.webp 456w" sizes="228px" width="228" height="188" alt="Sidebar connection card with battery, signal and Ring phone." loading="lazy" decoding="async" class="shot shot--status">
+</picture></div>
+          </article>
+          <article class="card bento-files">
+            <h3 class="type-h3">Files</h3>
+            <p>Drop files on the window to send them to your phone. Share files from any app on your phone, and they land in your Downloads folder.</p>
+            <div class="tile-well well--peek"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/feat-files-dark@1x.webp 708w, images/feat-files-dark@2x.webp 1416w" sizes="708px">
+  <img src="images/feat-files-light@1x.webp" srcset="images/feat-files-light@1x.webp 708w, images/feat-files-light@2x.webp 1416w" sizes="708px" width="708" height="390" alt="File transfer list with a video sending and a PDF saved." loading="lazy" decoding="async" class="shot shot--files">
+</picture></div>
+          </article>
+          <article class="card bento-clipboard">
+            <h3 class="type-h3">Clipboard</h3>
+            <p>Text you copy on your computer is ready to paste on your phone. Send your phone’s clipboard back with one tap.</p>
+            <div class="tile-well well--peek"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/feat-clipboard-dark@1x.webp 708w, images/feat-clipboard-dark@2x.webp 1416w" sizes="708px">
+  <img src="images/feat-clipboard-light@1x.webp" srcset="images/feat-clipboard-light@1x.webp 708w, images/feat-clipboard-light@2x.webp 1416w" sizes="708px" width="708" height="330" alt="Clipboard sharing card and connected phones list." loading="lazy" decoding="async" class="shot shot--clipboard">
+</picture></div>
+          </article>
+          <article class="card bento-photos">
+            <h3 class="type-h3">Photos</h3>
+            <p>Browse your phone’s newest photos and screenshots, and save the ones you want to your Pictures folder. Nothing is written to disk until you save a photo.</p>
+            <div class="tile-well tile-well-chips">
+              <div class="chip-stack">
+                <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-16"><path d="M20 6 9 17l-5-5"/></svg>200 newest photos and screenshots</span>
+                <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-16"><path d="M20 6 9 17l-5-5"/></svg>Save any of them to Pictures</span>
+                <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-16"><path d="M20 6 9 17l-5-5"/></svg>Nothing on disk until you save</span>
+              </div>
+            </div>
+          </article>
+          <article class="card bento-screen">
+            <div class="bento-screen-inner">
+              <div class="bento-screen-copy">
+                <h3 class="type-h3">Screen</h3>
+                <p>See your phone’s screen in a window. Allow control on your phone, then tap, swipe and type on it from your computer. Your phone asks every time before it shares.</p>
+              </div>
+              <div class="bento-screen-chips">
+                <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-16"><path d="M20 6 9 17l-5-5"/></svg>Asks before every share</span>
+                <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-16"><path d="M20 6 9 17l-5-5"/></svg>Tap, swipe and type</span>
+                <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-16"><path d="M20 6 9 17l-5-5"/></svg>Back, Home and Recents</span>
+                <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-16"><path d="M20 6 9 17l-5-5"/></svg>Stops when you lock your phone</span>
+              </div>
+            </div>
+          </article>
         </div>
-        <ul class="feature-grid">
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/></svg></span>
-            <h3>Notifications</h3>
-            <p>Phone notifications show up on your desktop. Reply inline, or dismiss them on both devices at once.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 7h4M9 12h6v5H9z"/></svg></span>
-            <h3>Phone status</h3>
-            <p>See your phone's battery and signal on your desktop, and make it ring at full volume when you can't find it, even on silent.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/></svg></span>
-            <h3>Calls</h3>
-            <p>See who's calling and talk through your computer's speakers and microphone over Bluetooth.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
-            <h3>Files</h3>
-            <p>Drag files onto the app to send them to your phone, or share them to your desktop from any app.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 3h6v3H9z"/></svg></span>
-            <h3>Clipboard</h3>
-            <p>Copy a link or a code on one device and paste it on the other.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2"/></svg></span>
-            <h3>Pairing</h3>
-            <p>Pair once by scanning a QR code. After that, your devices find each other on your network.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="M21 17l-5-5-4 4-2-2-5 5"/></svg></span>
-            <h3>Photos</h3>
-            <p>Browse your phone's recent camera photos and screenshots on your desktop and save the ones you want to your Pictures folder. Stays off on the phone until you turn it on.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
-            <h3>Screen</h3>
-            <p>Mirror your phone's screen in a window on your desktop. The phone asks before each share; if you allow control on the phone, you can tap, swipe, type and use Back, Home and Recents from the desktop.</p>
-          </li>
-        </ul>
       </div>
     </section>
 
     <section class="section" id="how-it-works" aria-labelledby="how-title">
       <div class="container">
-        <div class="section-head">
-          <span class="kicker">How it works</span>
-          <h2 id="how-title">Three steps to connect</h2>
-          <p>No account to create and nothing to configure on your router.</p>
-        </div>
+        <header class="section-head">
+          <p class="type-label">How it works</p>
+          <h2 class="type-h2" id="how-title">Pair once, and it connects on its own.</h2>
+          <p class="section-intro">Your phone and computer find each other on your network every time after the first.</p>
+        </header>
         <ol class="steps">
           <li class="step">
-            <h3>Install both apps</h3>
-            <p>Get link2linux for your Linux desktop and its companion app for your Android phone.</p>
+            <span class="step-num" aria-hidden="true">1</span>
+            <div>
+              <h3 class="type-h3">Install both apps</h3>
+              <p>Install link2linux on your computer with one command or a package, and the APK on your phone.</p>
+              <div class="step-visual">
+                <div class="code code-shell"><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></div>
+                <a class="btn btn-quiet" href="#download">All downloads</a>
+              </div>
+            </div>
           </li>
           <li class="step">
-            <h3>Scan the QR code</h3>
-            <p>Your desktop shows a code and your phone scans it. The two devices exchange their own keys, so only they can talk to each other.</p>
+            <span class="step-num" aria-hidden="true">2</span>
+            <div>
+              <h3 class="type-h3">Pair with a QR code</h3>
+              <p>Your computer shows a code and your phone scans it. No camera? Compare a six-digit code on both screens instead.</p>
+              <div class="step-visual">
+                <div class="step-well well--peek"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/step-pair-dark@1x.webp 708w, images/step-pair-dark@2x.webp 1416w" sizes="708px">
+  <img src="images/step-pair-light@1x.webp" srcset="images/step-pair-light@1x.webp 708w, images/step-pair-light@2x.webp 1416w" sizes="708px" width="708" height="531" alt="Desktop pairing panel with Scan with your phone." loading="lazy" decoding="async" class="shot shot--pair">
+</picture></div>
+              </div>
+            </div>
           </li>
           <li class="step">
-            <h3>Turn on what you want</h3>
-            <p>Every feature starts off. Switch on the ones you need, and Android asks for each permission only at that moment.</p>
+            <span class="step-num" aria-hidden="true">3</span>
+            <div>
+              <h3 class="type-h3">Choose what to share</h3>
+              <p>Calls, phone status and ring work from the start. Notifications, clipboard, files, photos and screen stay off until you turn them on, and Android asks for each permission only then.</p>
+              <div class="step-visual">
+                <div class="step-well well--center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/step-share-dark@1x.webp 411w, images/step-share-dark@2x.webp 822w" sizes="411px">
+  <img src="images/step-share-light@1x.webp" srcset="images/step-share-light@1x.webp 411w, images/step-share-light@2x.webp 822w" sizes="411px" width="411" height="632" alt="Phone notifications settings with permissions and one-time code option." loading="lazy" decoding="async" class="shot shot--share">
+</picture></div>
+              </div>
+            </div>
           </li>
         </ol>
       </div>
     </section>
 
-    <section class="section section-alt" id="privacy" aria-labelledby="privacy-title">
-      <div class="container">
-        <div class="section-head">
-          <span class="kicker">Privacy &amp; security</span>
-          <h2 id="privacy-title">Your data stays between your devices</h2>
-          <p>Your phone holds your messages, photos and codes, so link2linux is designed to keep them on hardware you own.</p>
-        </div>
-        <ul class="feature-grid two">
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/></svg></span>
-            <h3>Stays on your network</h3>
-            <p>Your phone and computer connect directly over your local network. There's no account, no cloud relay and no server in between.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
-            <h3>Encrypted, with keys you paired</h3>
-            <p>Every connection uses TLS 1.3. Each device creates its own keys and only accepts the device it was paired with.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="5"/><circle cx="16" cy="12" r="3"/></svg></span>
-            <h3>You choose what's shared</h3>
-            <p>Each feature stays off until you turn it on, and you can switch it off again at any time.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 5l-4 14"/></svg></span>
-            <h3>Open source</h3>
-            <p>All the code is public under the Apache-2.0 license, so anyone can read it, audit it and build it.</p>
-          </li>
+    <section class="section band-ink" id="privacy" aria-labelledby="privacy-title">
+      <div class="container band-ink-inner">
+        <header class="privacy-head">
+          <p class="type-label">Privacy and security</p>
+          <h2 class="type-h2" id="privacy-title">Your phone talks only to your computer.</h2>
+          <p class="section-intro">There’s no account, no server in between and no telemetry. Your notifications, files and photos go straight from one device to the other.</p>
+          <a class="btn btn-quiet" href="https://github.com/codesensei-tushar/link2linux#privacy-and-security">Read the security details</a>
+        </header>
+        <ul class="privacy-facts">
+          <li class="fact"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/></svg><div><h3>Stays on your network</h3><p>The two connect over your Wi-Fi, or your computer joins your phone’s hotspot. Nothing goes over the internet.</p></div></li>
+          <li class="fact"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><div><h3>Encrypted both ways</h3><p>Every connection uses mutual TLS 1.3, pinned to the keys your devices exchanged when you paired them.</p></div></li>
+          <li class="fact"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg><div><h3>Pairing proves both sides</h3><p>The QR code carries a one-time secret, so another device on your network can’t pose as your phone or your computer.</p></div></li>
+          <li class="fact"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg><div><h3>Anonymous on the network</h3><p>Your phone announces itself with a rotating tag that only your paired computers recognise, and no device name.</p></div></li>
+          <li class="fact"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg><div><h3>Codes stay on your phone</h3><p>The code itself never reaches your computer, which only shows that one arrived. You can change this on your phone.</p></div></li>
+          <li class="fact"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg><div><h3>Open source</h3><p>The desktop app, the Android app and the protocol are open source under Apache-2.0. <a href="https://github.com/codesensei-tushar/link2linux/blob/main/docs/protocol.md">Read the protocol</a></p></div></li>
         </ul>
       </div>
     </section>
 
     <section class="section" id="download" aria-labelledby="download-title">
       <div class="container">
-        <div class="section-head">
-          <span class="kicker">Download</span>
-          <h2 id="download-title">Install on your computer and your phone</h2>
-          <p>The desktop app runs on Linux with GNOME, KDE Plasma and other desktops, on Wayland or X11. It ships as a .deb, an .rpm, an AppImage and a Flatpak, for 64-bit x86 and ARM computers. The phone app needs Android 8.0 or newer.</p>
-          <p class="release-status" id="release-status" role="status">Pre-release v0.4.0.</p>
-        </div>
-        <div class="downloads">
-          <div class="dl-group">
-            <h3>Linux desktop</h3>
-            <ul class="dl-list">
-              <li class="dl-item dl-quick">
-                <div class="dl-head">
-                  <div><strong>One-line install</strong><p>Picks the .deb, .rpm or AppImage for your system and architecture, checks it against SHA256SUMS and installs it.</p></div>
-                  <div class="dl-actions"><a class="btn btn-ghost btn-sm" href="install.sh">Read the script</a></div>
-                </div>
-                <pre><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></pre>
+        <header class="section-head">
+          <p class="type-label">Download</p>
+          <h2 class="type-h2" id="download-title">Get link2linux</h2>
+          <p class="section-intro">Free for Linux on x86_64 and ARM64, and for Android 8.0 and newer.</p>
+          <p class="pill pill-neutral" id="release-status" role="status"><span class="pill-dot" aria-hidden="true"></span><span data-release-text>Pre-release v0.4.0</span></p>
+        </header>
+        <div class="downloads-grid">
+          <article class="card download-card" id="linux">
+            <header class="dl-card-head">
+              <span class="dl-icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg></span>
+              <div>
+                <h3 class="type-h3">Linux desktop</h3>
+                <p class="dl-sub">GNOME, KDE Plasma and other desktops, on Wayland or X11.</p>
+              </div>
+            </header>
+            <p class="dl-sublabel">Install with one command</p>
+            <div class="code code-shell"><code>curl -fsSL https://codesensei-tushar.github.io/link2linux/install.sh | sh</code></div>
+            <p class="dl-caption">It picks the right package for your system, checks it against the release’s SHA256SUMS, and installs it. <a class="btn btn-quiet" href="install.sh">Read the script</a></p>
+            <hr class="dl-divider">
+            <p class="dl-sublabel">Or download a package</p>
+            <ul class="pkg-list">
+              <li>
+                <div class="pkg-row"><div class="pkg-row-head"><strong>.deb</strong> <span class="pkg-for">Ubuntu, Debian, Linux Mint, Pop!_OS</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_amd64.deb">Download .deb</a><a class="btn btn-secondary btn-sm" data-asset="link2linux_arm64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_arm64.deb" aria-label="Download .deb for ARM64">ARM64</a></div></div>
+                <div class="code code-shell code-compact"><code>sudo apt install ./link2linux_amd64.deb</code></div>
               </li>
-              <li class="dl-item">
-                <div class="dl-head">
-                  <div><strong>.deb package</strong><p>Ubuntu, Debian, Linux Mint, Pop!_OS.</p></div>
-                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_amd64.deb">Download .deb</a><a class="btn btn-ghost btn-sm" data-asset="link2linux_arm64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux_arm64.deb">ARM64</a></div>
-                </div>
-                <pre><code>sudo apt install ./link2linux_amd64.deb</code></pre>
+              <li>
+                <div class="pkg-row"><div class="pkg-row-head"><strong>.rpm</strong> <span class="pkg-for">Fedora, openSUSE and other RPM-based systems</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.rpm">Download .rpm</a><a class="btn btn-secondary btn-sm" data-asset="link2linux.aarch64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.rpm" aria-label="Download .rpm for ARM64">ARM64</a></div></div>
+                <div class="code code-shell code-compact"><code>sudo dnf install ./link2linux.x86_64.rpm</code></div>
               </li>
-              <li class="dl-item">
-                <div class="dl-head">
-                  <div><strong>.rpm package</strong><p>Fedora, openSUSE and other RPM-based systems.</p></div>
-                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.rpm">Download .rpm</a><a class="btn btn-ghost btn-sm" data-asset="link2linux.aarch64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.rpm">ARM64</a></div>
-                </div>
-                <pre><code>sudo dnf install ./link2linux.x86_64.rpm</code></pre>
+              <li>
+                <div class="pkg-row"><div class="pkg-row-head"><strong>AppImage</strong> <span class="pkg-for">Any distribution, without installing. Needs FUSE 2.</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux-x86_64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-x86_64.AppImage">Download AppImage</a><a class="btn btn-secondary btn-sm" data-asset="link2linux-aarch64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-aarch64.AppImage" aria-label="Download AppImage for ARM64">ARM64</a></div></div>
+                <div class="code code-shell code-compact"><code>chmod +x link2linux-x86_64.AppImage &amp;&amp; ./link2linux-x86_64.AppImage</code></div>
               </li>
-              <li class="dl-item">
-                <div class="dl-head">
-                  <div><strong>AppImage</strong><p>Any distribution, without installing. Needs FUSE 2.</p></div>
-                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux-x86_64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-x86_64.AppImage">Download AppImage</a><a class="btn btn-ghost btn-sm" data-asset="link2linux-aarch64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux-aarch64.AppImage">ARM64</a></div>
-                </div>
-                <pre><code>chmod +x link2linux-x86_64.AppImage
-./link2linux-x86_64.AppImage</code></pre>
-              </li>
-              <li class="dl-item">
-                <div class="dl-head">
-                  <div><strong>Flatpak</strong><p>Sandboxed, for any distribution with Flatpak. Not on Flathub yet.</p></div>
-                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.flatpak">Download Flatpak</a><a class="btn btn-ghost btn-sm" data-asset="link2linux.aarch64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.flatpak">ARM64</a></div>
-                </div>
-                <pre><code>flatpak install --user ./link2linux.x86_64.flatpak</code></pre>
+              <li>
+                <div class="pkg-row"><div class="pkg-row-head"><strong>Flatpak</strong> <span class="pkg-for">Sandboxed, for any distribution with Flatpak. Not on Flathub yet.</span></div><div class="pkg-btns"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.x86_64.flatpak">Download Flatpak</a><a class="btn btn-secondary btn-sm" data-asset="link2linux.aarch64.flatpak" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.aarch64.flatpak" aria-label="Download Flatpak for ARM64">ARM64</a></div></div>
+                <div class="code code-shell code-compact"><code>flatpak install --user ./link2linux.x86_64.flatpak</code></div>
               </li>
             </ul>
-          </div>
-          <div class="dl-group">
-            <h3>Android phone</h3>
-            <ul class="dl-list">
-              <li class="dl-item">
-            <div class="dl-head">
-              <div><strong>APK</strong><p>Android 8.0 and newer.</p></div>
-              <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux.apk" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.apk">Download APK</a></div>
-            </div>
-            <ol class="dl-steps">
-              <li>Open the downloaded file on your phone.</li>
-              <li>If Android asks, allow your browser to install apps.</li>
-              <li>Open link2linux and scan the code your desktop shows.</li>
-            </ol>
-          </li>
-              <li class="dl-item">
-            <div class="dl-head">
-              <div><strong>App stores <span class="tag">Later</span></strong><p>Store listings follow the first releases, with updates handled by the store.</p></div>
-            </div>
-          </li>
-            </ul>
-            <div class="verify">
-              <strong>Verify a download</strong>
-              <p>Every release includes a <code>SHA256SUMS</code> file. Put it next to your download and run:</p>
-              <pre><code>sha256sum -c SHA256SUMS --ignore-missing</code></pre>
-            </div>
+            <p class="dl-footnote">ARM64 is for computers with 64-bit ARM processors. The install script picks it by itself.</p>
+          </article>
+          <div class="downloads-side">
+            <article class="card download-card download-android" id="android">
+              <header class="dl-card-head">
+                <span class="dl-icon-tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-20"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg></span>
+                <div>
+                  <h3 class="type-h3">Android phone</h3>
+                  <p class="dl-sub">Android 8.0 and newer.</p>
+                </div>
+              </header>
+              <a class="btn btn-primary dl-apk" data-asset="link2linux.apk" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.4.0/link2linux.apk">Download APK</a>
+              <div class="android-qr hide-on-android">
+                <div class="android-qr-tile">
+                  <img src="images/qr-android.svg" alt="" width="108" height="108">
+                </div>
+                <p>On your computer? Scan this with your phone to open this page there.</p>
+              </div>
+              <ol class="android-steps">
+                <li>Open the downloaded file on your phone.</li>
+                <li>If Android asks, allow your browser to install apps.</li>
+                <li>Open link2linux and scan the code your computer shows.</li>
+              </ol>
+              <p class="dl-footnote subtle">App store listings come later.</p>
+            </article>
+            <article class="card verify-card">
+              <h3 class="type-h3">Check your download</h3>
+              <div class="verify-cols">
+                <div>
+                  <p>Every release has a SHA256SUMS file. Put it next to your download and run:</p>
+                  <div class="code"><code>sha256sum -c SHA256SUMS --ignore-missing</code></div>
+                </div>
+                <div>
+                  <p>Each file also has a GitHub build attestation that shows it was built from this repository:</p>
+                  <div class="code"><code>gh attestation verify link2linux_amd64.deb --repo codesensei-tushar/link2linux</code></div>
+                </div>
+              </div>
+              <a class="btn btn-quiet" href="https://github.com/codesensei-tushar/link2linux/releases">All releases on GitHub</a>
+            </article>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="section section-alt" id="faq" aria-labelledby="faq-title">
-      <div class="container">
-        <div class="section-head">
-          <span class="kicker">FAQ</span>
-          <h2 id="faq-title">Questions, answered</h2>
+    <section class="section" id="faq" aria-labelledby="faq-title">
+      <div class="container faq-layout">
+        <div class="faq-side">
+          <h2 class="type-h2" id="faq-title">Questions</h2>
+          <p>Something else? <a href="https://github.com/codesensei-tushar/link2linux/issues">Ask on GitHub.</a></p>
         </div>
-        <div class="faq">
-          <details>
-            <summary>When can I download it?</summary>
-            <p>Now. Version 0.4.0 is out as a pre-release: it pairs your phone, shows its notifications on your desktop, takes its calls over Bluetooth, shows its battery and signal, rings it when you can't find it, shares the clipboard both ways, sends files in either direction, shows recent photos on your desktop and mirrors the phone's screen with optional control from the desktop. The <a href="#download">Download</a> section has every package. Watch the repository on GitHub to hear about new releases.</p>
-          </details>
-          <details>
-            <summary>Is it free?</summary>
-            <p>Yes. link2linux is free and open source under the Apache-2.0 license.</p>
-          </details>
-          <details>
-            <summary>Does it need an internet connection?</summary>
-            <p>No. Your phone and computer only need to be on the same local network, and they connect to each other directly. Call audio uses Bluetooth.</p>
-          </details>
-          <details>
-            <summary>Does it work with an iPhone?</summary>
-            <p>No. link2linux is built for Android phones.</p>
-          </details>
-          <details>
-            <summary>How can I help?</summary>
-            <p>Star and watch the repository, open an issue with ideas or problems, or contribute code and documentation on GitHub.</p>
-          </details>
+        <div class="faq-list">
+          <details><summary>Does it need an internet connection?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>No. Your phone and computer only need to be on the same network, or your computer can join your phone’s hotspot. Calls use Bluetooth.</p></details>
+          <details><summary>Which computers does it run on?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>64-bit Linux computers, x86_64 or ARM64, with GNOME, KDE Plasma or another desktop, on Wayland or X11.</p></details>
+          <details><summary>Which phones does it work with?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Android 8.0 and newer. iPhones aren’t supported.</p></details>
+          <details><summary>What do calls need?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Bluetooth on your computer, and PipeWire 1.4 or later with its own Bluetooth backend, as in Ubuntu 26.04. The PipeWire in Ubuntu 24.04 is too old, and the Calls page tells you when yours is.</p></details>
+          <details><summary>My phone doesn’t show up on my computer. What can I check?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Check that both are on the same network and the phone app is open. If a firewall blocks the phone’s announcements, allow mDNS (UDP 5353) and UDP port 27381. The .deb and .rpm include firewalld and ufw definitions for exactly these, which you turn on yourself. You can also type the phone’s address on your computer: the phone shows it while it waits.</p></details>
+          <details><summary>Is screen mirroring smooth?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Yes, when GStreamer has an H.264 decoder installed, such as gstreamer1.0-libav. Without one, you see about 12 still pictures a second. Mirroring has no sound yet.</p></details>
+          <details><summary>Is it free?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Yes. link2linux is free and open source under the Apache-2.0 license.</p></details>
+          <details><summary>Why is it a pre-release?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p>Versions before 1.0 come out as pre-releases. Photos, screen mirroring and control haven’t been tried on many phones yet, so reports about yours help.</p></details>
+          <details><summary>How do I report a problem?<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="icon-18 faq-chevron"><path d="m6 9 6 6 6-6"/></svg></summary><p><a href="https://github.com/codesensei-tushar/link2linux/issues">Open an issue on GitHub</a>. Report security issues privately, as <a href="https://github.com/codesensei-tushar/link2linux/blob/main/CONTRIBUTING.md#reporting-security-issues">CONTRIBUTING.md</a> describes.</p></details>
         </div>
       </div>
     </section>
 
-    <section class="section" aria-labelledby="cta-title">
-      <div class="container">
-        <div class="cta-band">
-          <h2 id="cta-title">Follow along as it's built</h2>
-          <p>Star the repository to keep up with development, and watch Releases to hear when the first version ships.</p>
-          <div class="cta-row">
-            <a class="btn btn-primary" href="https://github.com/codesensei-tushar/link2linux">Star on GitHub</a>
-            <a class="btn btn-ghost" href="https://github.com/codesensei-tushar/link2linux/releases">View releases</a>
-          </div>
+    <section class="section section-cta">
+      <div class="container cta-inner">
+        <img class="cta-mark" src="favicon.svg" alt="" width="56" height="56">
+        <h2 class="type-h2">Get started with link2linux</h2>
+        <p class="type-lead cta-lead">Free and open source, for Linux and Android.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary btn-lg" href="#linux">Download for Linux</a>
+          <a class="btn btn-secondary btn-lg" href="#android">Get the Android app</a>
         </div>
+        <a class="btn btn-quiet cta-star" href="https://github.com/codesensei-tushar/link2linux"><svg viewBox="0 0 16 16" aria-hidden="true" class="icon-20"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>Star on GitHub</a>
       </div>
     </section>
   </main>
 
   <footer class="site-footer">
-    <div class="container footer-inner">
-      <p>© 2026 link2linux contributors. Released under the Apache-2.0 license.</p>
-      <nav aria-label="Footer">
-        <a href="https://github.com/codesensei-tushar/link2linux">Source</a>
-        <a href="https://github.com/codesensei-tushar/link2linux/releases">Releases</a>
-        <a href="https://github.com/codesensei-tushar/link2linux/issues">Report an issue</a>
-      </nav>
+    <div class="container footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="./">
+          <img class="brand-mark" src="favicon.svg" alt="" width="28" height="28">
+          <span class="wordmark">link2linux</span>
+        </a>
+        <p>Your Android phone on your Linux desktop.</p>
+      </div>
+      <div>
+        <h3 class="footer-title">Get it</h3>
+        <ul class="footer-links">
+          <li><a href="#download">Download</a></li>
+          <li><a href="install.sh">Install script</a></li>
+          <li><a href="https://github.com/codesensei-tushar/link2linux/releases">Releases</a></li>
+          <li><a href="https://github.com/codesensei-tushar/link2linux/blob/main/CHANGELOG.md">Changelog</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="footer-title">Project</h3>
+        <ul class="footer-links">
+          <li><a href="https://github.com/codesensei-tushar/link2linux">Source code</a></li>
+          <li><a href="https://github.com/codesensei-tushar/link2linux/issues">Report an issue</a></li>
+          <li><a href="https://github.com/codesensei-tushar/link2linux/blob/main/CONTRIBUTING.md">Contributing</a></li>
+          <li><a href="https://github.com/codesensei-tushar/link2linux/blob/main/CONTRIBUTING.md#reporting-security-issues">Security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="footer-title">Learn</h3>
+        <ul class="footer-links">
+          <li><a href="#how-it-works">How it works</a></li>
+          <li><a href="#privacy">Privacy</a></li>
+          <li><a href="https://github.com/codesensei-tushar/link2linux/blob/main/docs/protocol.md">Protocol</a></li>
+          <li><a href="https://github.com/codesensei-tushar/link2linux/blob/main/docs/architecture.md">Architecture</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="container footer-bottom">
+      <p>© 2026 link2linux contributors · Apache-2.0</p>
+      <p>No cookies, no trackers.</p>
+    </div>
+    <div class="container footer-legal">
+      <p>Android is a trademark of Google LLC. Linux is the registered trademark of Linus Torvalds.</p>
     </div>
   </footer>
+  <span id="copy-live" class="visually-hidden" aria-live="polite"></span>
 </body>
 </html>
