@@ -1,5 +1,5 @@
 import { Delete, Phone } from "lucide-react";
-import { useId, useState, type SubmitEvent } from "react";
+import { useId, useRef, useState, type SubmitEvent } from "react";
 
 import { Button } from "@/components/ui";
 import { useDesktopApi } from "@/lib/api";
@@ -20,15 +20,18 @@ export function DialPad({
   const [dialing, setDialing] = useState(false);
   const titleId = useId();
   const inputId = useId();
+  const input = useRef<HTMLInputElement>(null);
 
   const dial = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     onError(null);
     setDialing(true);
+    const dialed = number;
     api
-      .dialNumber(deviceId, number)
+      .dialNumber(deviceId, dialed)
       .then(() => {
-        setNumber("");
+        // Keep what was typed while the phone was dialing.
+        setNumber((current) => (current === dialed ? "" : current));
       })
       .catch((reason: unknown) => {
         onError(errorMessage(reason));
@@ -48,7 +51,9 @@ export function DialPad({
           Number
         </label>
         <input
+          ref={input}
           id={inputId}
+          maxLength={80}
           className="dial-pad__number"
           type="tel"
           inputMode="tel"
@@ -59,16 +64,17 @@ export function DialPad({
             setNumber(event.target.value);
           }}
         />
-        {number && (
-          <Button
-            variant="ghost"
-            icon={Delete}
-            aria-label="Delete the last digit"
-            onClick={() => {
-              setNumber(number.slice(0, -1));
-            }}
-          />
-        )}
+        <Button
+          variant="ghost"
+          icon={Delete}
+          aria-label="Delete the last digit"
+          disabled={!number}
+          onClick={() => {
+            setNumber(number.slice(0, -1));
+            // The button turns off with the last digit; keep focus in the form.
+            if (number.length <= 1) input.current?.focus();
+          }}
+        />
         <Button type="submit" variant="primary" icon={Phone} disabled={!number.trim() || dialing}>
           Call
         </Button>
@@ -76,7 +82,7 @@ export function DialPad({
       <Keypad
         label="Dial pad"
         onKey={(key) => {
-          setNumber(number + key);
+          setNumber((current) => current + key);
         }}
       />
     </section>

@@ -1,24 +1,67 @@
 import { Bluetooth, BluetoothConnected, Check, X } from "lucide-react";
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 
 import { Badge, Button, Card, Spinner } from "@/components/ui";
 import { useDesktopApi, type BluetoothPairing, type PhoneCalls } from "@/lib/api";
-import { errorMessage } from "@/lib/utils";
 
 import { requestText } from "./copy";
 import { formatDuration, groupCode } from "./format";
 import { useClock } from "./use-clock";
+import { useRun, type OnError } from "./use-run";
 
-type OnError = (message: string | null) => void;
-
-/** Runs a command, and reports its failure instead of throwing. */
-function useRun(onError: OnError) {
-  return (action: () => Promise<void>) => {
-    onError(null);
-    action().catch((reason: unknown) => {
-      onError(errorMessage(reason));
-    });
-  };
+/** The code to compare with the other device's. Its digits are spoken one by one. */
+function PairingPrompt({
+  prompt,
+  closed,
+  busy,
+  onConfirm,
+}: {
+  prompt: NonNullable<BluetoothPairing["prompt"]>;
+  closed: boolean;
+  busy: boolean;
+  onConfirm: (matches: boolean) => void;
+}) {
+  const yes = useRef<HTMLButtonElement>(null);
+  // The prompt appears on its own, so put keyboard users on the decision.
+  useEffect(() => {
+    yes.current?.focus();
+  }, []);
+  return (
+    <div className="pairing-prompt" role="alert">
+      <p className="calls-setup__text">
+        {`${prompt.deviceName || "A device"} wants to pair. Does it show this code?`}
+      </p>
+      <p
+        className="pairing-prompt__code"
+        role="img"
+        aria-label={`Code ${prompt.code.split("").join(" ")}`}
+      >
+        {groupCode(prompt.code)}
+      </p>
+      <div className="calls-setup__actions">
+        <Button
+          ref={yes}
+          variant="primary"
+          icon={Check}
+          disabled={closed || busy}
+          onClick={() => {
+            onConfirm(true);
+          }}
+        >
+          Yes, it matches
+        </Button>
+        <Button
+          icon={X}
+          disabled={closed || busy}
+          onClick={() => {
+            onConfirm(false);
+          }}
+        >
+          No
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /** The pairing window the user opened: what to do on the phone, and the code to confirm. */
@@ -32,10 +75,14 @@ export function PairingCard({
   onError: OnError;
 }) {
   const api = useDesktopApi();
-  const run = useRun(onError);
+  const { run, busy } = useRun(onError);
   const now = useClock();
   const titleId = useId();
   const prompt = pairing.prompt;
+  const remaining = pairing.endsUnixMs - now;
+  // The desktop only accepts a code inside the window, so stop offering it
+  // once the window is over, even before the backend says so.
+  const closed = remaining <= 0;
 
   return (
     <Card className="calls-setup">
@@ -43,47 +90,32 @@ export function PairingCard({
         <h2 id={titleId} className="calls-setup__title">
           {`Pair ${phoneName} over Bluetooth`}
         </h2>
-        <p className="calls-setup__text">
-          {requestText(pairing.phone, phoneName, pairing.adapterName)}
-        </p>
+        {!prompt && (
+          <p className="calls-setup__text">
+            {requestText(pairing.phone, phoneName, pairing.adapterName)}
+          </p>
+        )}
         <ol className="calls-setup__steps">
           <li>{`On ${phoneName}, open Bluetooth settings and pick “${pairing.adapterName}”.`}</li>
           <li>Check that both devices show the same code, and confirm on each.</li>
         </ol>
         {prompt ? (
-          <div className="pairing-prompt" role="alert">
-            <p className="calls-setup__text">
-              {`${prompt.deviceName || "A device"} wants to pair. Does it show this code?`}
-            </p>
-            <p className="pairing-prompt__code" aria-label={`Code ${prompt.code}`}>
-              {groupCode(prompt.code)}
-            </p>
-            <div className="calls-setup__actions">
-              <Button
-                variant="primary"
-                icon={Check}
-                onClick={() => {
-                  run(() => api.confirmBluetoothCode(prompt.id, true));
-                }}
-              >
-                Yes, it matches
-              </Button>
-              <Button
-                icon={X}
-                onClick={() => {
-                  run(() => api.confirmBluetoothCode(prompt.id, false));
-                }}
-              >
-                No
-              </Button>
-            </div>
-          </div>
+          <PairingPrompt
+            prompt={prompt}
+            closed={closed}
+            busy={busy}
+            onConfirm={(matches) => {
+              run(() => api.confirmBluetoothCode(prompt.id, matches));
+            }}
+          />
         ) : (
-          <Spinner label="Waiting for your phone…" />
+          <Spinner label="Waiting for a device to start pairing…" />
         )}
         <div className="calls-setup__actions">
           <span className="calls-setup__hint">
-            {`Pairing stays open for ${formatDuration(pairing.endsUnixMs - now)}.`}
+            {closed
+              ? "The pairing window has closed."
+              : `Pairing stays open for ${formatDuration(remaining)}.`}
           </span>
           <Button
             variant="ghost"
@@ -102,7 +134,7 @@ export function PairingCard({
 /** A phone's Bluetooth link with this computer, and the way to set it up. */
 export function LinkPanel({ phone, onError }: { phone: PhoneCalls; onError: OnError }) {
   const api = useDesktopApi();
-  const run = useRun(onError);
+  const { run, busy } = useRun(onError);
   const titleId = useId();
   const name = phone.phoneName;
   const pair = () => {
@@ -124,7 +156,7 @@ export function LinkPanel({ phone, onError }: { phone: PhoneCalls; onError: OnEr
             speakers. Music and videos keep playing on the phone.
           </p>
           <div className="calls-setup__actions">
-            <Button variant="primary" icon={Bluetooth} onClick={pair}>
+            <Button variant="primary" icon={Bluetooth} disabled={busy} onClick={pair}>
               Pair over Bluetooth
             </Button>
           </div>
@@ -144,6 +176,7 @@ export function LinkPanel({ phone, onError }: { phone: PhoneCalls; onError: OnEr
               <li key={candidate.address}>
                 <Button
                   icon={Bluetooth}
+                  disabled={busy}
                   aria-label={`${candidate.name || candidate.address}, ${candidate.address}`}
                   onClick={() => {
                     run(() => api.chooseBluetoothDevice(phone.deviceId, candidate.address));
@@ -155,7 +188,7 @@ export function LinkPanel({ phone, onError }: { phone: PhoneCalls; onError: OnEr
             ))}
           </ul>
           <div className="calls-setup__actions">
-            <Button variant="ghost" onClick={pair}>
+            <Button variant="ghost" disabled={busy} onClick={pair}>
               It isn't listed: pair it
             </Button>
           </div>
@@ -173,13 +206,14 @@ export function LinkPanel({ phone, onError }: { phone: PhoneCalls; onError: OnEr
             <Button
               variant="primary"
               icon={BluetoothConnected}
+              disabled={busy}
               onClick={() => {
                 run(() => api.connectCalls(phone.deviceId));
               }}
             >
               Connect
             </Button>
-            <Button variant="ghost" onClick={pair}>
+            <Button variant="ghost" disabled={busy} onClick={pair}>
               Pair again
             </Button>
           </div>

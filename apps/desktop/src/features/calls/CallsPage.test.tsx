@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { CallsStatus, CallView, PhoneCalls } from "@/lib/api";
 import { DesktopApiContext } from "@/lib/api";
@@ -136,11 +136,16 @@ describe("CallsPage", () => {
       }),
     );
     const prompt = await screen.findByRole("alert");
-    expect(within(prompt).getByLabelText("Code 482913")).toHaveTextContent("482 913");
+    expect(within(prompt).getByRole("img", { name: "Code 4 8 2 9 1 3" })).toHaveTextContent(
+      "482 913",
+    );
+    expect(screen.getByRole("button", { name: "Yes, it matches" })).toHaveFocus();
+    expect(screen.queryByText(/shows a notification to pair/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "No" }));
     expect(api.confirmBluetoothCode).toHaveBeenLastCalledWith(7, false);
     await user.click(screen.getByRole("button", { name: "Yes, it matches" }));
     expect(api.confirmBluetoothCode).toHaveBeenLastCalledWith(7, true);
+    expect(api.confirmBluetoothCode).toHaveBeenCalledTimes(2);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(api.cancelBluetoothPairing).toHaveBeenCalled();
   });
@@ -275,7 +280,175 @@ describe("CallsPage", () => {
 
     await user.click(screen.getByRole("radio", { name: "Pixel" }));
     expect(screen.getByRole("heading", { name: "Pair Pixel over Bluetooth" })).toBeVisible();
-    expect(screen.queryByRole("region", { name: "Call with Anna Müller" })).not.toBeInTheDocument();
+    // The call stays answerable, labelled with its phone.
+    expect(screen.getByRole("region", { name: "Call with Anna Müller" })).toHaveTextContent(
+      "On Galaxy",
+    );
+  });
+
+  it("shows a call that starts ringing on a phone that isn't selected", async () => {
+    const user = userEvent.setup();
+    const api = renderPage({
+      phones: [
+        phone({ deviceId: "phone-1", phoneName: "Pixel", link: { state: "notPaired" } }),
+        phone({ deviceId: "phone-2", phoneName: "Galaxy" }),
+      ],
+    });
+    // Picking a phone is what keeps it selected.
+    await user.click(await screen.findByRole("radio", { name: "Galaxy" }));
+    await user.click(screen.getByRole("radio", { name: "Pixel" }));
+    api.emitCalls(
+      testCallsStatus({
+        phones: [
+          phone({ deviceId: "phone-1", phoneName: "Pixel", link: { state: "notPaired" } }),
+          phone({ deviceId: "phone-2", phoneName: "Galaxy", calls: [demoCall()] }),
+        ],
+      }),
+    );
+    const call = await screen.findByRole("region", { name: "Call with Anna Müller" });
+    expect(call).toHaveTextContent("On Galaxy");
+    expect(screen.getByRole("heading", { name: "Pair Pixel over Bluetooth" })).toBeVisible();
+    await user.click(within(call).getByRole("button", { name: "Answer" }));
+    expect(api.answerCall).toHaveBeenCalledWith("phone-2", "bt:/ag0/call1");
+    expect(screen.getByText("Incoming call from Anna Müller on Galaxy")).toBeInTheDocument();
+  });
+
+  it("shows why turning calls on failed when no phone is paired", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.setSettings.mockRejectedValueOnce(new Error("Couldn't save settings"));
+    renderPage({ desktop: "disabled", enabled: false, phones: [] }, api);
+    await user.click(await screen.findByRole("button", { name: "Turn on calls" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save settings");
+  });
+
+  it("sends an answer once however often the button is clicked", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    let finish: () => void = () => undefined;
+    api.answerCall.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    renderPage({ phones: [phone({ calls: [demoCall()] })] }, api);
+    const answer = await screen.findByRole("button", { name: "Answer" });
+    await user.dblClick(answer);
+    expect(api.answerCall).toHaveBeenCalledTimes(1);
+    expect(answer).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Decline" })).toBeDisabled();
+    await act(async () => {
+      finish();
+      await Promise.resolve();
+    });
+    expect(answer).toBeEnabled();
+  });
+
+  it("keeps focus in the call when the button used goes away", async () => {
+    const user = userEvent.setup();
+    const api = renderPage({ phones: [phone({ calls: [demoCall()] })] });
+    const answer = await screen.findByRole("button", { name: "Answer" });
+    await user.click(answer);
+    api.emitCalls(testCallsStatus({ phones: [phone({ calls: [active()] })] }));
+    const call = await screen.findByRole("region", { name: "Call with Anna Müller" });
+    await screen.findByRole("button", { name: "Hang up" });
+    expect(call).toHaveFocus();
+  });
+
+  it("sends keypad tones in the order they were tapped", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    let finish: () => void = () => undefined;
+    api.sendCallTones.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    renderPage({ phones: [phone({ calls: [active()] })] }, api);
+    await user.click(await screen.findByRole("button", { name: "Keypad" }));
+    const keys = screen.getByRole("group", { name: "Keypad" });
+    await user.click(within(keys).getByRole("button", { name: "1" }));
+    await user.click(within(keys).getByRole("button", { name: "2" }));
+    expect(api.sendCallTones.mock.calls).toEqual([["phone-1", "1"]]);
+    await act(async () => {
+      finish();
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(api.sendCallTones.mock.calls).toEqual([
+        ["phone-1", "1"],
+        ["phone-1", "2"],
+      ]);
+    });
+  });
+
+  it("drops an error when another phone is shown", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    api.connectCalls.mockRejectedValueOnce(new Error("Nope"));
+    renderPage(
+      {
+        phones: [
+          phone({
+            deviceId: "phone-1",
+            phoneName: "Pixel",
+            link: { state: "disconnected", device: pixelDevice },
+          }),
+          phone({ deviceId: "phone-2", phoneName: "Galaxy" }),
+        ],
+      },
+      api,
+    );
+    await user.click(await screen.findByRole("button", { name: "Connect" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Nope");
+    await user.click(screen.getByRole("radio", { name: "Galaxy" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("stops offering the pairing code once the window is over", async () => {
+    renderPage({
+      pairing: {
+        deviceId: "phone-1",
+        adapterName: "Desk",
+        adapterAddress: "A0:B1:C2:D3:E4:F5",
+        endsUnixMs: Date.now() - 1_000,
+        phone: "asked",
+        prompt: { id: 7, deviceName: "Pixel", code: "482913" },
+      },
+      phones: [phone({ link: { state: "notPaired" } })],
+    });
+    expect(await screen.findByText("The pairing window has closed.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Yes, it matches" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "No" })).toBeDisabled();
+  });
+
+  it("keeps the dial pad's delete button and focus when the number empties", async () => {
+    const user = userEvent.setup();
+    renderPage({ phones: [phone()] });
+    const number = await screen.findByRole("textbox", { name: "Number" });
+    expect(number).toHaveAttribute("maxlength", "80");
+    const del = screen.getByRole("button", { name: "Delete the last digit" });
+    expect(del).toBeDisabled();
+    await user.type(number, "7");
+    await user.click(del);
+    expect(number).toHaveValue("");
+    expect(number).toHaveFocus();
+    expect(del).toBeDisabled();
+  });
+
+  it("advances the timer of an active call", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderPage({ phones: [phone({ calls: [active({ activeSinceUnixMs: Date.now() })] })] });
+      const call = await screen.findByRole("region", { name: "Call with Anna Müller" });
+      expect(call).toHaveTextContent("0:00");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(call).toHaveTextContent("0:05");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports a problem with the phone's calls", async () => {
