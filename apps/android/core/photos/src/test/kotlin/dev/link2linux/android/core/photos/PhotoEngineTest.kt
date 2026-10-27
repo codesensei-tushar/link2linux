@@ -343,6 +343,35 @@ class PhotoEngineTest {
     }
 
     @Test
+    fun aStaleSharedListDoesNotReplaceTheReply() = runTest {
+        val engine = engine()
+        subscribe(engine, PhotoDesktop())
+        // The shared flow keeps the list it loaded. The library moves on
+        // without telling it, as when the user picks other photos.
+        library.publishChanges = false
+        library.photos.value = listOf(photo("c", taken = 3))
+        val desktop = PhotoDesktop()
+        val sent = subscribe(engine, desktop)
+
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertEquals(emptyList<Pair<Long, List<String>>>(), sent)
+        assertTrue(engine.thumbnail(desktop, "c") is PhotoAnswer.Thumbnail)
+        assertEquals(ErrorCode.ERROR_CODE_NOT_FOUND, code(engine.thumbnail(desktop, "b")))
+
+        library.photos.value = listOf(photo("d", taken = 4))
+        engine.refresh()
+        runCurrent()
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertEquals(listOf(10_000L to listOf("d")), sent)
+        assertTrue(engine.thumbnail(desktop, "d") is PhotoAnswer.Thumbnail)
+        assertEquals(ErrorCode.ERROR_CODE_NOT_FOUND, code(engine.thumbnail(desktop, "c")))
+    }
+
+    @Test
     fun aNewVersionOfAPhotoIsAChange() = runTest {
         val engine = engine()
         val sent = subscribe(engine, PhotoDesktop())

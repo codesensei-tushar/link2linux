@@ -53,4 +53,12 @@ object PhotoPermissions {
         access == PhotoAccess.NONE -> PhotoAvailability.PERMISSION_REQUIRED
         else -> PhotoAvailability.READY
     }
+
+    /**
+     * Whether reading the permission again should reload the list. The user
+     * can pick other photos while access stays [PhotoAccess.SELECTED], and
+     * MediaStore does not report that. With no access there is nothing to load.
+     */
+    internal fun reloadsList(before: PhotoAccess, after: PhotoAccess): Boolean =
+        before != after || after != PhotoAccess.NONE
 }

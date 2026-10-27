@@ -85,6 +85,7 @@ class PhotoSessionTest {
         }
 
         override suspend fun read(photo: Photo, offset: Long, maxBytes: Int): PhotoBytes {
+            gate?.await()
             val from = minOf(offset, file.size.toLong()).toInt()
             val to = minOf(file.size.toLong(), offset + maxBytes).toInt().coerceAtLeast(from)
             return PhotoBytes(file.size.toLong(), 5, file.copyOfRange(from, to))
@@ -181,6 +182,14 @@ class PhotoSessionTest {
     private suspend fun DesktopPeer.requestThumbnail(id: String): Envelope = io {
         val request = sendThumbnailRequest(id)
         read()!!.also { assertEquals(request, it.replyTo) }
+    }
+
+    private fun DesktopPeer.sendDataRequest(id: String): Long = send {
+        expectsReply = true
+        photoDataRequest = photoDataRequest {
+            this.id = id
+            offset = 0
+        }
     }
 
     private fun DesktopPeer.sendThumbnailRequest(id: String): Long = send {
@@ -324,13 +333,31 @@ class PhotoSessionTest {
 
         val sent = io { (1..20).map { peer.sendThumbnailRequest("a") } }
         // The extra requests are answered at once; the others wait for the gate.
-        val busy = io { (1..10).map { peer.read()!! } }
+        val busy = io { (1..12).map { peer.read()!! } }
         assertTrue(busy.all { it.errorReply.code == ErrorCode.ERROR_CODE_BUSY && it.errorReply.retryAfterMs > 0 })
         gate.complete(Unit)
-        val answers = busy + io { (1..10).map { peer.read()!! } }
+        val answers = busy + io { (1..8).map { peer.read()!! } }
 
         assertEquals(sent.toSet(), answers.map { it.replyTo }.toSet())
-        assertEquals(10, answers.count { it.payloadCase == PayloadCase.PHOTO_THUMBNAIL })
+        assertEquals(PhotoSessionHooks.MAX_THUMBNAILS_WAITING, answers.count { it.payloadCase == PayloadCase.PHOTO_THUMBNAIL })
+    }
+
+    @Test
+    fun aDesktopWithTooManyDataReadsGetsBusy() = runBlocking {
+        val peer = connect()
+        peer.readStart()
+        peer.requestList()
+        val gate = CompletableDeferred<Unit>()
+        library.gate = gate
+
+        val sent = io { (1..8).map { peer.sendDataRequest("a") } }
+        val busy = io { (1..4).map { peer.read()!! } }
+        assertTrue(busy.all { it.errorReply.code == ErrorCode.ERROR_CODE_BUSY && it.errorReply.retryAfterMs > 0 })
+        gate.complete(Unit)
+        val answers = busy + io { (1..4).map { peer.read()!! } }
+
+        assertEquals(sent.toSet(), answers.map { it.replyTo }.toSet())
+        assertEquals(PhotoSessionHooks.MAX_DATA_WAITING, answers.count { it.payloadCase == PayloadCase.PHOTO_DATA })
     }
 
     @Test

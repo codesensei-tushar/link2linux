@@ -6,7 +6,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.map
 
 /** A photo as a test lists it: taken at [taken], one per id. */
 fun photo(id: String, taken: Long = 0, name: String = "$id.jpg", modified: Long = taken): Photo = photo {
@@ -39,6 +38,12 @@ class FakeLibrary(first: List<Photo>) : PhotoLibrary {
     var listeners = 0
     var loads = 0
 
+    /**
+     * While false, a change of [photos] does not wake [changes]. The list a
+     * subscriber already holds can then be older than what [photos] returns.
+     */
+    var publishChanges = true
+
     /** Thrown by [photos] while set. */
     var failure: Exception? = null
 
@@ -52,7 +57,7 @@ class FakeLibrary(first: List<Photo>) : PhotoLibrary {
     override fun changes(): Flow<Unit> = flow {
         listeners++
         try {
-            photos.map { }.collect { emit(Unit) }
+            photos.collect { if (publishChanges) emit(Unit) }
         } finally {
             listeners--
         }

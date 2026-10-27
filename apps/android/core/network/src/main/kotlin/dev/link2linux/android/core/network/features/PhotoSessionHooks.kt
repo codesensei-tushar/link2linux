@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Connects the photos engine to sessions with paired desktops
@@ -64,6 +65,8 @@ class PhotoSessionHooks(
         val job: Job,
         val thumbnails: Channel<Envelope>,
         val data: Channel<Envelope>,
+        val thumbnailsInFlight: AtomicInteger,
+        val dataInFlight: AtomicInteger,
     ) {
         var follower: Job? = null // guarded by the hooks' lock
     }
@@ -80,9 +83,16 @@ class PhotoSessionHooks(
     override suspend fun onEstablished(desktop: PairedDevice, session: Session) {
         if (!isActive(session)) return
         val job = SupervisorJob(scope.coroutineContext[Job])
-        val ours = Attached(PhotoDesktop(), job, Channel(MAX_THUMBNAILS_WAITING), Channel(MAX_DATA_WAITING))
+        val ours = Attached(
+            PhotoDesktop(),
+            job,
+            Channel(MAX_THUMBNAILS_WAITING),
+            Channel(MAX_DATA_WAITING),
+            AtomicInteger(),
+            AtomicInteger(),
+        )
         repeat(THUMBNAIL_WORKERS) { scope.launch(job) { for (request in ours.thumbnails) answer(ours, session, request) } }
-        scope.launch(job) { for (request in ours.data) answer(ours, session, request) }
+        repeat(DATA_WORKERS) { scope.launch(job) { for (request in ours.data) answer(ours, session, request) } }
         lock.withLock { attached[session] = ours }
     }
 
@@ -102,8 +112,9 @@ class PhotoSessionHooks(
         val ours = lock.withLock { attached[session] } ?: return true
         when (envelope.payloadCase) {
             PayloadCase.PHOTO_LIST_REQUEST -> follow(ours, session, envelope.seq)
-            PayloadCase.PHOTO_THUMBNAIL_REQUEST -> queue(ours.thumbnails, session, envelope)
-            else -> queue(ours.data, session, envelope)
+            PayloadCase.PHOTO_THUMBNAIL_REQUEST ->
+                queue(ours.thumbnails, ours.thumbnailsInFlight, MAX_THUMBNAILS_WAITING, session, envelope)
+            else -> queue(ours.data, ours.dataInFlight, MAX_DATA_WAITING, session, envelope)
         }
         return true
     }
@@ -149,27 +160,38 @@ class PhotoSessionHooks(
         ours.desktop.forget()
     }
 
-    /** Hands [envelope] to a worker, or answers `BUSY` when the desktop already has too many waiting. */
-    private fun queue(requests: Channel<Envelope>, session: Session, envelope: Envelope) {
-        if (requests.trySend(envelope).isSuccess) return
-        // Posted: the reader never waits for a write.
-        session.post {
-            replyTo = envelope.seq
-            errorReply = errorReply {
-                code = ErrorCode.ERROR_CODE_BUSY
-                detail = "Too many photo requests wait for their answers"
-                retryAfterMs = PhotoEngine.BUSY_RETRY_MILLIS.toInt()
+    /**
+     * Hands [envelope] to a worker, or answers `BUSY` when the desktop already
+     * has [max] without an answer. Requests a worker has taken still count:
+     * the queue alone does not, since it no longer holds them.
+     */
+    private fun queue(requests: Channel<Envelope>, inFlight: AtomicInteger, max: Int, session: Session, envelope: Envelope) {
+        if (inFlight.incrementAndGet() > max || requests.trySend(envelope).isFailure) {
+            inFlight.decrementAndGet()
+            // Posted: the reader never waits for a write.
+            session.post {
+                replyTo = envelope.seq
+                errorReply = errorReply {
+                    code = ErrorCode.ERROR_CODE_BUSY
+                    detail = "Too many photo requests wait for their answers"
+                    retryAfterMs = PhotoEngine.BUSY_RETRY_MILLIS.toInt()
+                }
             }
         }
     }
 
     /** Answers a thumbnail or data request; runs on one of the session's workers. */
     private suspend fun answer(ours: Attached, session: Session, envelope: Envelope) {
-        val answer = when (envelope.payloadCase) {
-            PayloadCase.PHOTO_THUMBNAIL_REQUEST -> engine.thumbnail(ours.desktop, envelope.photoThumbnailRequest)
-            else -> engine.data(ours.desktop, envelope.photoDataRequest)
+        val inFlight = if (envelope.payloadCase == PayloadCase.PHOTO_THUMBNAIL_REQUEST) {
+            ours.thumbnailsInFlight
+        } else {
+            ours.dataInFlight
         }
         try {
+            val answer = when (envelope.payloadCase) {
+                PayloadCase.PHOTO_THUMBNAIL_REQUEST -> engine.thumbnail(ours.desktop, envelope.photoThumbnailRequest)
+                else -> engine.data(ours.desktop, envelope.photoDataRequest)
+            }
             session.send {
                 replyTo = envelope.seq
                 when (answer) {
@@ -181,6 +203,8 @@ class PhotoSessionHooks(
             }
         } catch (_: IOException) {
             // The connection failed; the session ends with it, and the workers with the session.
+        } finally {
+            inFlight.decrementAndGet()
         }
     }
 
@@ -209,5 +233,8 @@ class PhotoSessionHooks(
 
         /** Thumbnails of one session made at once, so a large preview does not hold up the grid. */
         const val THUMBNAIL_WORKERS = 2
+
+        /** One photo's bytes at a time per session: a read is up to 256 KiB and the desktop sends few. */
+        const val DATA_WORKERS = 1
     }
 }
