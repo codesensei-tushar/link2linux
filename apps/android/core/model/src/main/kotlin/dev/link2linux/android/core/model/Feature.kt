@@ -17,6 +17,7 @@ enum class Feature(val wireName: String) {
     FILES("files"),
     CLIPBOARD("clipboard"),
     SCREEN("screen"),
+    STATUS("status"),
     ;
 
     /**
@@ -30,10 +31,11 @@ enum class Feature(val wireName: String) {
      * Whether the feature is on until the user turns it off. Most features
      * share what is on the phone, so they are opt-in: off until the user
      * turns them on, and only then ask for their Android permissions. Calls
-     * share nothing by themselves and need no permission, so they start on.
+     * and phone status share nothing by themselves and need no permission,
+     * so they start on.
      */
     val isOnByDefault: Boolean
-        get() = this == CALLS
+        get() = this == CALLS || this == STATUS
 
     companion object {
         /** The features a user can turn on and off, each on its own screen. */

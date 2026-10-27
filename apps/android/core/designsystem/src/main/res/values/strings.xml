@@ -9,6 +9,7 @@
     <string name="feature_title_files">Files</string>
     <string name="feature_title_clipboard">Clipboard</string>
     <string name="feature_title_screen">Screen</string>
+    <string name="feature_title_status">Phone status</string>
 
     <string name="feature_summary_pairing">Connect this phone to a computer you trust.</string>
     <string name="feature_summary_notifications">See your phone\'s notifications on your computer.</string>
@@ -17,6 +18,7 @@
     <string name="feature_summary_files">Send files between your phone and your computer.</string>
     <string name="feature_summary_clipboard">Copy on one device and paste on the other.</string>
     <string name="feature_summary_screen">Show your phone\'s screen on your computer and use its apps there.</string>
+    <string name="feature_summary_status">See your phone\'s battery, signal and sound mode on your computer.</string>
 
     <string name="feature_placeholder_title">Not available yet</string>
     <string name="feature_placeholder_body">Once it is ready, this feature stays off until you turn it on here. link2linux asks for the Android permissions it needs at that moment, not before.</string>

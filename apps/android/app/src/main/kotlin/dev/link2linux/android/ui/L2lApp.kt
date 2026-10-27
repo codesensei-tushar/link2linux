@@ -24,6 +24,8 @@ import dev.link2linux.android.feature.photos.PhotosRoute
 import dev.link2linux.android.feature.photos.photosEntry
 import dev.link2linux.android.feature.screen.ScreenRoute
 import dev.link2linux.android.feature.screen.screenEntry
+import dev.link2linux.android.feature.status.StatusRoute
+import dev.link2linux.android.feature.status.statusEntry
 
 /** The route that opens each feature the user can turn on and off, in the order the features are listed. */
 internal val featureRoutes: Map<Feature, NavKey> = linkedMapOf(
@@ -33,6 +35,7 @@ internal val featureRoutes: Map<Feature, NavKey> = linkedMapOf(
     Feature.FILES to FilesRoute,
     Feature.CLIPBOARD to ClipboardRoute,
     Feature.SCREEN to ScreenRoute,
+    Feature.STATUS to StatusRoute,
 )
 
 /** Root of the UI: one back stack of feature routes, starting at pairing. */
@@ -61,6 +64,7 @@ fun L2lApp(modifier: Modifier = Modifier) {
             filesEntry(onBack = goBack)
             clipboardEntry(onBack = goBack)
             screenEntry(onBack = goBack)
+            statusEntry(onBack = goBack)
         },
     )
 }

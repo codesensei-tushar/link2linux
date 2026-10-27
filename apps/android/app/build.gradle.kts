@@ -27,6 +27,7 @@ dependencies {
     implementation(projects.feature.pairing)
     implementation(projects.feature.photos)
     implementation(projects.feature.screen)
+    implementation(projects.feature.status)
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
