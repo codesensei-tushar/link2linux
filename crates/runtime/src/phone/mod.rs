@@ -21,6 +21,7 @@ pub use dto::{PhoneStatus, RingStatus};
 
 use crate::link::lock;
 use crate::notify::PhoneSession;
+use crate::photos::SavedPhotos;
 use crate::photos::dto::PhonePhotos;
 use crate::screen::ScreenStatus;
 use crate::view::EventSink;
@@ -46,6 +47,9 @@ struct Board {
     ring: RingStatus,
     screen: ScreenStatus,
     photos: PhonePhotos,
+    /// Bumps whenever `photos` is replaced, so a save can be written onto
+    /// the list it was read from and not onto a newer one.
+    generation: u64,
 }
 
 /// What the UI shows of every paired phone's status and ringing, and the
@@ -56,17 +60,55 @@ pub struct PhoneBoards {
     shown: AtomicBool,
     boards: Mutex<HashMap<String, Board>>,
     next_owner: AtomicU64,
+    /// Photos saved during this run. Shared with the runtime, which records
+    /// a save, then [`Self::note_saved`] puts it on the list the page reads.
+    saved: Arc<SavedPhotos>,
 }
 
 impl PhoneBoards {
     /// Boards that report to `events`, with the status shown when `shown`.
     #[must_use]
     pub fn new(events: Arc<dyn EventSink>, shown: bool) -> Self {
+        Self::with_saved(events, shown, Arc::new(SavedPhotos::default()))
+    }
+
+    /// As [`Self::new`], remembering saves in `saved`.
+    #[must_use]
+    pub fn with_saved(events: Arc<dyn EventSink>, shown: bool, saved: Arc<SavedPhotos>) -> Self {
         Self {
             events,
             shown: AtomicBool::new(shown),
             boards: Mutex::default(),
             next_owner: AtomicU64::new(0),
+            saved,
+        }
+    }
+
+    /// The list of phone `id` gained a save. Puts it on the snapshot the
+    /// page reads, unless a newer list has replaced that one.
+    pub fn note_saved(&self, id: &str) {
+        for _ in 0..4 {
+            let (mut photos, generation) = {
+                let boards = lock(&self.boards);
+                let Some(board) = boards.get(id) else {
+                    return;
+                };
+                (board.photos.clone(), board.generation)
+            };
+            self.saved.apply(id, &mut photos);
+            let mut boards = lock(&self.boards);
+            let Some(board) = boards.get_mut(id) else {
+                return;
+            };
+            if board.generation != generation {
+                continue;
+            }
+            if board.photos != photos {
+                board.photos = photos.clone();
+                board.generation = board.generation.wrapping_add(1);
+                self.events.photos_changed(id, &board.photos);
+            }
+            return;
         }
     }
 
@@ -195,14 +237,17 @@ impl PhoneBoard {
         }
     }
 
-    /// Records the phone's photos, and reports them if they changed.
-    pub(crate) fn set_photos(&self, photos: PhonePhotos) {
+    /// Records the phone's photos, and reports them if they changed. A photo
+    /// this run already saved keeps that mark on the new list.
+    pub(crate) fn set_photos(&self, mut photos: PhonePhotos) {
+        self.boards.saved.apply(&self.device_id, &mut photos);
         let mut boards = lock(&self.boards.boards);
         if let Some(board) = boards.get_mut(&self.device_id)
             && board.owner == self.owner
             && board.photos != photos
         {
             board.photos = photos;
+            board.generation = board.generation.wrapping_add(1);
             self.boards
                 .events
                 .photos_changed(&self.device_id, &board.photos);

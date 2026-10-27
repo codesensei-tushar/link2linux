@@ -89,7 +89,7 @@ export interface PhotoViewerProps {
   /** The photos the viewer steps through, newest first. */
   photos: Photo[];
   photo: Photo;
-  /** What the user saved this photo as, while the page is open. */
+  /** What this version was saved as during this run of the app. */
   saved: SavedPhoto | undefined;
   onSaved: (photo: Photo, saved: SavedPhoto) => void;
   /** Shows another photo instead. */
@@ -236,7 +236,7 @@ export function PhotoViewer({
             {saved && (
               <>
                 <CircleCheck aria-hidden="true" />
-                {`Saved as ${saved.name}`}
+                {`Saved as ${saved.name} in ${saved.folder}`}
               </>
             )}
           </p>

@@ -218,8 +218,9 @@ pub(crate) struct Core {
     pub phone: Arc<PhoneBoards>,
     /// The phones' calls through this desktop's Bluetooth.
     pub calls: Arc<Calls>,
-    /// Where the user saved the phones' photos.
-    pub saved_photos: SavedPhotos,
+    /// Where the user saved the phones' photos. The phone boards share it,
+    /// so a list they publish still says which photos were saved.
+    pub saved_photos: Arc<SavedPhotos>,
     /// How many device tasks, and the task following calls, are still
     /// running, for a shutdown that waits for them to clean up.
     pub supervisors: AtomicUsize,
@@ -262,9 +263,11 @@ impl Core {
             &config.data_dir.files_lock(),
         );
         let (keys, _) = watch::channel(DiscoveryKeys::default());
-        let phone = Arc::new(PhoneBoards::new(
+        let saved_photos = Arc::new(SavedPhotos::default());
+        let phone = Arc::new(PhoneBoards::with_saved(
             shell.events.clone(),
             config.show_phone_status,
+            saved_photos.clone(),
         ));
         let core = Arc::new(Self {
             handle,
@@ -302,7 +305,7 @@ impl Core {
                 config.calls,
                 config.data_dir.root().join("calls.json"),
             )),
-            saved_photos: SavedPhotos::default(),
+            saved_photos,
             supervisors: AtomicUsize::new(0),
         });
         // Following the hub before any phone's service can report.

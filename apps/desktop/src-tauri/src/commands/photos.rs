@@ -62,7 +62,8 @@ pub async fn photo_thumbnail(
 }
 
 /// Fetches a phone's photo and saves it in the user's Pictures folder,
-/// under a free name. Resolves with the name it got.
+/// under a free name. Resolves with the name it got and the folder it went
+/// into. Saving the same version again keeps the file already written.
 #[tauri::command]
 #[specta::specta]
 pub async fn save_photo(

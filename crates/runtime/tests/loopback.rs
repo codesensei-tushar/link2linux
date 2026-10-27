@@ -3351,12 +3351,33 @@ async fn the_photos_page_shows_the_phones_photos_and_saves_one() {
         .unwrap();
     let saved = within(saved).await.unwrap().unwrap();
     assert_eq!(saved.name, "IMG_7 (1).jpg");
+    assert_eq!(saved.folder, "Downloads");
     let path = rig.files.downloads.join("IMG_7 (1).jpg");
     assert_eq!(std::fs::read(&path).unwrap(), b"bytes");
     assert_eq!(
         std::fs::read(rig.files.downloads.join("IMG_7.jpg")).unwrap(),
         b"theirs"
     );
+    let shown = rig.runtime.photos(&id).unwrap();
+    assert_eq!(
+        shown.photos[0]
+            .saved
+            .as_ref()
+            .map(|saved| saved.name.as_str()),
+        Some("IMG_7 (1).jpg")
+    );
+
+    // The same version is already on disk: saving again fetches nothing
+    // and writes nothing further.
+    let again = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        rig.runtime.save_photo(&id, "7"),
+    )
+    .await
+    .expect("saving a photo that was already saved")
+    .unwrap();
+    assert_eq!(again, saved);
+    assert!(!rig.files.downloads.join("IMG_7 (2).jpg").exists());
 
     // The shell opens it by its id, and only a photo the user saved.
     rig.runtime.open_saved_photo(&id, "7").unwrap();

@@ -202,10 +202,14 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     return { ...ring, blocked };
   };
   const photos = demoPhotos(now);
+  const savedPhotos = new Map<string, { name: string; folder: string }>();
   const photosOf = (deviceId: string): PhonePhotos => {
     if (!isConnected(deviceId)) return { state: "disconnected", photos: [] };
     if (scenario === "photos-permission") return { state: "permissionRequired", photos: [] };
-    return { state: "listed", photos };
+    return {
+      state: "listed",
+      photos: photos.map((photo) => ({ ...photo, saved: savedPhotos.get(photo.id) ?? null })),
+    };
   };
   const photo = (photoId: string) => {
     const found = photos.find((p) => p.id === photoId);
@@ -505,7 +509,12 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     listPhotos: (deviceId) => Promise.resolve(photosOf(deviceId)),
     onPhotosChanged: () => Promise.resolve(() => undefined),
     photoThumbnail: (_deviceId, photoId) => photo(photoId).then(demoThumbnail),
-    savePhoto: (_deviceId, photoId) => photo(photoId).then(({ name }) => ({ name })),
+    savePhoto: (_deviceId, photoId) =>
+      photo(photoId).then(({ name }) => {
+        const saved = savedPhotos.get(photoId) ?? { name, folder: "Pictures" };
+        savedPhotos.set(photoId, saved);
+        return saved;
+      }),
     openSavedPhoto: () => Promise.resolve(),
     showSavedPhoto: () => Promise.resolve(),
     getSettings: () => Promise.resolve(settings),

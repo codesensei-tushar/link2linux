@@ -145,29 +145,114 @@ impl PhotosDriver {
     }
 }
 
-/// Where the user saved which photo, by phone and photo id, for as long as
-/// the app runs.
+/// One saved photo: where it is, and what the page says about it.
+#[derive(Debug, Clone)]
+struct SavedRecord {
+    path: PathBuf,
+    saved: dto::SavedPhoto,
+}
+
+/// Where the user saved which version of which photo, for as long as the
+/// app runs. A version is the photo's id together with its
+/// `modified_unix_ms`: a newer version is a different photo to save.
 #[derive(Debug, Default)]
 pub struct SavedPhotos {
-    saved: Mutex<HashMap<(String, String), PathBuf>>,
+    saved: Mutex<HashMap<(String, String, i64), SavedRecord>>,
 }
 
 impl SavedPhotos {
-    /// Notes that photo `photo_id` of phone `device_id` was saved at `path`.
-    pub fn insert(&self, device_id: &str, photo_id: &str, path: PathBuf) {
-        lock(&self.saved).insert((device_id.to_owned(), photo_id.to_owned()), path);
+    /// Notes that version `modified_unix_ms` of photo `photo_id` on phone
+    /// `device_id` was saved at `path`, under `name` in `folder`.
+    pub fn insert(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+        modified_unix_ms: i64,
+        path: PathBuf,
+        name: &str,
+        folder: &str,
+    ) {
+        lock(&self.saved).insert(
+            (device_id.to_owned(), photo_id.to_owned(), modified_unix_ms),
+            SavedRecord {
+                path,
+                saved: dto::SavedPhoto {
+                    name: name.to_owned(),
+                    folder: folder.to_owned(),
+                },
+            },
+        );
     }
 
-    /// Where photo `photo_id` of phone `device_id` was saved last.
+    /// The save of that version, when the file is still there. A file that
+    /// has gone is forgotten, so saving the photo writes it again.
     #[must_use]
-    pub fn get(&self, device_id: &str, photo_id: &str) -> Option<PathBuf> {
+    pub fn reusable(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+        modified_unix_ms: i64,
+    ) -> Option<dto::SavedPhoto> {
+        let key = (device_id.to_owned(), photo_id.to_owned(), modified_unix_ms);
+        let mut saved = lock(&self.saved);
+        let record = saved.get(&key)?;
+        if record.path.is_file() {
+            return Some(record.saved.clone());
+        }
+        saved.remove(&key);
+        None
+    }
+
+    /// Where that version was saved, when this run saved it.
+    #[must_use]
+    pub fn path(&self, device_id: &str, photo_id: &str, modified_unix_ms: i64) -> Option<PathBuf> {
         lock(&self.saved)
-            .get(&(device_id.to_owned(), photo_id.to_owned()))
-            .cloned()
+            .get(&(device_id.to_owned(), photo_id.to_owned(), modified_unix_ms))
+            .map(|record| record.path.clone())
+    }
+
+    /// Marks the photos in `photos` that this run saved.
+    pub fn apply(&self, device_id: &str, photos: &mut dto::PhonePhotos) {
+        let saved = lock(&self.saved);
+        for photo in &mut photos.photos {
+            photo.saved = saved
+                .get(&(
+                    device_id.to_owned(),
+                    photo.id.clone(),
+                    photo.modified_unix_ms,
+                ))
+                .map(|record| record.saved.clone());
+        }
     }
 
     /// Forgets phone `device_id`, which is no longer paired.
     pub fn forget(&self, device_id: &str) {
-        lock(&self.saved).retain(|(device, _), _| device != device_id);
+        lock(&self.saved).retain(|(device, _, _), _| device != device_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_save_is_remembered_for_that_version_of_the_photo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("IMG_7 (1).jpg");
+        std::fs::write(&path, b"bytes").unwrap();
+        let saved = SavedPhotos::default();
+        saved.insert("phone", "7", 9, path.clone(), "IMG_7 (1).jpg", "Pictures");
+
+        let found = saved.reusable("phone", "7", 9).unwrap();
+        assert_eq!(found.name, "IMG_7 (1).jpg");
+        assert_eq!(found.folder, "Pictures");
+        assert!(saved.reusable("phone", "7", 10).is_none());
+        assert_eq!(saved.path("phone", "7", 9).unwrap(), path);
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(saved.reusable("phone", "7", 9).is_none());
+        saved.insert("phone", "7", 9, path, "IMG_7 (1).jpg", "Downloads");
+        saved.forget("phone");
+        assert!(saved.path("phone", "7", 9).is_none());
     }
 }

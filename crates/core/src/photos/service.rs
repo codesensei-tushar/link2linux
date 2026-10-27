@@ -58,6 +58,9 @@ struct WantedThumbnail {
 struct Fetch {
     id: String,
     name: String,
+    /// The listed photo's `modified_unix_ms`. A new value means what was
+    /// fetched belongs to the previous version.
+    modified: i64,
     /// The file's size and modified time, from the first answer.
     file: Option<(u64, i64)>,
     data: Vec<u8>,
@@ -266,10 +269,15 @@ impl PhotoService {
             } => {
                 if self.following {
                     self.set_list(&changed.photos);
-                    // The subscription works after all.
+                    // The subscription works after all, including when the
+                    // list request itself timed out and its late reply was
+                    // no longer the one this service waited for. The change
+                    // is the list.
                     self.retry_at = None;
                     self.failures = 0;
+                    self.state = PhotosState::Listed;
                     tracing::trace!(photos = self.photos.len(), "the phone's photos changed");
+                    self.pump(session, Instant::now())?;
                 } else {
                     tracing::debug!("ignoring a photo list the desktop did not ask for");
                 }
@@ -352,8 +360,8 @@ impl PhotoService {
             Ok(photo) if photo.size > MAX_PHOTO_BYTES => Err(PhotoError::TooLarge),
             listed => listed,
         };
-        let (id, name) = match photo {
-            Ok(photo) => (photo.id.clone(), photo.name.clone()),
+        let (id, name, modified) = match photo {
+            Ok(photo) => (photo.id.clone(), photo.name.clone(), photo.modified_unix_ms),
             Err(error) => {
                 drop(waiter.send(Err(error)));
                 return Ok(());
@@ -366,6 +374,7 @@ impl PhotoService {
         self.fetches.push(Fetch {
             id,
             name,
+            modified,
             file: None,
             data: Vec::new(),
             next: 0,
@@ -525,7 +534,9 @@ impl PhotoService {
 
     /// Takes the phone's new list: photos whose id breaks the rules are
     /// left out, as is any id after its first. Thumbnails of photos no
-    /// longer listed, or of an older version, go.
+    /// longer listed, or of an older version, go. A fetch of a photo that
+    /// left the list fails, and a fetch of a photo whose version changed
+    /// drops what it already holds and starts again from offset 0.
     fn set_list(&mut self, photos: &[wire::Photo]) {
         let mut ids = HashSet::new();
         self.photos = photos
@@ -541,6 +552,22 @@ impl PhotoService {
             .collect();
         self.cache
             .retain(|key| versions.contains(&(key.id.as_str(), key.modified_unix_ms)));
+        let mut gone = Vec::new();
+        for fetch in &mut self.fetches {
+            match self.photos.iter().find(|photo| photo.id == fetch.id) {
+                None => gone.push(fetch.id.clone()),
+                Some(photo) if photo.modified_unix_ms != fetch.modified => {
+                    fetch.name.clone_from(&photo.name);
+                    fetch.modified = photo.modified_unix_ms;
+                    fetch.restarted = false;
+                    fetch.reset_transfer();
+                }
+                Some(photo) => fetch.name.clone_from(&photo.name),
+            }
+        }
+        for id in gone {
+            self.fail_fetch(&id, PhotoError::NotFound);
+        }
     }
 
     fn thumbnail_answered(&mut self, wanted: WantedThumbnail, answer: Result<Payload, ErrorReply>) {
@@ -623,6 +650,14 @@ impl PhotoService {
         {
             let fetch = self.fetches.remove(index);
             answer_all(fetch.waiters, &result);
+        }
+    }
+
+    /// Ends the fetch of `id`, whichever start it is on.
+    fn fail_fetch(&mut self, id: &str, error: PhotoError) {
+        if let Some(index) = self.fetches.iter().position(|fetch| fetch.id == id) {
+            let fetch = self.fetches.remove(index);
+            answer_all(fetch.waiters, &Err(error));
         }
     }
 
@@ -731,6 +766,17 @@ impl PhotoService {
 }
 
 impl Fetch {
+    /// Drops what this start has fetched and begins again from offset 0.
+    /// Answers to the start that just ended no longer apply.
+    fn reset_transfer(&mut self) {
+        self.round = self.round.wrapping_add(1);
+        self.file = None;
+        self.data.clear();
+        self.next = 0;
+        self.received = 0;
+        self.again.clear();
+    }
+
     /// The next offset to ask for: 0 first, the rest once the first answer
     /// gave the file's size.
     fn next_offset(&mut self) -> Option<u64> {
@@ -768,12 +814,7 @@ impl Fetch {
                 }
                 tracing::debug!("a photo changed while it was fetched; starting again");
                 self.restarted = true;
-                self.round += 1;
-                self.file = None;
-                self.data = Vec::new();
-                self.next = 0;
-                self.received = 0;
-                self.again.clear();
+                self.reset_transfer();
                 return Progress::Going;
             }
             Some(_) => {}

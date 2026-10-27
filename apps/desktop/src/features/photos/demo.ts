@@ -29,6 +29,7 @@ export function demoPhotos(now: number): Photo[] {
       modifiedUnixMs: taken,
       width: isScreenshot ? 1080 : upright ? 3072 : 4080,
       height: isScreenshot ? 2400 : upright ? 4080 : 3072,
+      saved: null,
     };
   });
 }
