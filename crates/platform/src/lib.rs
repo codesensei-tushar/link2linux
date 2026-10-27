@@ -8,8 +8,8 @@
 //!   the desktop session allows ([`ClipboardAccess`]);
 //! - [`FileStore`]: where received files go, and opening them or showing
 //!   them in their folder;
-//! - [`CallAudio`]: carry call audio between the phone and the desktop's
-//!   microphone and speakers over Bluetooth;
+//! - [`Bluetooth`] and [`Telephony`]: the phone's calls over Bluetooth,
+//!   with the desktop as the hands-free unit of the phone;
 //! - [`SecretStore`]: keep small secrets, such as the desktop's private
 //!   key, in the desktop's keyring.
 //!
@@ -21,11 +21,16 @@
 
 use std::path::{Path, PathBuf};
 
+mod calls;
 #[cfg(target_os = "linux")]
 pub mod linux;
 mod presence;
 mod secrets;
 
+pub use calls::{
+    Bluetooth, BluetoothAdapter, BluetoothDevice, CallState, Gateway, GatewayCall,
+    HANDS_FREE_GATEWAY_UUID, PROMPT_TIMEOUT, PairingEvent, PairingPrompt, Telephony,
+};
 pub use presence::{
     AddressKind, BluetoothAddress, MAX_ADVERTISED_NAME_BYTES, PRESENCE_SERVICE_UUID,
     ParseAddressError, PresenceAdapter, PresenceAdvertiser, truncate_device_name,
@@ -283,18 +288,4 @@ pub trait FileStore: Send + Sync {
     /// manager, selected in its folder where the file manager can do that.
     fn show_in_folder(&self, path: &Path)
     -> impl Future<Output = Result<(), PlatformError>> + Send;
-}
-
-/// Call audio between the phone and the desktop, over Bluetooth.
-///
-/// During a call the phone acts as an audio gateway and the desktop as a
-/// hands-free device, so the user talks through the desktop's microphone
-/// and speakers.
-pub trait CallAudio: Send + Sync {
-    /// Routes call audio through the phone with Bluetooth address `phone`
-    /// (`AA:BB:CC:DD:EE:FF`).
-    fn connect(&self, phone: &str) -> impl Future<Output = Result<(), PlatformError>> + Send;
-
-    /// Stops routing call audio.
-    fn disconnect(&self) -> impl Future<Output = Result<(), PlatformError>> + Send;
 }
