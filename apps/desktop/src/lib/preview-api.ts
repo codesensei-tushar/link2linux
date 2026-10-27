@@ -6,7 +6,9 @@ import type {
   DesktopApi,
   Device,
   PairingState,
+  PhoneStatus,
   PhoneTarget,
+  RingStatus,
   Settings,
   Unsubscribe,
 } from "./api";
@@ -86,6 +88,10 @@ export function createPreviewApi(search: string = globalThis.location.search): D
   const pairingListeners = new Set<(state: PairingState) => void>();
   const deviceListeners = new Set<(devices: Device[]) => void>();
   const clipboardListeners = new Set<(status: ClipboardStatus) => void>();
+  const statusListeners = new Set<(change: { deviceId: string; status: PhoneStatus }) => void>();
+  const ringListeners = new Set<(change: { deviceId: string; ring: RingStatus }) => void>();
+  const rings = new Map<string, RingStatus>();
+  const ringTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const qr: PairingState = {
     step: "qrOffer",
@@ -149,6 +155,31 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     set.add(listener);
     const stop: Unsubscribe = () => set.delete(listener);
     return Promise.resolve(stop);
+  };
+  const isConnected = (deviceId: string) =>
+    devices.some((device) => device.id === deviceId && device.status === "connected");
+  const statusOf = (deviceId: string): PhoneStatus => {
+    if (!isConnected(deviceId)) return { state: "disconnected" };
+    if (settings.showPhoneStatus === false) return { state: "hidden" };
+    return {
+      state: "current",
+      battery: { percent: 76, pluggedIn: false, powerSaver: false },
+      cellular: { level: 3, network: "5g", operatorName: "Carrier" },
+      wifi: { level: 4 },
+      ringer: "vibrate",
+      doNotDisturb: false,
+    };
+  };
+  const ringOf = (deviceId: string): RingStatus => {
+    const blocked = isConnected(deviceId) ? null : "notConnected";
+    const ring = rings.get(deviceId) ?? { phase: "idle", blocked, problem: null, ended: null };
+    return { ...ring, blocked };
+  };
+  const setRing = (deviceId: string, ring: RingStatus) => {
+    rings.set(deviceId, ring);
+    ringListeners.forEach((listener) => {
+      listener({ deviceId, ring });
+    });
   };
 
   return {
@@ -247,9 +278,46 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     },
     onPairingChanged: (listener) => listen(pairingListeners, listener),
     onDevicesChanged: (listener) => listen(deviceListeners, listener),
+    getPhoneStatus: (deviceId) => Promise.resolve(statusOf(deviceId)),
+    onPhoneStatusChanged: (deviceId, listener) =>
+      listen(statusListeners, (change) => {
+        if (change.deviceId === deviceId) listener(change.status);
+      }),
+    getRingStatus: (deviceId) => Promise.resolve(ringOf(deviceId)),
+    onRingChanged: (deviceId, listener) =>
+      listen(ringListeners, (change) => {
+        if (change.deviceId === deviceId) listener(change.ring);
+      }),
+    ringPhone: (deviceId) => {
+      const ring = ringOf(deviceId);
+      clearTimeout(ringTimers.get(deviceId));
+      if (ring.blocked) {
+        setRing(deviceId, { ...ring, problem: ring.blocked, ended: null });
+        return Promise.resolve();
+      }
+      setRing(deviceId, { ...ring, phase: "ringing", problem: null, ended: null });
+      ringTimers.set(
+        deviceId,
+        setTimeout(() => {
+          setRing(deviceId, { ...ringOf(deviceId), phase: "idle", ended: "timedOut" });
+        }, 60_000),
+      );
+      return Promise.resolve();
+    },
+    stopRinging: (deviceId) => {
+      clearTimeout(ringTimers.get(deviceId));
+      setRing(deviceId, { ...ringOf(deviceId), phase: "idle", problem: null });
+      return Promise.resolve();
+    },
     getSettings: () => Promise.resolve(settings),
     setSettings: (next) => {
       settings = next;
+      devices.forEach((device) => {
+        const status = statusOf(device.id);
+        statusListeners.forEach((listener) => {
+          listener({ deviceId: device.id, status });
+        });
+      });
       return Promise.resolve();
     },
   };

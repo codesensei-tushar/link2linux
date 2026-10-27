@@ -48,6 +48,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::files::forget_transfer,
             commands::files::open_received_file,
             commands::files::show_received_file,
+            commands::phone::get_phone_status,
+            commands::phone::get_ring_status,
+            commands::phone::ring_phone,
+            commands::phone::stop_ringing,
             commands::settings::get_settings,
             commands::settings::set_settings,
         ])
@@ -57,6 +61,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             events::NotificationChanged,
             events::ClipboardChanged,
             events::TransferChanged,
+            events::PhoneStatusChanged,
+            events::RingChanged,
             events::FileDrag,
             events::FilesDropped,
         ])

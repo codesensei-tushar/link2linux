@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { AppProviders } from "@/app/providers";
-import { createFakeApi, testDevice, type FakeApi } from "@/test/fake-api";
+import { createFakeApi, testDevice, testPhoneStatus, type FakeApi } from "@/test/fake-api";
 
 import { ConnectionStatus } from "./ConnectionStatus";
 
@@ -73,5 +73,22 @@ describe("ConnectionStatus", () => {
     api.emitDevices([]);
     expect(screen.getByRole("status")).toHaveTextContent("No phone paired");
     expect(api.listDevices).toHaveBeenCalledOnce();
+  });
+
+  it("shows the connected phone's status and a ring button, and nothing for a phone away", async () => {
+    const api = createFakeApi();
+    api.listDevices.mockResolvedValue([testDevice({ name: "Pixel", status: "connected" })]);
+    api.getPhoneStatus.mockResolvedValue(testPhoneStatus());
+    renderStatus(api);
+
+    expect(await screen.findByRole("list", { name: "Phone status" })).toBeVisible();
+    expect(screen.getByRole("listitem", { name: "Battery 76%" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Ring phone" })).toBeEnabled();
+    // The battery changing is not announced as a connection change.
+    expect(screen.getByRole("status")).not.toHaveTextContent("76%");
+
+    api.emitDevices([testDevice({ name: "Pixel" })]);
+    expect(screen.queryByRole("list", { name: "Phone status" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ring phone" })).not.toBeInTheDocument();
   });
 });

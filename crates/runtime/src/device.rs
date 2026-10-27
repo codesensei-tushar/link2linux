@@ -234,6 +234,7 @@ impl Supervisor {
                         tracing::warn!(%error, "could not queue a notification action");
                     }
                 }
+                Some(Command::Phone(command)) => self.features.phone_command(None, command).await,
                 Some(Command::Response(response)) => {
                     // Without a session, no rule can be broken.
                     let _ = self.features.handle_response(None, response).await;

@@ -20,10 +20,10 @@
 //!   to happen on the other device.
 //!
 //! Then one module per [`Feature`], named as in both apps:
-//! [`notifications`], [`messages`], [`calls`], [`photos`], [`files`],
-//! [`clipboard`] and [`screen`]. Each one
-//! holds the feature's types, the events the phone reports, and a trait for
-//! the requests the desktop makes, which fail with a [`FeatureError`].
+//! [`notifications`], [`calls`], [`photos`], [`files`], [`clipboard`],
+//! [`screen`], [`status`] and [`ring`]. Each one
+//! holds the feature's types, the events the phone reports, and the service
+//! or trait for the requests the desktop makes.
 //!
 //! Nothing here talks to the OS directly. Desktop integration sits behind
 //! the traits in `link2linux-platform`, and the app shell wires the two
@@ -45,10 +45,11 @@ pub mod transport;
 pub mod calls;
 pub mod clipboard;
 pub mod files;
-pub mod messages;
 pub mod notifications;
 pub mod photos;
+pub mod ring;
 pub mod screen;
+pub mod status;
 
 pub use device::{DeviceInfo, DeviceKind, Feature, FeatureError};
 pub use identity::{CertificateFingerprint, Identity};

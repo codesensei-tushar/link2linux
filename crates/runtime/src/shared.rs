@@ -37,6 +37,7 @@ use crate::notify::dto::{self, MirroredNotification, NotificationEvent};
 use crate::notify::{DriverFactory, Presenter};
 use crate::pairing::PairingCtl;
 use crate::paths::{DataDir, desktop_name};
+use crate::phone::{PhoneBoards, RingDriver, StatusDriver};
 use crate::view::{Device, DeviceStatus, EventSink, StartupError};
 
 /// How the runtime starts.
@@ -57,6 +58,8 @@ pub struct RuntimeConfig {
     pub clipboard: ClipboardSettings,
     /// Whether files are turned on at the start. On by default.
     pub files: bool,
+    /// Whether the phones' status is shown at the start. On by default.
+    pub show_phone_status: bool,
 }
 
 impl RuntimeConfig {
@@ -71,6 +74,7 @@ impl RuntimeConfig {
             dial_timeouts: None,
             clipboard: ClipboardSettings::default(),
             files: true,
+            show_phone_status: true,
         }
     }
 }
@@ -200,6 +204,8 @@ pub(crate) struct Core {
     pub clipboard_nudge: Notify,
     /// Each phone's file transfers.
     pub files: FilesFactory,
+    /// Each phone's status and ringing, as the UI shows them.
+    pub phone: Arc<PhoneBoards>,
     /// How many device tasks are still running, for a shutdown that waits
     /// for them to clean up.
     pub supervisors: AtomicUsize,
@@ -224,7 +230,13 @@ impl Core {
             id,
             name.clone(),
             DeviceKind::Desktop,
-            [Feature::Notifications, Feature::Clipboard, Feature::Files],
+            [
+                Feature::Notifications,
+                Feature::Clipboard,
+                Feature::Files,
+                Feature::Status,
+                Feature::Ring,
+            ],
         );
         // Before any session, as it cleans up after an earlier run.
         let files = FilesFactory::new(
@@ -233,6 +245,10 @@ impl Core {
             &config.data_dir.files_lock(),
         );
         let (keys, _) = watch::channel(DiscoveryKeys::default());
+        let phone = Arc::new(PhoneBoards::new(
+            shell.events.clone(),
+            config.show_phone_status,
+        ));
         let core = Arc::new(Self {
             handle,
             local,
@@ -263,6 +279,7 @@ impl Core {
             clipboard_page: Mutex::default(),
             clipboard_nudge: Notify::new(),
             files,
+            phone,
             supervisors: AtomicUsize::new(0),
         });
         // Following the hub before any phone's service can report.
@@ -285,8 +302,8 @@ impl Core {
     }
 
     /// The first message of a session: this desktop, whether it shares
-    /// its clipboard and takes files, and its Bluetooth LE address if it
-    /// advertises.
+    /// its clipboard, takes files and shows the phone's status, and its
+    /// Bluetooth LE address if it advertises. Ringing is always ready.
     pub fn session_start(&self) -> SessionStart {
         let mut start = SessionStart::new(self.local.clone());
         start
@@ -295,6 +312,9 @@ impl Core {
         start
             .availability
             .insert(Feature::Files, self.files.availability());
+        start
+            .availability
+            .insert(Feature::Status, self.phone.status_availability());
         if let Some(address) = *lock(&self.ble_address) {
             start.presence = PresenceUpdate {
                 ble_address: address.to_vec(),
@@ -341,6 +361,7 @@ impl Core {
             record.kind,
             [Feature::Notifications],
         );
+        let phone_board = self.phone.open(&record.id);
         let features = Features {
             notifications: self.drivers.create(&info),
             clipboard: ClipboardService::new(
@@ -354,6 +375,8 @@ impl Core {
                 self.events.clone(),
                 self.presenter.clone(),
             ),
+            status: StatusDriver::new(phone_board.clone()),
+            ring: RingDriver::new(phone_board),
         };
         self.handle.spawn(forward_changes(
             self.clone(),
@@ -431,6 +454,7 @@ impl Core {
         }
         self.drivers.forget(id);
         self.files.forget(id);
+        self.phone.forget(id);
         lock(&self.evidence).forget(id);
         lock(&self.clipboard_page).board.forget(id);
         self.clipboard_hub.forget_phone(id);

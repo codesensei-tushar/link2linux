@@ -26,6 +26,10 @@ fn main() {
         "forget_transfer",
         "open_received_file",
         "show_received_file",
+        "get_phone_status",
+        "get_ring_status",
+        "ring_phone",
+        "stop_ringing",
         "get_settings",
         "set_settings",
     ]);

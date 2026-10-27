@@ -11,6 +11,8 @@ import type {
   FileTransfer,
   FileTransferEvent,
   PairingState,
+  PhoneStatus,
+  RingStatus,
 } from "@/lib/api";
 
 export const testAppInfo: AppInfo = {
@@ -76,6 +78,26 @@ export function testNotification(
   };
 }
 
+/** A connected phone's status with every part known. */
+export function testPhoneStatus(
+  overrides: Partial<Extract<PhoneStatus, { state: "current" }>> = {},
+): PhoneStatus {
+  return {
+    state: "current",
+    battery: { percent: 76, pluggedIn: false, powerSaver: false },
+    cellular: { level: 3, network: "5g", operatorName: "Carrier" },
+    wifi: { level: 4 },
+    ringer: "normal",
+    doNotDisturb: false,
+    ...overrides,
+  };
+}
+
+/** A phone that can ring and does not. */
+export function testRing(overrides: Partial<RingStatus> = {}): RingStatus {
+  return { phase: "idle", blocked: null, problem: null, ended: null, ...overrides };
+}
+
 export function testTransfer(overrides: Partial<FileTransfer> = {}): FileTransfer {
   return {
     id: "t1",
@@ -121,6 +143,14 @@ export interface FakeApi extends DesktopApi {
   emitFileDrag: (over: boolean) => void;
   /** Says files were dropped on the window. */
   emitFilesDropped: (drop: FilesDropped) => void;
+  getPhoneStatus: Mock<DesktopApi["getPhoneStatus"]>;
+  getRingStatus: Mock<DesktopApi["getRingStatus"]>;
+  ringPhone: Mock<DesktopApi["ringPhone"]>;
+  stopRinging: Mock<DesktopApi["stopRinging"]>;
+  /** Pushes a phone's status, as the backend would. */
+  emitPhoneStatus(deviceId: string, status: PhoneStatus): void;
+  /** Pushes a phone's ring status, as the backend would. */
+  emitRing(deviceId: string, ring: RingStatus): void;
   unpairDevice: Mock<DesktopApi["unpairDevice"]>;
   getPairingState: Mock<DesktopApi["getPairingState"]>;
   startPairing: Mock<DesktopApi["startPairing"]>;
@@ -146,6 +176,8 @@ export function createFakeApi(): FakeApi {
   const transferSubscribers = new Set<(event: FileTransferEvent) => void>();
   const dragListeners = new Set<(over: boolean) => void>();
   const dropListeners = new Set<(drop: FilesDropped) => void>();
+  const statusListeners = new Set<(deviceId: string, status: PhoneStatus) => void>();
+  const ringListeners = new Set<(deviceId: string, ring: RingStatus) => void>();
   const ok = () => vi.fn<Methods["startPairing"]>().mockResolvedValue(undefined);
 
   return {
@@ -224,6 +256,40 @@ export function createFakeApi(): FakeApi {
         });
       });
     },
+    getPhoneStatus: vi
+      .fn<DesktopApi["getPhoneStatus"]>()
+      .mockResolvedValue({ state: "waiting" } satisfies PhoneStatus),
+    onPhoneStatusChanged: (deviceId, listener) => {
+      const forDevice = (id: string, status: PhoneStatus) => {
+        if (id === deviceId) listener(status);
+      };
+      statusListeners.add(forDevice);
+      return Promise.resolve(() => statusListeners.delete(forDevice));
+    },
+    emitPhoneStatus: (deviceId, status) => {
+      act(() => {
+        statusListeners.forEach((listener) => {
+          listener(deviceId, status);
+        });
+      });
+    },
+    getRingStatus: vi.fn<DesktopApi["getRingStatus"]>().mockResolvedValue(testRing()),
+    onRingChanged: (deviceId, listener) => {
+      const forDevice = (id: string, ring: RingStatus) => {
+        if (id === deviceId) listener(ring);
+      };
+      ringListeners.add(forDevice);
+      return Promise.resolve(() => ringListeners.delete(forDevice));
+    },
+    emitRing: (deviceId, ring) => {
+      act(() => {
+        ringListeners.forEach((listener) => {
+          listener(deviceId, ring);
+        });
+      });
+    },
+    ringPhone: vi.fn<DesktopApi["ringPhone"]>().mockResolvedValue(undefined),
+    stopRinging: vi.fn<DesktopApi["stopRinging"]>().mockResolvedValue(undefined),
     unpairDevice: vi.fn<DesktopApi["unpairDevice"]>().mockResolvedValue(undefined),
     getPairingState: vi
       .fn<DesktopApi["getPairingState"]>()
@@ -265,6 +331,8 @@ export function createFakeApi(): FakeApi {
       deviceListeners.size +
       clipboardListeners.size +
       dragListeners.size +
-      dropListeners.size,
+      dropListeners.size +
+      statusListeners.size +
+      ringListeners.size,
   };
 }

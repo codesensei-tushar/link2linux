@@ -1,7 +1,8 @@
 //! The runtime against a stand-in phone over real TLS on the loopback
 //! interface: pairing by QR code, reconnecting as a paired phone,
 //! mirroring a notification to the desktop and dismissing it again,
-//! sharing the clipboard both ways, unpairing, telling the phone's refusal
+//! sharing the clipboard both ways, showing the phone's status and ringing
+//! it, unpairing, telling the phone's refusal
 //! of this desktop's key from a forged one, and keeping a QR code up after
 //! an impostor failed.
 
@@ -23,7 +24,7 @@ use link2linux_core::identity::{CertificateFingerprint, Identity};
 use link2linux_core::notifications::present::OPEN_KEY;
 use link2linux_core::notifications::{Answer, Change};
 use link2linux_core::pairing::{QrPayload, StoreKey};
-use link2linux_core::session::{Reply, Session, SessionConfig, SessionEvent};
+use link2linux_core::session::{Availability, Reply, Session, SessionConfig, SessionEvent};
 use link2linux_platform::{
     Clipboard, ClipboardAccess, ClipboardText, DesktopNotification, FileStore,
     NotificationCapabilities, NotificationId, NotificationResponse, NotificationSink,
@@ -33,7 +34,8 @@ use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
     ClipboardPush, ErrorCode, FileAccept, FileChunk, FileInfo, FileOffer, GoodbyeReason,
     NotificationAction, NotificationCategory, NotificationContent, NotificationImportance,
-    NotificationPosted, NotificationSyncBatch, PairingProof, PhoneNotification, SyncCursor,
+    NotificationPosted, NotificationSyncBatch, PairingProof, PhoneNotification, PhoneStatusChanged,
+    PhoneStatusReply, RingEndReason, RingEnded, SyncCursor,
 };
 use link2linux_runtime::clipboard::ClipboardPort;
 use link2linux_runtime::notify::{
@@ -43,7 +45,8 @@ use link2linux_runtime::paths::DataDir;
 use link2linux_runtime::view::{
     ClipboardDirection, ClipboardMode, ClipboardPhoneState, ClipboardProblemKind, ClipboardStatus,
     Device, DeviceStatus, EventSink, FileTransfer, FileTransferEvent, NotificationEvent,
-    PairingMethod, PairingState, PhoneTarget, TransferDirection, TransferStatus,
+    PairingMethod, PairingState, PhoneStatus, PhoneTarget, RingEnd, RingPhase, RingProblem,
+    RingStatus, TransferDirection, TransferStatus,
 };
 use link2linux_runtime::{Runtime, RuntimeConfig, Shell};
 use support::{PhoneTls, TestPhone};
@@ -329,6 +332,8 @@ struct Events {
     notifications: Mutex<Vec<(String, NotificationEvent)>>,
     clipboard: Mutex<Vec<ClipboardStatus>>,
     transfers: Mutex<Vec<(String, FileTransferEvent)>>,
+    phone_status: Mutex<Vec<(String, PhoneStatus)>>,
+    rings: Mutex<Vec<(String, RingStatus)>>,
     changed: Notify,
 }
 
@@ -363,6 +368,22 @@ impl EventSink for Events {
         self.clipboard.lock().unwrap().push(status.clone());
         self.changed.notify_waiters();
     }
+
+    fn phone_status_changed(&self, device_id: &str, status: &PhoneStatus) {
+        self.phone_status
+            .lock()
+            .unwrap()
+            .push((device_id.to_owned(), status.clone()));
+        self.changed.notify_waiters();
+    }
+
+    fn ring_changed(&self, device_id: &str, ring: &RingStatus) {
+        self.rings
+            .lock()
+            .unwrap()
+            .push((device_id.to_owned(), *ring));
+        self.changed.notify_waiters();
+    }
 }
 
 impl Events {
@@ -382,6 +403,26 @@ impl Events {
                 .rev()
                 .find(|status| check(status))
                 .cloned()
+        })
+        .await
+    }
+
+    /// Waits until the latest status of phone `id` passes `check`.
+    async fn status_where(&self, id: &str, check: impl Fn(&PhoneStatus) -> bool) -> PhoneStatus {
+        wait(&self.changed, || {
+            let reported = self.phone_status.lock().unwrap();
+            let (_, latest) = reported.iter().rev().find(|(device, _)| device == id)?;
+            check(latest).then(|| latest.clone())
+        })
+        .await
+    }
+
+    /// Waits until the latest ring status of phone `id` passes `check`.
+    async fn ring_where(&self, id: &str, check: impl Fn(&RingStatus) -> bool) -> RingStatus {
+        wait(&self.changed, || {
+            let reported = self.rings.lock().unwrap();
+            let (_, latest) = reported.iter().rev().find(|(device, _)| device == id)?;
+            check(latest).then_some(*latest)
         })
         .await
     }
@@ -657,6 +698,39 @@ async fn clipboard_session(
         next_event(&mut session).await;
     }
     session
+}
+
+/// The phone side of a session with the paired desktop, for a phone that
+/// shares its status and rings, once both sides report them ready.
+async fn status_session(
+    phone: &TestPhone,
+    desktop: CertificateFingerprint,
+) -> Session<TlsStream<TcpStream>> {
+    let connection = phone.accept(PhoneTls::pinned(desktop)).await.unwrap();
+    let info = DeviceInfo::new(
+        phone.id.clone(),
+        phone.name.clone(),
+        DeviceKind::Phone,
+        [Feature::Status, Feature::Ring],
+    );
+    let mut session =
+        Session::handshake(connection.wire.into_inner(), info, SessionConfig::phone())
+            .await
+            .unwrap();
+    while !(session.is_ready(Feature::Status) && session.is_ready(Feature::Ring)) {
+        next_event(&mut session).await;
+    }
+    session
+}
+
+/// The desktop's next request, which the phone takes; returns its
+/// sequence number and payload.
+async fn next_request(session: &mut Session<TlsStream<TcpStream>>) -> (u64, Payload) {
+    loop {
+        if let SessionEvent::Request { seq, payload } = next_event(session).await {
+            return (seq, payload);
+        }
+    }
 }
 
 /// The phone pushes `text` and returns the desktop's answer. A push from
@@ -2206,4 +2280,120 @@ async fn closing_the_app_deletes_what_a_phone_had_not_finished_sending() {
         }
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_phone_shows_its_status_and_rings_when_asked() {
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "status-1").await);
+    let (desktop, device) = pair(&rig, &phone).await;
+    let id = device.id.clone();
+    let mut session = within(status_session(&phone, desktop)).await;
+
+    // The desktop asks for the status, and shows the answer.
+    let (asked, request) = within(next_request(&mut session)).await;
+    assert!(
+        matches!(request, Payload::PhoneStatusRequest(_)),
+        "{request:?}"
+    );
+    let status = link2linux_protocol::v1::PhoneStatus {
+        battery: Some(link2linux_protocol::v1::Battery {
+            percent: 57,
+            plugged_in: true,
+            power_saver: false,
+        }),
+        wifi: Some(link2linux_protocol::v1::Wifi { level: 3 }),
+        ..Default::default()
+    };
+    session
+        .reply(
+            asked,
+            Payload::PhoneStatusReply(PhoneStatusReply {
+                status: Some(status.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+    let shown = rig
+        .events
+        .status_where(&id, |status| matches!(status, PhoneStatus::Current { .. }))
+        .await;
+    let PhoneStatus::Current { battery, wifi, .. } = &shown else {
+        unreachable!();
+    };
+    assert_eq!(battery.map(|battery| battery.percent), Some(Some(57)));
+    assert_eq!(wifi.map(|wifi| wifi.level), Some(Some(3)));
+    assert_eq!(rig.runtime.phone_status(&id).unwrap(), shown);
+
+    // A change replaces it.
+    let mut lower = status;
+    lower.battery.as_mut().unwrap().percent = 56;
+    session
+        .send(Payload::PhoneStatusChanged(PhoneStatusChanged {
+            status: Some(lower),
+        }))
+        .await
+        .unwrap();
+    rig.events
+        .status_where(&id, |status| {
+            matches!(status, PhoneStatus::Current { battery: Some(battery), .. }
+                if battery.percent == Some(56))
+        })
+        .await;
+
+    // The phone rings from its Ack until it says it stopped.
+    rig.runtime.ring_phone(&id).unwrap();
+    let (ring, request) = within(next_request(&mut session)).await;
+    assert!(matches!(request, Payload::RingRequest(_)), "{request:?}");
+    session.ack(ring).await.unwrap();
+    rig.events
+        .ring_where(&id, |ring| ring.phase == RingPhase::Ringing)
+        .await;
+    session
+        .send(Payload::RingEnded(RingEnded {
+            reason: RingEndReason::StoppedOnPhone.into(),
+        }))
+        .await
+        .unwrap();
+    let ended = rig
+        .events
+        .ring_where(&id, |ring| ring.phase == RingPhase::Idle)
+        .await;
+    assert_eq!(ended.ended, Some(RingEnd::StoppedOnPhone));
+    assert_eq!(rig.runtime.ring_status(&id).unwrap(), ended);
+
+    // Hidden here: the phone hears the status is off on this desktop.
+    rig.runtime.set_phone_status_shown(false);
+    rig.events
+        .status_where(&id, |status| *status == PhoneStatus::Hidden)
+        .await;
+    while session
+        .peer_availability()
+        .and_then(|states| states.get(&Feature::Status))
+        != Some(&Availability::Disabled)
+    {
+        next_event(&mut session).await;
+    }
+
+    // Once the session is over, nothing is current and nothing rings.
+    session
+        .goodbye(GoodbyeReason::Shutdown, "restarting")
+        .await
+        .unwrap();
+    rig.events
+        .status_where(&id, |status| *status == PhoneStatus::Disconnected)
+        .await;
+    let ring = rig
+        .events
+        .ring_where(&id, |ring| ring.blocked == Some(RingProblem::NotConnected))
+        .await;
+    assert_eq!(ring.phase, RingPhase::Idle);
+    rig.runtime.ring_phone(&id).unwrap();
+    rig.events
+        .ring_where(&id, |ring| ring.problem == Some(RingProblem::NotConnected))
+        .await;
+    assert_eq!(
+        rig.runtime.phone_status("nobody"),
+        Err(link2linux_runtime::view::BackendError::NotFound)
+    );
 }

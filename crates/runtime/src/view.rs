@@ -38,6 +38,10 @@ pub use crate::notify::dto::{
     NotificationEvent, NotificationImportanceView, NotificationProgressInfo,
     NotificationVisibilityView,
 };
+pub use crate::phone::dto::{
+    CellularNetwork, PhoneBattery, PhoneCellular, PhoneStatus, PhoneWifi, RingEnd, RingPhase,
+    RingProblem, RingStatus, RingerMode,
+};
 
 /// How the user pairs a new phone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -265,4 +269,8 @@ pub trait EventSink: Send + Sync {
     fn clipboard_changed(&self, _status: &ClipboardStatus) {}
     /// A file transfer with a phone changed.
     fn transfer_changed(&self, _device_id: &str, _event: &FileTransferEvent) {}
+    /// What the UI shows of a phone's status changed.
+    fn phone_status_changed(&self, _device_id: &str, _status: &PhoneStatus) {}
+    /// What the UI shows of ringing a phone changed.
+    fn ring_changed(&self, _device_id: &str, _ring: &RingStatus) {}
 }

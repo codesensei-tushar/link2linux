@@ -1,0 +1,61 @@
+.phone-summary {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.phone-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-text-muted);
+}
+
+.phone-status li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.phone-status svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+.phone-status__note,
+.ring__note {
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-xs);
+}
+
+/* Margins rather than a gap: the live region stays in place, empty, while
+   the phone does not ring, and must take no room then. */
+.ring {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.ring__state {
+  font-weight: 600;
+}
+
+.ring__state:not(:empty) {
+  margin-bottom: var(--space-1);
+}
+
+.ring__problem,
+.ring__note {
+  margin-top: var(--space-1);
+}
+
+.ring__problem {
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+}

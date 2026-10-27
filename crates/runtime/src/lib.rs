@@ -18,6 +18,7 @@ pub mod link;
 pub mod notify;
 mod pairing;
 pub mod paths;
+pub mod phone;
 pub mod qr;
 mod runtime;
 pub mod settings;

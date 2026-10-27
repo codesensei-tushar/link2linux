@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::clipboard::{Copies, Outgoing};
 use crate::features::Features;
 use crate::notify::PhoneSession;
+use crate::phone::PhoneCommand;
 
 /// What the owner of a session can ask of it.
 #[derive(Debug)]
@@ -60,6 +61,8 @@ pub enum Command {
     },
     /// The user turned files on or off on this desktop.
     FilesSwitch,
+    /// The user asked something of the phone's status or ringing.
+    Phone(PhoneCommand),
     /// The user removed the pairing: tell the phone and leave.
     Unpair,
     /// The network changed or the user asked to reconnect: no session
@@ -268,6 +271,7 @@ async fn drive(
                         tracing::debug!(%error, "could not tell the phone about files");
                     }
                 }
+                Some(Command::Phone(command)) => features.phone_command(Some(session), command).await,
                 Some(Command::Reconnect | Command::NetworkChanged) => {}
             },
             event = session.next_event() => match event {

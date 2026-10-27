@@ -90,6 +90,23 @@ export const commands = {
 	openReceivedFile: (deviceId: string, transferId: string, fileIndex: number) => typedError<null, CommandError>(__TAURI_INVOKE("open_received_file", { deviceId, transferId, fileIndex })),
 	/**  Shows a file that arrived from a phone in its folder. */
 	showReceivedFile: (deviceId: string, transferId: string, fileIndex: number) => typedError<null, CommandError>(__TAURI_INVOKE("show_received_file", { deviceId, transferId, fileIndex })),
+	/**
+	 *  A phone's battery, signal and sound mode. Later changes arrive as
+	 *  `PhoneStatusChanged` events: subscribe first, then call this.
+	 */
+	getPhoneStatus: (deviceId: string) => typedError<PhoneStatus, CommandError>(__TAURI_INVOKE("get_phone_status", { deviceId })),
+	/**
+	 *  Whether a phone rings, and why it cannot or did not. Later changes
+	 *  arrive as `RingChanged` events: subscribe first, then call this.
+	 */
+	getRingStatus: (deviceId: string) => typedError<RingStatus, CommandError>(__TAURI_INVOKE("get_ring_status", { deviceId })),
+	/**
+	 *  Makes a phone ring for a minute, even when it is set to silent. What
+	 *  came of it arrives as a `RingChanged` event.
+	 */
+	ringPhone: (deviceId: string) => typedError<null, CommandError>(__TAURI_INVOKE("ring_phone", { deviceId })),
+	/**  Stops a phone ringing. The new state arrives as a `RingChanged` event. */
+	stopRinging: (deviceId: string) => typedError<null, CommandError>(__TAURI_INVOKE("stop_ringing", { deviceId })),
 	/**  The desktop app's settings. */
 	getSettings: () => __TAURI_INVOKE<Settings>("get_settings"),
 	/**
@@ -107,6 +124,8 @@ export const events = {
 	filesDropped: makeEvent<FilesDropped, FilesDropped>("files-dropped"),
 	notificationChanged: makeEvent<NotificationChanged, NotificationChanged>("notification-changed"),
 	pairingChanged: makeEvent<PairingChanged, PairingChanged>("pairing-changed"),
+	phoneStatusChanged: makeEvent<PhoneStatusChanged, PhoneStatusChanged>("phone-status-changed"),
+	ringChanged: makeEvent<RingChanged, RingChanged>("ring-changed"),
 	transferChanged: makeEvent<TransferChanged, TransferChanged>("transfer-changed"),
 };
 
@@ -124,6 +143,11 @@ export type AppInfo = {
 	/**  CPU architecture, e.g. "x86_64". */
 	arch: string,
 };
+
+/**  The cellular generation the phone's status bar shows. */
+export type CellularNetwork = 
+/**  No SIM, no service, or emergency calls only. */
+"noService" | "2g" | "3g" | "4g" | "5g";
 
 /**  Text that went to or came from a phone. */
 export type ClipboardActivity = {
@@ -499,6 +523,58 @@ confirmedHere: boolean } |
 /**  Pairing ended without a phone being paired. */
 { step: "failed"; method: PairingMethod; reason: PairingFailure };
 
+/**  The phone's battery. */
+export type PhoneBattery = {
+	/**  The charge, 0 to 100. */
+	percent: number | null,
+	/**  Connected to power, also once the battery is full. */
+	pluggedIn: boolean,
+	/**  Battery saver is on. */
+	powerSaver: boolean,
+};
+
+/**  The phone's cellular connection. */
+export type PhoneCellular = {
+	/**  Signal bars, 0 to 4. */
+	level: number | null,
+	network: CellularNetwork | null,
+	/**  The carrier's name. */
+	operatorName: string | null,
+};
+
+/**  What the desktop shows of a phone's status. */
+export type PhoneStatus = 
+/**
+ *  The phone's current status. A part that is `null` is unknown, and
+ *  shows as nothing.
+ */
+{ state: "current"; battery: PhoneBattery | null; 
+/**
+ *  The cellular connection the phone's status bar shows first;
+ *  `null` on a phone without telephony.
+ */
+cellular: PhoneCellular | null; 
+/**  Set while the phone is connected to Wi-Fi. */
+wifi: PhoneWifi | null; ringer: RingerMode | null; doNotDisturb: boolean } | 
+/**  Connected, and the status is on its way. */
+{ state: "waiting" } | 
+/**  The user hid the phone's status in this computer's settings. */
+{ state: "hidden" } | 
+/**  The user turned the status off on the phone. */
+{ state: "turnedOff" } | 
+/**  The phone does not share its status right now. */
+{ state: "unavailable" } | 
+/**  The phone's app is too old to share its status. */
+{ state: "unsupported" } | 
+/**  The phone is not connected, so its status is not current. */
+{ state: "disconnected" };
+
+/**  What the UI shows of a phone's status changed. */
+export type PhoneStatusChanged = {
+	deviceId: string,
+	status: PhoneStatus,
+};
+
 /**  Which phone to dial. */
 export type PhoneTarget = 
 /**  A phone from [`PairingState::Searching`], by its id. */
@@ -508,6 +584,63 @@ export type PhoneTarget =
  *  `[fd00::2]:27380`. The default port is 27380.
  */
 { kind: "address"; address: string };
+
+/**  The phone's Wi-Fi connection. */
+export type PhoneWifi = {
+	/**  Signal bars, 0 to 4. */
+	level: number | null,
+};
+
+/**  What the UI shows of ringing a phone changed. */
+export type RingChanged = {
+	deviceId: string,
+	ring: RingStatus,
+};
+
+/**  Why the phone stopped ringing. */
+export type RingEnd = 
+/**  Someone stopped it on the phone. */
+"stoppedOnPhone" | 
+/**  A computer stopped it: this one or another one. */
+"stoppedFromDesktop" | 
+/**  It rang for its full minute. */
+"timedOut" | 
+/**  It could not keep ringing, for example because a call started. */
+"interrupted";
+
+/**  Where ringing stands. */
+export type RingPhase = "idle" | 
+/**  Asked to ring; the phone has not answered yet. */
+"starting" | "ringing" | 
+/**  Asked to stop; the phone has not answered yet. */
+"stopping";
+
+/**  Why the phone cannot ring, or did not do what the user asked. */
+export type RingProblem = 
+/**  Ringing is turned off on the phone. */
+"turnedOff" | 
+/**  The phone can't ring right now, for example during a call. */
+"unavailable" | 
+/**  The phone's app is too old to ring. */
+"unsupported" | 
+/**  The phone is not connected. */
+"notConnected" | 
+/**  The phone refused, or did not answer in time. */
+"failed";
+
+/**  What the desktop shows of ringing a phone. */
+export type RingStatus = {
+	phase: RingPhase,
+	/**  Why the phone cannot ring now, or `null` when it can. */
+	blocked: RingProblem | null,
+	/**  Why the last ring or stop the user asked for did not work. */
+	problem: RingProblem | null,
+	/**  Why the phone stopped ringing without this computer asking. */
+	ended: RingEnd | null,
+};
+
+/**  Whether calls and notifications make sound on the phone. */
+export type RingerMode = "normal" | "vibrate" | "silent";
 
 /**
  *  What the user chose for the desktop app. Settings missing from the file
@@ -536,6 +669,11 @@ export type Settings = {
 	 *  on.
 	 */
 	shareFiles?: boolean,
+	/**
+	 *  The connected phone's battery, signal and sound mode are shown. On
+	 *  by default: they are what the phone's own status bar shows.
+	 */
+	showPhoneStatus?: boolean,
 };
 
 /**  Why the app could not start, for the page shown instead of the app. */
