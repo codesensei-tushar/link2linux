@@ -2,18 +2,64 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://api.github.com; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Page not found · link2linux</title>
   <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#f9fafb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1214" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="/link2linux/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/link2linux/apple-touch-icon.png">
+  <link rel="preload" href="/link2linux/fonts/noto-sans-regular.woff" as="font" type="font/woff" crossorigin>
   <link rel="stylesheet" href="/link2linux/styles.css">
 </head>
 <body>
-  <main class="not-found">
-    <img src="/link2linux/favicon.svg" alt="" width="56" height="56">
-    <h1>Page not found</h1>
-    <p>The page you're looking for doesn't exist or has moved.</p>
-    <a class="btn btn-primary" href="/link2linux/">Back to link2linux</a>
+  <div class="scroll-sentinel" aria-hidden="true"></div>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/link2linux/">
+        <img class="brand-mark" src="/link2linux/favicon.svg" alt="" width="28" height="28">
+        <span class="wordmark">link2linux</span>
+      </a>
+      <nav class="header-nav" aria-label="Primary">
+        <a href="/link2linux/#features">Features</a>
+        <a href="/link2linux/#how-it-works">How it works</a>
+        <a href="/link2linux/#privacy">Privacy</a>
+        <a href="/link2linux/#download">Download</a>
+        <a href="/link2linux/#faq">FAQ</a>
+      </nav>
+      <div class="header-actions">
+        <a class="header-github" href="https://github.com/codesensei-tushar/link2linux" aria-label="link2linux on GitHub">
+          <svg viewBox="0 0 16 16" aria-hidden="true" class="icon-20"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>
+        </a>
+        <a class="btn btn-primary btn-sm" href="/link2linux/#download">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="not-found-page">
+    <div class="not-found-glow" aria-hidden="true"></div>
+    <div class="container not-found-inner">
+      <img class="cta-mark" src="/link2linux/favicon.svg" alt="" width="56" height="56">
+      <h1 class="type-h2">Page not found</h1>
+      <p class="not-found-lead">The page you’re looking for doesn’t exist or has moved.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="/link2linux/">Back to link2linux</a>
+        <a class="btn btn-secondary" href="/link2linux/#download">Downloads</a>
+      </div>
+    </div>
   </main>
+
+  <footer class="site-footer">
+    <div class="container footer-bottom">
+      <p>© 2026 link2linux contributors · Apache-2.0</p>
+      <p>No cookies, no trackers.</p>
+    </div>
+    <div class="container footer-legal">
+      <p>Android is a trademark of Google LLC. Linux is the registered trademark of Linus Torvalds.</p>
+    </div>
+  </footer>
 </body>
 </html>
