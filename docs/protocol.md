@@ -1782,7 +1782,9 @@ service. The desktop only asks, and reports the feature `READY`.
 
 - A `ScreenStart` from the desktop the phone already sends to gets an
   `Ack`, and the phone sends a `ScreenFormat` with a new `id` and a key
-  frame, without asking again.
+  frame, without asking again. It picks the codec and size again from the
+  new `ScreenStart`. A repeated `ScreenStart` that it answers
+  `INVALID_ARGUMENT` leaves the stream as it was.
 - The desktop stops with `ScreenStop`. The phone stops sharing and answers
   `Ack`, also when it was not sending, and sends no `ScreenEnded`. Frames
   that arrive between the `ScreenStop` and its `Ack` are left over from the
@@ -1830,7 +1832,9 @@ service. The desktop only asks, and reports the feature `READY`.
 - The desktop sends `ScreenInput` only for what the user does in the window
   that shows the phone's screen, and only while the current format has
   `input` set. It sends them in the order the user made them, and the
-  phone carries them out in the order they arrive.
+  phone carries them out in the order they arrive. It SHOULD send text
+  typed in quick succession as one input rather than one per key. The phone
+  answers `BUSY` while 32 inputs already wait.
 - A gesture is one finger following 1 to 64 points, in the pixels of the
   frames of `format_id`: one point is a tap, and a finger that stays at one
   point for 500 ms or more is a long press. The times start at 0 and never
@@ -1839,7 +1843,12 @@ service. The desktop only asks, and reports the feature `READY`.
 - `SCREEN_KEY_BACK`, `HOME`, `RECENTS` and `NOTIFICATIONS` are the
   system's navigation actions. `BACKSPACE`, `ENTER` and `text` act on the
   text field that has the focus; `text` is 1 to 4096 bytes, typed at the
-  cursor in place of any selection.
+  cursor in place of any selection. A password field does not show its
+  text to the phone app, so there the phone types and deletes only while it
+  can tell what the field holds, for example because it is empty or holds
+  only what the phone typed there during this stream, and answers
+  `NOT_ALLOWED` otherwise. `ENTER` in a field that offers no action answers
+  `NOT_ALLOWED`.
 - The phone answers `Ack` once it carried the input out, `NOT_ALLOWED`
   while it does not accept input from that desktop, `EXPIRED` to a gesture
   whose `format_id` is not the current one, `NOT_FOUND` to text or a text
@@ -1860,6 +1869,7 @@ service. The desktop only asks, and reports the feature `READY`.
 | Points per gesture | 1 to 64 |
 | Gesture length | 10 seconds |
 | `ScreenInput.text` | 1 to 4096 bytes |
+| Inputs waiting on the phone | 32 |
 
 ## Phone status
 
