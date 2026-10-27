@@ -2,6 +2,7 @@ import { useCallback } from "react";
 
 import { StatusDot, type Tone } from "@/components/ui";
 import { useDevices } from "@/features/pairing/devices-context";
+import { PhoneSummary } from "@/features/phone/PhoneSummary";
 import { useDesktopApi, type Device } from "@/lib/api";
 import { useAsync, type AsyncState } from "@/lib/use-async";
 
@@ -27,13 +28,15 @@ function describe(devices: AsyncState<Device[]>): { tone: Tone; label: string; d
   return { tone: "neutral", label: "No phone paired", detail: "Pair a phone to get started" };
 }
 
-/** Connection summary and app version, pinned to the bottom of the sidebar. */
+/** Connection summary, the connected phone's status and app version, pinned to the bottom of the sidebar. */
 export function ConnectionStatus() {
   const api = useDesktopApi();
   const { devices } = useDevices();
   const loadInfo = useCallback(() => api.appInfo(), [api]);
   const [info] = useAsync(loadInfo);
   const { tone, label, detail } = describe(devices);
+  const connected =
+    devices.status === "ready" ? devices.data.find((d) => d.status === "connected") : undefined;
 
   return (
     <section className="connection" aria-label="Connection">
@@ -44,6 +47,7 @@ export function ConnectionStatus() {
           <p className="connection__detail">{detail}</p>
         </div>
       </div>
+      {connected && <PhoneSummary key={connected.id} device={connected} />}
       {info.status === "ready" && (
         <p className="connection__version">
           {info.data.name} {info.data.version}

@@ -89,6 +89,21 @@ describe("SettingsPage", () => {
     );
   });
 
+  it("shows the phone's status until the user hides it", async () => {
+    const user = userEvent.setup();
+    const api = renderPage();
+
+    const status = await screen.findByRole("switch", { name: "Show the phone's status" });
+    expect(status).toBeChecked();
+    expect(status).toHaveAccessibleDescription(/battery, signal and sound mode/);
+
+    await user.click(status);
+    expect(status).not.toBeChecked();
+    expect(api.setSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ showPhoneStatus: false }),
+    );
+  });
+
   it("says when a change could not be saved", async () => {
     const user = userEvent.setup();
     const api = createFakeApi();

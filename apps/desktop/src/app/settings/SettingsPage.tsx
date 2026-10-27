@@ -110,6 +110,17 @@ export function SettingsPage() {
             hint="Files your phones send are saved in your Downloads folder, and you can send files to them. Each phone also has its own switch in the link2linux app."
           />
         </Card>
+        <Card>
+          <h2 className="settings__group">Phone status</h2>
+          <Toggle
+            label="Show the phone's status"
+            checked={settings.showPhoneStatus ?? true}
+            onChange={(checked) => {
+              update({ ...settings, showPhoneStatus: checked });
+            }}
+            hint="The sidebar shows the connected phone's battery, signal and sound mode, as its own status bar does, and nothing about where it is. With this off, the phone stops sending them."
+          />
+        </Card>
       </>
     );
   } else if (loaded.status === "error") {

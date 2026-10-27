@@ -15,7 +15,9 @@ import {
   type FileTransferEvent,
   type PairingMethod,
   type PairingState,
+  type PhoneStatus,
   type PhoneTarget,
+  type RingStatus,
   type Settings,
   type StartupError,
 } from "./bindings";
@@ -39,7 +41,16 @@ export type {
   PairingFailure,
   PairingMethod,
   PairingState,
+  PhoneBattery,
+  PhoneCellular,
+  PhoneStatus,
   PhoneTarget,
+  PhoneWifi,
+  RingEnd,
+  RingerMode,
+  RingPhase,
+  RingProblem,
+  RingStatus,
   Settings,
   StartupError,
   TransferDirection,
@@ -111,6 +122,22 @@ export interface DesktopApi {
   onFileDrag(listener: (over: boolean) => void): Promise<Unsubscribe>;
   /** Files were dropped on the window. */
   onFilesDropped(listener: (drop: FilesDropped) => void): Promise<Unsubscribe>;
+
+  /** A phone's battery, signal and sound mode. */
+  getPhoneStatus(deviceId: string): Promise<PhoneStatus>;
+  /** Subscribe before reading a snapshot, so nothing is missed in between. */
+  onPhoneStatusChanged(
+    deviceId: string,
+    listener: (status: PhoneStatus) => void,
+  ): Promise<Unsubscribe>;
+  /** Whether a phone rings, and why it cannot or did not. */
+  getRingStatus(deviceId: string): Promise<RingStatus>;
+  /** Subscribe before reading a snapshot, so nothing is missed in between. */
+  onRingChanged(deviceId: string, listener: (ring: RingStatus) => void): Promise<Unsubscribe>;
+  /** Makes a phone ring for a minute, even when it is set to silent. What came of it arrives as a new ring status. */
+  ringPhone(deviceId: string): Promise<void>;
+  /** Stops a phone ringing. */
+  stopRinging(deviceId: string): Promise<void>;
 
   unpairDevice(deviceId: string): Promise<void>;
   getPairingState(): Promise<PairingState>;
@@ -209,6 +236,18 @@ export const tauriApi: DesktopApi = {
     events.filesDropped.listen((event) => {
       listener(event.payload);
     }),
+  getPhoneStatus: (deviceId) => expectData(commands.getPhoneStatus(deviceId)),
+  onPhoneStatusChanged: (deviceId, listener) =>
+    events.phoneStatusChanged.listen((event) => {
+      if (event.payload.deviceId === deviceId) listener(event.payload.status);
+    }),
+  getRingStatus: (deviceId) => expectData(commands.getRingStatus(deviceId)),
+  onRingChanged: (deviceId, listener) =>
+    events.ringChanged.listen((event) => {
+      if (event.payload.deviceId === deviceId) listener(event.payload.ring);
+    }),
+  ringPhone: (deviceId) => expectOk(commands.ringPhone(deviceId)),
+  stopRinging: (deviceId) => expectOk(commands.stopRinging(deviceId)),
   unpairDevice: (deviceId) => expectOk(commands.unpairDevice(deviceId)),
   getPairingState: () => commands.getPairingState(),
   startPairing: (method) => expectOk(commands.startPairing(method)),
