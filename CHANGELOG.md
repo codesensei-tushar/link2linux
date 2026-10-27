@@ -19,6 +19,13 @@ from Unreleased to a version.
   volume for a minute, even when it is set to silent, until you stop it on
   either device. It keeps ringing if the connection drops, so you can still
   find it.
+- Calls. Take and make the phone's calls on the computer, with its
+  microphone and speakers, over Bluetooth. The Calls page pairs the two
+  over Bluetooth with a code you confirm on both, then shows incoming and
+  ongoing calls with answer, decline, hang up and a keypad, and has a dial
+  pad. An incoming call pops up on the computer, and the phone's own call
+  notification is shown only once. Turn calls off on the computer to keep
+  them on the phone. Media audio stays on the phone.
 
 ### Changed
 
@@ -30,6 +37,17 @@ from Unreleased to a version.
 
 - The Messages placeholder pages. Replies to texts already work from their
   notifications.
+
+### Known limitations
+
+- Calls need PipeWire 1.4 or later with its own Bluetooth backend, as in
+  Ubuntu 26.04; Ubuntu 24.04's PipeWire is too old. The Calls page says so
+  where calls can't work.
+- There is no mute button during a call yet: PipeWire's call control has
+  no mute.
+- Calls, phone status and ringing have not been tried on many phones and
+  Bluetooth adapters yet. Some phones report less status, for example no
+  network generation before Android 11.
 
 ## [0.2.0] - 2026-10-27
 
