@@ -84,6 +84,9 @@ internal class AndroidScreenController(private val service: () -> AccessibilityS
 
     /** The focused field as it was when looked up; writing replaces its text and places the cursor. */
     private class NodeField(private val node: AccessibilityNodeInfo) : TextField {
+        // Nodes are equal when they stand for the same view in the same window.
+        override val identity: Any = node
+
         // A field that shows its hint has no content.
         override val text: String = if (node.isShowingHintText) "" else node.text?.toString().orEmpty()
         override val selectionStart: Int = node.textSelectionStart

@@ -571,6 +571,27 @@ class ScreenEngineTest {
     }
 
     @Test
+    fun aPasswordTypedDuringAStreamIsForgottenWithIt() = runTest {
+        control.value = true
+        val engine = engine()
+        val peer = FakePeer("a")
+        val password = FakeField("", isPassword = true).also { controller.field = it }
+        val replies = mutableListOf<ScreenReply>()
+
+        share(engine, peer)
+        engine.input(peer, screenInput { text = "ab" }, replies::add)
+        engine.input(peer, screenInput { text = "c" }, replies::add)
+        runCurrent()
+        engine.stopFrom(peer)
+        share(engine, peer)
+        engine.input(peer, screenInput { text = "d" }, replies::add)
+        runCurrent()
+
+        assertEquals(listOf(null, null, ErrorCode.ERROR_CODE_NOT_ALLOWED), replies.map { it.code() })
+        assertEquals("abc", password.content)
+    }
+
+    @Test
     fun aGestureOnFramesOfAnOlderFormatHasExpired() = runTest {
         control.value = true
         val engine = engine()

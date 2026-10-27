@@ -14,8 +14,9 @@ import org.junit.Test
 
 /** The fakes of the platform's controller, shared with the engine's tests. */
 internal class FakeField(
-    override var text: String,
-    override var selectionStart: Int = text.length,
+    /** What the field holds; a password shows as many dots as it has characters, as on Android. */
+    var content: String,
+    override var selectionStart: Int = content.length,
     override var selectionEnd: Int = selectionStart,
     override val isPassword: Boolean = false,
     override val isMultiLine: Boolean = false,
@@ -24,9 +25,13 @@ internal class FakeField(
     var accepts = true
     var entered = 0
 
+    override val identity: Any get() = this
+
+    override val text: String get() = if (isPassword) "\u2022".repeat(content.length) else content
+
     override fun setText(text: String, cursor: Int): Boolean {
         if (!accepts) return false
-        this.text = text
+        content = text
         selectionStart = cursor
         selectionEnd = cursor
         return true
@@ -173,7 +178,7 @@ class InputCarrierTest {
         assertEquals(ScreenReply.Done, carrier.carryOut(key(ScreenKey.SCREEN_KEY_BACKSPACE), video))
         assertEquals("ab", field.text)
 
-        field.text = ""
+        field.content = ""
         assertEquals(ScreenReply.Done, carrier.carryOut(key(ScreenKey.SCREEN_KEY_BACKSPACE), video))
     }
 
@@ -192,19 +197,77 @@ class InputCarrierTest {
     }
 
     @Test
-    fun aPasswordFieldIsTypedIntoOnlyWhenItsWholeContentGoes() = runTest {
+    fun aPasswordFieldThisCarrierDidNotTypeIntoIsTypedIntoOnlyWhenItsWholeContentGoes() = runTest {
         // Android shows the password as dots: inserting among them would replace the password with dots.
-        val password = FakeField("\u2022\u2022\u2022", isPassword = true).also { controller.field = it }
+        val password = FakeField("abc", isPassword = true).also { controller.field = it }
         assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(text("x"), video).code())
         assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(key(ScreenKey.SCREEN_KEY_BACKSPACE), video).code())
 
         password.selectionStart = 0
         assertEquals(ScreenReply.Done, carrier.carryOut(text("secret"), video))
-        assertEquals("secret", password.text)
+        assertEquals("secret", password.content)
 
         val empty = FakeField("", isPassword = true).also { controller.field = it }
         assertEquals(ScreenReply.Done, carrier.carryOut(text("pw"), video))
-        assertEquals("pw", empty.text)
+        assertEquals("pw", empty.content)
+    }
+
+    @Test
+    fun typingIntoAPasswordGoesOnFromWhatWasTyped() = runTest {
+        val password = FakeField("", isPassword = true).also { controller.field = it }
+
+        assertEquals(ScreenReply.Done, carrier.carryOut(text("a"), video))
+        assertEquals(ScreenReply.Done, carrier.carryOut(text("b"), video))
+        assertEquals(ScreenReply.Done, carrier.carryOut(text("c"), video))
+        assertEquals(ScreenReply.Done, carrier.carryOut(key(ScreenKey.SCREEN_KEY_BACKSPACE), video))
+        password.selectionStart = 0
+        password.selectionEnd = 1
+        assertEquals(ScreenReply.Done, carrier.carryOut(text("Z"), video))
+
+        assertEquals("Zb", password.content)
+        assertEquals(1, password.selectionStart)
+    }
+
+    @Test
+    fun aPasswordChangedOnThePhoneIsNoLongerKnown() = runTest {
+        val password = FakeField("", isPassword = true).also { controller.field = it }
+        carrier.carryOut(text("ab"), video)
+
+        // The user typed a character on the phone.
+        password.content = "abc"
+        password.selectionStart = 3
+        password.selectionEnd = 3
+
+        assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(text("d"), video).code())
+        // Forgotten for good, also once the length matches by chance again.
+        password.content = "ab"
+        assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(text("d"), video).code())
+        assertEquals("ab", password.content)
+    }
+
+    @Test
+    fun theFocusMovingToAnotherFieldForgetsThePassword() = runTest {
+        val password = FakeField("", isPassword = true).also { controller.field = it }
+        carrier.carryOut(text("ab"), video)
+
+        controller.field = FakeField("hi")
+        assertEquals(ScreenReply.Done, carrier.carryOut(text("!"), video))
+        controller.field = password
+
+        assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(text("c"), video).code())
+        assertEquals("ab", password.content)
+    }
+
+    @Test
+    fun aFocusLostForAMomentForgetsThePasswordToo() = runTest {
+        val password = FakeField("", isPassword = true).also { controller.field = it }
+        carrier.carryOut(text("ab"), video)
+
+        controller.field = null
+        assertEquals(ErrorCode.ERROR_CODE_NOT_FOUND, carrier.carryOut(text("c"), video).code())
+        controller.field = password
+
+        assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, carrier.carryOut(text("c"), video).code())
     }
 
     @Test

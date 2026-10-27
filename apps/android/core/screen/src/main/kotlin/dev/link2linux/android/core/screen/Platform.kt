@@ -133,6 +133,9 @@ data class Stroke(val points: List<ScreenPointF>, val durationMillis: Long)
 
 /** The text field that has the input focus, as it is when it was looked up. */
 interface TextField {
+    /** Names the field: equal for the same field each time it is looked up, and different for another. */
+    val identity: Any
+
     /** Its content; empty while it shows its hint. For a password, Android gives as many dots as it holds. */
     val text: String
 

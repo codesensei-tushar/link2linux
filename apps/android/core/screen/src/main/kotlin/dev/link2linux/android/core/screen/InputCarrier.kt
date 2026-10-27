@@ -9,9 +9,16 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Carries out one `ScreenInput` through [controller] and gives the answer
  * (docs/protocol.md, "Control"). Whether the desktop may send input at all
- * is the stream's to check first.
+ * is the stream's to check first. Each stream has its own, so a password
+ * it typed is forgotten with the stream; one input at a time.
  */
 internal class InputCarrier(private val controller: ScreenController) {
+
+    /** A password as this carrier typed it into [field]. */
+    private class Typed(val field: Any, val text: String)
+
+    // Only in memory, for one stream, and never logged.
+    private var typed: Typed? = null
 
     /** Carries [input] out on the screen whose video is [video], the current one. */
     suspend fun carryOut(input: ScreenInput, video: VideoFormat?): ScreenReply = when (input.inputCase) {
@@ -41,14 +48,14 @@ internal class InputCarrier(private val controller: ScreenController) {
         ScreenKey.SCREEN_KEY_RECENTS,
         ScreenKey.SCREEN_KEY_NOTIFICATIONS,
         -> if (controller.navigate(key)) ScreenReply.Done else unavailable("Android did not carry the key out")
-        ScreenKey.SCREEN_KEY_BACKSPACE -> withField { field ->
-            val edit = TextEdits.backspace(field.text, field.selectionStart, field.selectionEnd)
+        ScreenKey.SCREEN_KEY_BACKSPACE -> withField { field, content ->
+            val edit = TextEdits.backspace(content, field.selectionStart, field.selectionEnd)
             if (edit == null) ScreenReply.Done else write(field, edit)
         }
-        ScreenKey.SCREEN_KEY_ENTER -> withField { field ->
+        ScreenKey.SCREEN_KEY_ENTER -> withField { field, content ->
             when {
                 field.canEnter -> if (field.enter()) ScreenReply.Done else unavailable("The text field did not take Enter")
-                field.isMultiLine -> write(field, TextEdits.insert(field.text, field.selectionStart, field.selectionEnd, "\n"))
+                field.isMultiLine -> write(field, TextEdits.insert(content, field.selectionStart, field.selectionEnd, "\n"))
                 // Not UNSUPPORTED, which would say the feature is not active in this session.
                 else -> ScreenReply.Refused(ErrorCode.ERROR_CODE_NOT_ALLOWED, "The text field has no Enter")
             }
@@ -60,25 +67,40 @@ internal class InputCarrier(private val controller: ScreenController) {
         if (text.isEmpty() || text.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES) {
             return invalid("Text of ${text.length} chars, outside 1 to $MAX_TEXT_BYTES bytes")
         }
-        return withField { field -> write(field, TextEdits.insert(field.text, field.selectionStart, field.selectionEnd, text)) }
+        return withField { field, content -> write(field, TextEdits.insert(content, field.selectionStart, field.selectionEnd, text)) }
     }
 
     /**
-     * Runs [edit] on the focused text field. Android shows a password
-     * field's content as dots, so typing can only replace all of it: into
-     * one that is empty or wholly selected.
+     * Runs [edit] on the focused text field and its content. Android shows a
+     * password field's content as dots, one per character: while the field
+     * holds as many characters as this carrier typed into it, what it typed
+     * stands in for them. Otherwise typing can only replace all of the
+     * password, in a field that is empty or wholly selected. What was typed
+     * is forgotten once another field has the focus.
      */
-    private fun withField(edit: (TextField) -> ScreenReply): ScreenReply {
+    private fun withField(edit: (TextField, String) -> ScreenReply): ScreenReply {
         val field = controller.focusedField()
-            ?: return ScreenReply.Refused(ErrorCode.ERROR_CODE_NOT_FOUND, "No text field has the focus")
-        if (field.isPassword && field.text.isNotEmpty() && !TextEdits.selectsAll(field.text, field.selectionStart, field.selectionEnd)) {
-            return ScreenReply.Refused(ErrorCode.ERROR_CODE_NOT_ALLOWED, "Android hides what a password field holds")
+        if (field == null || typed?.field != field.identity) typed = null
+        if (field == null) return ScreenReply.Refused(ErrorCode.ERROR_CODE_NOT_FOUND, "No text field has the focus")
+        val remembered = typed?.text
+        val content = when {
+            !field.isPassword || field.text.isEmpty() -> field.text
+            remembered != null && remembered.length == field.text.length -> remembered
+            TextEdits.selectsAll(field.text, field.selectionStart, field.selectionEnd) -> field.text
+            else -> {
+                // Changed on the phone since: what was typed no longer tells what it holds.
+                typed = null
+                return ScreenReply.Refused(ErrorCode.ERROR_CODE_NOT_ALLOWED, "Android hides what a password field holds")
+            }
         }
-        return edit(field)
+        return edit(field, content)
     }
 
-    private fun write(field: TextField, edit: TextEdits.Edit): ScreenReply =
-        if (field.setText(edit.text, edit.cursor)) ScreenReply.Done else unavailable("The text field did not take the text")
+    private fun write(field: TextField, edit: TextEdits.Edit): ScreenReply {
+        if (!field.setText(edit.text, edit.cursor)) return unavailable("The text field did not take the text")
+        typed = if (field.isPassword) Typed(field.identity, edit.text) else null
+        return ScreenReply.Done
+    }
 
     private fun invalid(detail: String) = ScreenReply.Refused(ErrorCode.ERROR_CODE_INVALID_ARGUMENT, detail)
 

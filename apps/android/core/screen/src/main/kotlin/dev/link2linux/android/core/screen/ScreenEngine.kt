@@ -59,7 +59,7 @@ class ScreenEngine(
     private val asker: ScreenAsker,
     /** The codecs this phone can encode. */
     private val encodable: Set<ScreenCodec>,
-    controller: ScreenController,
+    private val controller: ScreenController,
     /** Whether the user has the feature on. */
     val enabled: StateFlow<Boolean>,
     /** Whether the desktop may control the phone: the user allows it and the accessibility service runs. */
@@ -88,7 +88,6 @@ class ScreenEngine(
     private var state: State? = null
     private var lastAskId = 0L // guarded by lock
     private val formatIds = AtomicInteger()
-    private val carrier = InputCarrier(controller)
 
     private val _share = MutableStateFlow<ShareState>(ShareState.Idle)
 
@@ -268,6 +267,7 @@ class ScreenEngine(
      */
     private inner class Stream(val peer: ScreenPeer, private val capture: ScreenCapture) : CaptureSink {
         private val outbox = Outbox()
+        private val carrier = InputCarrier(controller)
         private val inputs = Channel<PendingInput>(MAX_WAITING_INPUTS)
         private val rate = FrameRate()
         private val quality = Quality()
