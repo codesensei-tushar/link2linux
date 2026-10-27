@@ -203,6 +203,24 @@ class RingSessionTest {
     }
 
     @Test
+    fun withoutANotificationItRingsAllTheSameAndTheScreensStopEndsIt() = runBlocking {
+        // The notifier here shows nothing, as when the user blocked the app's notifications.
+        val peer = connect()
+        peer.readStart()
+
+        assertEquals(PayloadCase.ACK, peer.ring().payloadCase)
+        assertTrue(player.playing)
+        assertEquals("Test desktop", engine.ringingFor.value)
+
+        // What the Ring screen's Stop button calls.
+        engine.stopOnPhone()
+
+        assertEquals(RingEndReason.RING_END_REASON_STOPPED_ON_PHONE, peer.readEnded())
+        assertFalse(player.playing)
+        assertEquals(null, engine.ringingFor.value)
+    }
+
+    @Test
     fun aStopWhileThePhoneDoesNotRingIsAcknowledged() = runBlocking {
         val peer = connect()
         peer.readStart()

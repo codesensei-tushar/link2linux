@@ -43,6 +43,9 @@ class CallsSessionTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val availability = MutableStateFlow(FeatureAvailability.FEATURE_AVAILABILITY_READY)
     private val prompts = CopyOnWriteArrayList<Pair<String, String>>()
+
+    /** Whether the fake prompt can be shown, as with the app's notifications allowed. */
+    @Volatile private var canPrompt = true
     private val devices = InMemoryPairedDeviceRepository()
     private val service = PairingService(
         identity = TestCertificates.generate("test phone").asSource(),
@@ -53,7 +56,7 @@ class CallsSessionTest {
         },
         scope = scope,
         listenAddresses = ListenAddresses { local, _ -> local.isLoopbackAddress },
-        hooks = CallsSessionHooks(availability) { name, address -> prompts += name to address },
+        hooks = CallsSessionHooks(availability) { name, address -> canPrompt.also { if (it) prompts += name to address } },
         port = 0,
         bindAddress = InetAddress.getLoopbackAddress(),
     )
@@ -131,6 +134,19 @@ class CallsSessionTest {
         assertEquals(PayloadCase.ACK, peer.pair()?.payloadCase)
 
         assertEquals(listOf("Laptop" to "00:1A:7D:DA:71:13"), prompts.toList())
+    }
+
+    @Test
+    fun aPromptThatCannotBeShownIsAnsweredNotAllowed() = runBlocking {
+        val peer = connect()
+        peer.readStart()
+        canPrompt = false
+
+        val reply = peer.pair()!!
+
+        assertEquals(PayloadCase.ERROR_REPLY, reply.payloadCase)
+        assertEquals(ErrorCode.ERROR_CODE_NOT_ALLOWED, reply.errorReply.code)
+        assertEquals(emptyList<Pair<String, String>>(), prompts.toList())
     }
 
     @Test

@@ -50,7 +50,10 @@ class CallsRuntime @Inject internal constructor(@ApplicationContext context: Con
         if (!on) pairing.cancel()
     }
 
-    /** Asks the user to pair with the computer adapter [name] at [address], for the computer's pairing window. */
+    /**
+     * Asks the user to pair with the computer adapter [name] at [address], for the computer's
+     * pairing window. Returns false when the phone cannot show the prompt.
+     */
     fun promptPairing(name: String, address: String) = pairing.show(name, address)
 
     /** Whether tapping the pairing prompt starts pairing at once, which needs the nearby devices permission. */
