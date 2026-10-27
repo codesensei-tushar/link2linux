@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="photos_toggle_title">Show recent photos on your computer</string>
+    <string name="photos_toggle_summary">Your computer shows your newest camera photos and screenshots while it is connected, and you save the ones you want there.</string>
+
+    <string name="photos_access_title">Photo access</string>
+    <string name="photos_access_all">Allowed</string>
+    <string name="photos_access_selected">Only the photos you picked. Your computer sees those alone.</string>
+    <string name="photos_access_missing">Not allowed yet. Your computer shows no photos until you allow it.</string>
+    <string name="photos_access_allow">Allow</string>
+    <string name="photos_access_pick">Change</string>
+    <string name="photos_open_settings">Open settings</string>
+    <string name="photos_rationale_title">Allow access to photos?</string>
+    <string name="photos_rationale_body">link2linux reads your camera photos and screenshots to show them on your computer. Android asks next; you can allow all photos or only the ones you pick.</string>
+    <string name="photos_continue">Continue</string>
+    <string name="photos_not_now">Not now</string>
+
+    <string name="photos_shared_title">What your computer sees</string>
+    <string name="photos_shared_body">Your 200 newest camera photos and screenshots: their names, sizes and dates, small previews, and the photos you open or save there. Images from other apps and videos are left out. The photos stay on this phone; your computer keeps what it fetched in memory only, until you save a photo.</string>
+</resources>
