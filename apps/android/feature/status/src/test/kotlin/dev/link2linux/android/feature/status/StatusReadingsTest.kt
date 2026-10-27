@@ -114,4 +114,24 @@ class StatusReadingsTest {
         assertTrue(StatusReadings(interruptionFilter = NotificationManager.INTERRUPTION_FILTER_NONE).toStatus().doNotDisturb)
         assertFalse(StatusReadings(interruptionFilter = NotificationManager.INTERRUPTION_FILTER_UNKNOWN).toStatus().doNotDisturb)
     }
+
+    @Test
+    fun aFailedCellularWatcherLeavesTheCellularPartUnset() {
+        val read = StatusReadings(
+            telephony = true,
+            cellLevel = 3,
+            serviceState = ServiceState.STATE_IN_SERVICE,
+            networkType = TelephonyManager.NETWORK_TYPE_LTE,
+            operatorName = "Operator",
+        )
+
+        assertFalse(read.withoutCellular().toStatus().hasCellular())
+    }
+
+    @Test
+    fun aFailedWifiWatcherLeavesTheWifiPartUnset() {
+        val status = StatusReadings(wifiLevel = 3).withoutWifi().toStatus()
+
+        assertFalse(status.hasWifi())
+    }
 }

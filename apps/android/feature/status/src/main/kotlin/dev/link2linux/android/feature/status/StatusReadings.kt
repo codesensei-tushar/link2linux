@@ -44,6 +44,19 @@ internal data class StatusReadings(
     val interruptionFilter: Int? = null,
 ) {
 
+    /** The readings without the cellular part, for when its watcher failed after its first reading. */
+    fun withoutCellular() = copy(
+        telephony = false,
+        cellLevel = 0,
+        serviceState = null,
+        networkType = null,
+        overrideNetworkType = null,
+        operatorName = "",
+    )
+
+    /** The readings without the Wi-Fi part, for when its watcher failed after its first reading. */
+    fun withoutWifi() = copy(wifiLevel = null)
+
     fun toStatus(): PhoneStatus = PhoneStatus.newBuilder().apply {
         batteryPercent()?.let { percent ->
             battery = Battery.newBuilder()
