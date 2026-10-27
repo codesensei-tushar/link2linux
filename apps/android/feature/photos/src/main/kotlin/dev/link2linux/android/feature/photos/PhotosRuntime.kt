@@ -58,15 +58,15 @@ class PhotosRuntime @Inject internal constructor(@ApplicationContext context: Co
     }
 
     /**
-     * Reads the permission again. [changedPick] says the user may have
-     * picked other photos, which changes the list without changing the
-     * permission.
+     * Reads the permission again and, when that can change the list, loads
+     * it. The photos the user picked can change without the permission
+     * changing, and the platform does not report it.
      */
-    fun refreshAccess(changedPick: Boolean = false) {
+    fun refreshAccess() {
         val before = _access.value
         _access.value = PhotoPermissions.access(app)
         update()
-        if (changedPick || _access.value != before) engine.refresh()
+        if (PhotoPermissions.reloadsList(before, _access.value)) engine.refresh()
     }
 
     private fun update() = engine.setAvailability(PhotoPermissions.availabilityOf(_enabled.value, _access.value))

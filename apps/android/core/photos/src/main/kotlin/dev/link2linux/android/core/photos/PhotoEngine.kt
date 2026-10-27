@@ -177,7 +177,8 @@ class PhotoEngine(
      * at most one every [intervalMillis] counted from the last one the
      * desktop got, starting with the reply. A change in the meantime
      * replaces the one waiting, so only the newest goes out, and nothing goes
-     * out when the list ends up as the desktop has it.
+     * out when the list ends up as the desktop has it. The shared flow can
+     * still hold an older load than the reply, and that one is not sent.
      *
      * Returns when the feature leaves `READY` or the desktop asks for the
      * list again, and ends the subscription then, as when cancelled: the
@@ -205,9 +206,28 @@ class PhotoEngine(
                 // Subscribed for as long as the desktop follows, so the listener stays on between updates.
                 val latest = lists.stateIn(this, SharingStarted.Eagerly, null)
                 val updates = launch {
+                    // One stale emission, by identity: the same photos can be a
+                    // later change, and that one still has to go out.
+                    var stale: List<Photo>? = null
                     while (true) {
                         delay(intervalMillis)
-                        val next = latest.filterNotNull().first { it != sent.photos }
+                        val signal = latest.filterNotNull().first { it != sent.photos && it !== stale }
+                        // The signal can be a load older than the reply. Read
+                        // again and send that, which is the newest list.
+                        val next = try {
+                            checked(library.photos(MAX_PHOTOS))
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            onFailure(e)
+                            stale = signal
+                            continue
+                        }
+                        if (next == sent.photos) {
+                            stale = signal
+                            continue
+                        }
+                        stale = null
                         val update = PhotoDesktop.Sent(next)
                         // Before sending: the desktop may fetch a new photo as soon as it sees it.
                         if (!desktop.replace(sent, update)) break

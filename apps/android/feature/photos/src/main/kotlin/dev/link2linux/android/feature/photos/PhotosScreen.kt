@@ -44,7 +44,7 @@ class PhotosViewModel @Inject internal constructor(private val runtime: PhotosRu
 
     fun setEnabled(enabled: Boolean) = runtime.setEnabled(enabled)
 
-    fun refreshAccess(changedPick: Boolean = false) = runtime.refreshAccess(changedPick)
+    fun refreshAccess() = runtime.refreshAccess()
 }
 
 /** Whether the computer shows the phone's recent photos, the permission that needs, and what it shares. */
@@ -68,7 +68,7 @@ fun PhotosScreen(
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         denied = results.values.none { it }
         // Asking again lets the user pick other photos, which the permission alone does not show.
-        viewModel.refreshAccess(changedPick = true)
+        viewModel.refreshAccess()
     }
 
     PhotosContent(

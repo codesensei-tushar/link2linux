@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.nio.ByteBuffer
 
 /**
@@ -161,13 +162,22 @@ internal class AndroidPhotoLibrary(context: Context, private val onRefused: () -
     @SuppressLint("ExifInterface")
     private fun decodeSampled(uri: Uri, maxSize: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(PhotoQuery.markable(it), null, bounds) } ?: return null
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         val options = BitmapFactory.Options().apply {
             inSampleSize = PhotoQuery.sampleSize(maxOf(bounds.outWidth, bounds.outHeight), maxSize)
         }
-        val decoded = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) } ?: return null
-        val degrees = resolver.openInputStream(uri)?.use { rotationOf(ExifInterface(it)) } ?: 0
+        val decoded = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(PhotoQuery.markable(it), null, options) } ?: return null
+        val degrees = resolver.openInputStream(uri)?.use { stream ->
+            try {
+                rotationOf(ExifInterface(PhotoQuery.markable(stream)))
+            } catch (_: IOException) {
+                // A photo with no readable orientation is shown as stored.
+                0
+            } catch (_: IllegalArgumentException) {
+                0
+            }
+        } ?: 0
         if (degrees == 0) return decoded
         val turned = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, Matrix().apply { postRotate(degrees.toFloat()) }, true)
         if (turned !== decoded) decoded.recycle()

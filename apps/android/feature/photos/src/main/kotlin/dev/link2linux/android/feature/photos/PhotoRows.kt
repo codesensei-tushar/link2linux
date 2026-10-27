@@ -2,6 +2,8 @@ package dev.link2linux.android.feature.photos
 
 import dev.link2linux.protocol.v1.Photo
 import dev.link2linux.protocol.v1.photo
+import java.io.BufferedInputStream
+import java.io.InputStream
 
 /** One image row of MediaStore, as the query reads it. */
 internal data class PhotoRow(
@@ -87,4 +89,11 @@ internal object PhotoQuery {
 
     /** The photo's MediaStore id, or null for an id this phone never gives out. */
     fun mediaId(photo: Photo): Long? = photo.id.toLongOrNull()?.takeIf { it >= 0 && it.toString() == photo.id }
+
+    /**
+     * [source] able to rewind. The platform's decoder and EXIF reader mark
+     * and reset the stream; a content stream cannot, and the decode then
+     * fails or the reader refuses it.
+     */
+    fun markable(source: InputStream): InputStream = if (source.markSupported()) source else BufferedInputStream(source)
 }

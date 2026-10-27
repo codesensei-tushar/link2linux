@@ -5,8 +5,12 @@ import dev.link2linux.android.core.photos.PhotoAvailability
 import dev.link2linux.protocol.v1.photo
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.InputStream
 
 class PhotoRowsTest {
 
@@ -124,6 +128,29 @@ class PhotoRowsTest {
         assertEquals(PhotoAccess.NONE, PhotoPermissions.accessOf(33) { it == storage })
         assertEquals(PhotoAccess.ALL, PhotoPermissions.accessOf(28) { it == storage })
         assertEquals(PhotoAccess.NONE, PhotoPermissions.accessOf(28) { it == images })
+    }
+
+    @Test
+    fun pickingOtherPhotosReloadsWhileAccessStaysPartial() {
+        assertTrue(PhotoPermissions.reloadsList(PhotoAccess.SELECTED, PhotoAccess.SELECTED))
+        assertTrue(PhotoPermissions.reloadsList(PhotoAccess.NONE, PhotoAccess.SELECTED))
+        assertTrue(PhotoPermissions.reloadsList(PhotoAccess.SELECTED, PhotoAccess.NONE))
+        assertTrue(PhotoPermissions.reloadsList(PhotoAccess.ALL, PhotoAccess.ALL))
+        assertFalse(PhotoPermissions.reloadsList(PhotoAccess.NONE, PhotoAccess.NONE))
+    }
+
+    @Test
+    fun aStreamThatCannotRewindIsBufferedBeforeDecode() {
+        val plain = object : InputStream() {
+            override fun read(): Int = -1
+        }
+        val buffered = PhotoQuery.markable(plain)
+        val already = ByteArrayInputStream(byteArrayOf(1))
+
+        assertFalse(plain.markSupported())
+        assertTrue(buffered.markSupported())
+        assertTrue(buffered !== plain)
+        assertTrue(PhotoQuery.markable(already) === already)
     }
 
     @Test
