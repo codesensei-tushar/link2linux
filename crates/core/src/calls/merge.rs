@@ -182,6 +182,13 @@ pub fn merge(gateway: Option<&Gateway>, notifications: &[CallNotification]) -> V
                 matched[*call] = Some(left.remove(*note));
             }
         }
+        // Last, one call and one notification left are the same call in
+        // two states: the dialer updates its notification a moment after
+        // the call was answered or put through.
+        let calls_left: Vec<usize> = (0..calls.len()).filter(|&i| matched[i].is_none()).collect();
+        if let ([call], [_]) = (calls_left.as_slice(), left.as_slice()) {
+            matched[*call] = Some(left.remove(0));
+        }
         for (call, note) in calls.into_iter().zip(matched) {
             let name = if call.name.trim().is_empty() {
                 note.map(|n| n.caller.as_str())
@@ -546,6 +553,17 @@ mod tests {
         assert_eq!(shown[0].id, "bt:/ag0/call1");
         assert_eq!(operation(&shown[0], CallAction::Answer), None);
         assert!(!format!("{:?}", shown[0]).contains("\"2\""));
+    }
+
+    #[test]
+    fn a_notification_a_step_behind_the_link_is_the_same_call() {
+        // Answered over Bluetooth: the dialer still says it rings.
+        let link = gateway(vec![call("/ag0/call0", "+15550100", "", CallState::Active)]);
+        let shown = merge(Some(&link), &[note(&ringing("k1", "Anna"))]);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].state, CallState::Active);
+        assert_eq!(shown[0].name, "Anna");
+        assert_eq!(shown[0].notification.as_deref(), Some("k1"));
     }
 
     #[test]

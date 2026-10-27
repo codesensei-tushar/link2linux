@@ -168,6 +168,10 @@ impl NotificationsDriver for ServiceDriver {
         self.service.subscribe()
     }
 
+    fn set_call_banners(&mut self, show: bool) -> BoxFuture<'_, ()> {
+        Box::pin(self.service.set_call_banners(show))
+    }
+
     fn dismiss<'a>(
         &'a mut self,
         session: Option<&'a mut PhoneSession>,

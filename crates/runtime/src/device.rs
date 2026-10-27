@@ -217,6 +217,10 @@ impl Supervisor {
                         tracing::warn!(%error, "could not queue files to send");
                     }
                 }
+                Some(Command::CallsChanged) => {
+                    // Without a session nothing goes to the phone.
+                    let _ = self.features.calls_changed(None).await;
+                }
                 Some(Command::CancelTransfer { id }) => self.features.files.cancel(None, id).await,
                 Some(Command::ForgetTransfer { id }) => self.features.files.forget(id),
                 Some(Command::Dismiss { key }) => {

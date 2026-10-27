@@ -24,6 +24,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 
+use crate::calls::{self, Calls, CallsDriver, CallsPort};
 use crate::candidates::Evidence;
 use crate::clipboard::{
     self, ClipboardMode, ClipboardPhoneState, ClipboardPort, ClipboardStatus, HeldClipboard,
@@ -60,6 +61,9 @@ pub struct RuntimeConfig {
     pub files: bool,
     /// Whether the phones' status is shown at the start. On by default.
     pub show_phone_status: bool,
+    /// Whether the user takes the phones' calls on this computer, at the
+    /// start. On by default.
+    pub calls: bool,
 }
 
 impl RuntimeConfig {
@@ -75,6 +79,7 @@ impl RuntimeConfig {
             clipboard: ClipboardSettings::default(),
             files: true,
             show_phone_status: true,
+            calls: true,
         }
     }
 }
@@ -101,6 +106,9 @@ pub struct Shell {
     /// Where received files go, and how files are opened. Without, the
     /// desktop reports files unavailable to the phones.
     pub files: Option<Arc<dyn Opener>>,
+    /// The desktop's Bluetooth and hands-free call control. Without, the
+    /// desktop reports calls unavailable to the phones.
+    pub calls: Option<Arc<dyn CallsPort>>,
 }
 
 /// Why the runtime could not start.
@@ -206,6 +214,8 @@ pub(crate) struct Core {
     pub files: FilesFactory,
     /// Each phone's status and ringing, as the UI shows them.
     pub phone: Arc<PhoneBoards>,
+    /// The phones' calls through this desktop's Bluetooth.
+    pub calls: Arc<Calls>,
     /// How many device tasks are still running, for a shutdown that waits
     /// for them to clean up.
     pub supervisors: AtomicUsize,
@@ -236,6 +246,7 @@ impl Core {
                 Feature::Files,
                 Feature::Status,
                 Feature::Ring,
+                Feature::Calls,
             ],
         );
         // Before any session, as it cleans up after an earlier run.
@@ -280,6 +291,11 @@ impl Core {
             clipboard_nudge: Notify::new(),
             files,
             phone,
+            calls: Arc::new(Calls::new(
+                shell.calls,
+                config.calls,
+                config.data_dir.root().join("calls.json"),
+            )),
             supervisors: AtomicUsize::new(0),
         });
         // Following the hub before any phone's service can report.
@@ -291,6 +307,7 @@ impl Core {
         for record in &records {
             core.spawn_device(record, None);
         }
+        core.handle.spawn(calls::follow(core.clone()));
         Ok(core)
     }
 
@@ -315,6 +332,9 @@ impl Core {
         start
             .availability
             .insert(Feature::Status, self.phone.status_availability());
+        start
+            .availability
+            .insert(Feature::Calls, self.calls.availability());
         if let Some(address) = *lock(&self.ble_address) {
             start.presence = PresenceUpdate {
                 ble_address: address.to_vec(),
@@ -377,7 +397,9 @@ impl Core {
             ),
             status: StatusDriver::new(phone_board.clone()),
             ring: RingDriver::new(phone_board),
+            calls: CallsDriver::new(record.id.clone(), self.calls.clone()),
         };
+        self.calls.set_phones(self.phone_list());
         self.handle.spawn(forward_changes(
             self.clone(),
             record.id.clone(),
@@ -458,6 +480,8 @@ impl Core {
         lock(&self.evidence).forget(id);
         lock(&self.clipboard_page).board.forget(id);
         self.clipboard_hub.forget_phone(id);
+        self.calls.forget(id);
+        self.calls.set_phones(self.phone_list());
         self.publish_keys();
         self.emit_devices();
         self.clipboard_changed();
@@ -549,6 +573,14 @@ impl Core {
         page.board.snapshot(mode, phones, held)
     }
 
+    /// The paired phones' ids and names, in pairing order.
+    pub fn phone_list(&self) -> Vec<(String, String)> {
+        self.paired_in_order()
+            .into_iter()
+            .map(|record| (record.id, record.name))
+            .collect()
+    }
+
     fn paired_in_order(&self) -> Vec<PairedDevice> {
         let mut records = lock(&self.store).list();
         records.sort_by_key(|record| (record.paired_at, record.id.clone()));
@@ -612,6 +644,7 @@ async fn forward_changes(
     loop {
         match changes.recv().await {
             Ok(change) => {
+                core.calls.notification_changed(&device_id, &change);
                 let event = dto::event(&change);
                 {
                     let mut board = lock(&board);

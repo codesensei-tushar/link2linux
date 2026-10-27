@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use link2linux_core::calls::CallAction;
 use link2linux_core::clipboard::ClipboardSettings;
 use link2linux_core::files::TransferId;
 use link2linux_core::notifications::CachedImage;
@@ -12,6 +13,7 @@ use link2linux_core::pairing::{StoreKey, TrustStore, records};
 use link2linux_core::session::Availability;
 use tokio::runtime::Handle;
 
+use crate::calls;
 use crate::clipboard;
 use crate::discovery::{pump_responses, run_discovery, watch_network};
 use crate::files;
@@ -20,8 +22,8 @@ use crate::pairing;
 use crate::phone::PhoneCommand;
 use crate::shared::{Core, RuntimeConfig, RuntimeError, Shell};
 use crate::view::{
-    BackendError, ClipboardStatus, Device, FileTransfer, MirroredNotification, PairingMethod,
-    PairingState, PhoneStatus, PhoneTarget, RingStatus,
+    BackendError, CallsStatus, ClipboardStatus, Device, FileTransfer, MirroredNotification,
+    PairingMethod, PairingState, PhoneStatus, PhoneTarget, RingStatus,
 };
 
 /// Discovery, pairing and a session with each paired phone.
@@ -430,6 +432,126 @@ impl Runtime {
         } else {
             Err(BackendError::NotFound)
         }
+    }
+
+    /// The phones' calls, and this computer's part in them.
+    #[must_use]
+    pub fn calls(&self) -> CallsStatus {
+        calls::status(&self.core)
+    }
+
+    /// Turns "Use this computer for calls" on or off. Turned off, the
+    /// phones' hands-free links are disconnected, so the phones keep their
+    /// calls; the phones hear of it.
+    pub fn set_calls_enabled(&self, enabled: bool) {
+        calls::set_enabled(&self.core, enabled);
+    }
+
+    /// Opens Bluetooth pairing with phone `device_id` for 2 minutes, and
+    /// asks the phone to pair once it can.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an unknown phone, or when calls can't be used now.
+    pub fn start_bluetooth_pairing(&self, device_id: &str) -> Result<(), BackendError> {
+        calls::start_pairing(&self.core, device_id)
+    }
+
+    /// Closes Bluetooth pairing.
+    pub fn cancel_bluetooth_pairing(&self) {
+        calls::cancel_pairing(&self.core);
+    }
+
+    /// The user compared the code of pairing prompt `prompt`: `matches`
+    /// says whether both devices show the same one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the prompt is over.
+    pub fn confirm_bluetooth_code(&self, prompt: u32, matches: bool) -> Result<(), BackendError> {
+        calls::confirm_code(&self.core, prompt, matches)
+    }
+
+    /// The user picked the paired Bluetooth device at `address` as phone
+    /// `device_id`'s.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an unknown phone or device.
+    pub fn choose_bluetooth_device(
+        &self,
+        device_id: &str,
+        address: &str,
+    ) -> Result<(), BackendError> {
+        calls::choose_device(&self.core, device_id, address)
+    }
+
+    /// Connects phone `device_id`'s hands-free link with this computer.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an unknown phone, one not paired over Bluetooth, or when
+    /// calls can't be used now.
+    pub fn connect_calls(&self, device_id: &str) -> Result<(), BackendError> {
+        calls::connect(&self.core, device_id)
+    }
+
+    /// Answers call `call_id` of phone `device_id`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the call is gone or does not ring.
+    pub fn answer_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        calls::act(&self.core, device_id, call_id, CallAction::Answer)
+    }
+
+    /// Declines the ringing call `call_id` of phone `device_id`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the call is gone.
+    pub fn decline_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        calls::act(&self.core, device_id, call_id, CallAction::Decline)
+    }
+
+    /// Ends call `call_id` of phone `device_id`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the call is gone.
+    pub fn hang_up_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        calls::act(&self.core, device_id, call_id, CallAction::HangUp)
+    }
+
+    /// Calls `number` from phone `device_id`.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a number a phone can't dial, or while the phone's
+    /// hands-free link is down.
+    pub fn dial(&self, device_id: &str, number: &str) -> Result<(), BackendError> {
+        calls::dial(&self.core, device_id, number)
+    }
+
+    /// Sends touch tones in phone `device_id`'s active call.
+    ///
+    /// # Errors
+    ///
+    /// Fails for keys that are not on a keypad, or while the phone's
+    /// hands-free link is down.
+    pub fn send_tones(&self, device_id: &str, tones: &str) -> Result<(), BackendError> {
+        calls::send_tones(&self.core, device_id, tones)
+    }
+
+    /// Mutes or unmutes this computer's microphone in phone `device_id`'s
+    /// calls.
+    ///
+    /// # Errors
+    ///
+    /// Fails while the phone's hands-free link is down, or where it can't
+    /// be muted.
+    pub fn set_call_muted(&self, device_id: &str, muted: bool) -> Result<(), BackendError> {
+        calls::set_muted(&self.core, device_id, muted)
     }
 
     /// The Bluetooth LE address this computer advertises from, which QR

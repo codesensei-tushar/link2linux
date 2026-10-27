@@ -136,6 +136,7 @@ pub(crate) async fn pump_responses(core: Arc<Core>) {
                 {
                     clipboard::popup_clicked(&core, *id);
                 }
+                crate::calls::popup_response(&core, &response);
                 for slot in lock(&core.slots).values() {
                     let _ = slot.commands.send(Command::Response(response.clone()));
                 }

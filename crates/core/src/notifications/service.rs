@@ -24,7 +24,7 @@ use link2linux_platform::{
 };
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    NotificationActionRequest, NotificationDismissRequest, PhoneNotification,
+    NotificationActionRequest, NotificationCategory, NotificationDismissRequest, PhoneNotification,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::broadcast;
@@ -88,6 +88,9 @@ pub struct NotificationService<K, O> {
     keys: HashMap<NotificationId, String>,
     pending: HashMap<u64, Pending>,
     changes: broadcast::Sender<Change>,
+    /// Whether call notifications get banners of their own. Off while the
+    /// calls feature shows the phone's calls itself.
+    call_banners: bool,
 }
 
 impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
@@ -111,6 +114,7 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
             keys: HashMap::new(),
             pending: HashMap::new(),
             changes: broadcast::channel(64).0,
+            call_banners: true,
         }
     }
 
@@ -127,6 +131,30 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
     /// Each change to the mirrored notifications, as it is applied.
     pub fn subscribe(&self) -> broadcast::Receiver<Change> {
         self.changes.subscribe()
+    }
+
+    /// Whether the phone's call notifications get banners of their own.
+    /// The calls feature turns them off while it shows the phone's calls
+    /// itself, with answer and decline over Bluetooth, so a call is not
+    /// shown twice; turning them off takes down the call banners on
+    /// screen.
+    pub async fn set_call_banners(&mut self, show: bool) {
+        if self.call_banners == show {
+            return;
+        }
+        self.call_banners = show;
+        if show {
+            return;
+        }
+        let calls: Vec<String> = self
+            .banners
+            .keys()
+            .filter(|key| self.mirror.get(key).is_some_and(is_call))
+            .cloned()
+            .collect();
+        for key in calls {
+            self.close_banner(&key).await;
+        }
     }
 
     /// The user's dismissals and actions not yet answered by the phone,
@@ -409,24 +437,29 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
                     alert,
                 } => {
                     let on_screen = self.banners.get(&notification.key).copied();
-                    if on_screen.is_some() || present::wants_banner(notification, *alert) {
+                    if !self.call_banners && is_call(notification) {
+                        self.close_banner(&notification.key).await;
+                    } else if on_screen.is_some() || present::wants_banner(notification, *alert) {
                         let image = self.image_for(session, notification).await?;
                         self.show(notification, on_screen, !*alert, image).await;
                     }
                 }
-                Change::Removed { key, .. } => {
-                    if let Some(id) = self.banners.remove(key) {
-                        self.keys.remove(&id);
-                        if let Err(e) = self.sink.close(id).await {
-                            tracing::warn!(%e, "closing a desktop notification failed");
-                        }
-                    }
-                }
+                Change::Removed { key, .. } => self.close_banner(key).await,
             }
             // No subscriber is fine: the page may not be open.
             let _ = self.changes.send(change);
         }
         Ok(())
+    }
+
+    /// Takes down the banner of notification `key`, if one is on screen.
+    async fn close_banner(&mut self, key: &str) {
+        if let Some(id) = self.banners.remove(key) {
+            self.keys.remove(&id);
+            if let Err(e) = self.sink.close(id).await {
+                tracing::warn!(%e, "closing a desktop notification failed");
+            }
+        }
     }
 
     async fn show(
@@ -516,6 +549,10 @@ impl<K: NotificationSink, O: OutboxStore> NotificationService<K, O> {
 }
 
 /// The image a banner shows: the sender's photo, else the app's icon.
+fn is_call(notification: &PhoneNotification) -> bool {
+    notification.category() == NotificationCategory::Call
+}
+
 fn banner_image(notification: &PhoneNotification) -> Option<&[u8]> {
     [&notification.large_icon, &notification.app_icon]
         .into_iter()

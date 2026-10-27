@@ -30,6 +30,10 @@ pub struct Settings {
     /// The connected phone's battery, signal and sound mode are shown. On
     /// by default: they are what the phone's own status bar shows.
     pub show_phone_status: bool,
+    /// The phones' calls ring on this computer, and are taken on it over
+    /// Bluetooth. On by default: nothing happens until the user pairs a
+    /// phone over Bluetooth.
+    pub use_for_calls: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +45,7 @@ impl Default for Settings {
             share_passwords: clipboard.share_passwords,
             share_files: true,
             show_phone_status: true,
+            use_for_calls: true,
         }
     }
 }
@@ -110,6 +115,21 @@ mod tests {
         assert_eq!(Settings::load(&path), Settings::default());
         std::fs::write(&path, b"{}").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
+    }
+
+    #[test]
+    fn calls_are_on_unless_the_user_turned_them_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // A file from before calls.
+        std::fs::write(&path, br#"{ "shareFiles": false }"#).unwrap();
+        assert!(Settings::load(&path).use_for_calls);
+        let off = Settings {
+            use_for_calls: false,
+            ..Settings::default()
+        };
+        off.save(&path).unwrap();
+        assert!(!Settings::load(&path).use_for_calls);
     }
 
     #[test]

@@ -32,7 +32,9 @@ impl Link {
     async fn connect(availability: Availability) -> Self {
         let desktop = DeviceInfo::new("desktop-1", "Desk", DeviceKind::Desktop, [Feature::Calls]);
         let mut start = SessionStart::new(desktop);
-        start.availability.insert(Feature::Calls, availability.clone());
+        start
+            .availability
+            .insert(Feature::Calls, availability.clone());
         let hello = Hello {
             features: vec!["calls".into()],
             ..phone_hello()

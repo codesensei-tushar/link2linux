@@ -13,9 +13,11 @@ use std::time::Duration;
 
 use link2linux_platform::linux::ble::BluezPresence;
 use link2linux_platform::linux::{
-    DbusNotifications, LinuxClipboard, SecretServiceStore, SessionLock, XdgFileStore,
+    BluezBluetooth, DbusNotifications, LinuxClipboard, PipewireTelephony, SecretServiceStore,
+    SessionLock, XdgFileStore,
 };
 use link2linux_platform::{Clipboard, ClipboardAccess, PresenceAdvertiser};
+use link2linux_runtime::calls::CallStack;
 use link2linux_runtime::clipboard::ClipboardPort;
 
 use crate::clipboard::FallbackClipboard;
@@ -88,12 +90,17 @@ impl LiveBackend {
             presenter,
             clipboard: Some(clipboard(opening, window_clipboard)),
             files: Some(Arc::new(XdgFileStore::new())),
+            calls: Some(Arc::new(CallStack {
+                bluetooth: BluezBluetooth::new(),
+                telephony: PipewireTelephony::new(),
+            })),
             events,
         };
         let mut config = RuntimeConfig::new(data_dir.clone());
         config.clipboard = settings.clipboard();
         config.files = settings.share_files;
         config.show_phone_status = settings.show_phone_status;
+        config.calls = settings.use_for_calls;
         let handle = tauri::async_runtime::handle().inner().clone();
         let runtime = Arc::new(Runtime::start(handle, &config, shell)?);
         if runtime.needs_store_key() {
@@ -337,6 +344,9 @@ impl Backend for LiveBackend {
         if before.show_phone_status != settings.show_phone_status {
             self.runtime
                 .set_phone_status_shown(settings.show_phone_status);
+        }
+        if before.use_for_calls != settings.use_for_calls {
+            self.runtime.set_calls_enabled(settings.use_for_calls);
         }
         settings.save(&self.settings_path).map_err(|error| {
             tracing::warn!(%error, "could not save the settings");

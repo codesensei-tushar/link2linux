@@ -26,27 +26,30 @@ use link2linux_core::notifications::{Answer, Change};
 use link2linux_core::pairing::{QrPayload, StoreKey};
 use link2linux_core::session::{Availability, Reply, Session, SessionConfig, SessionEvent};
 use link2linux_platform::{
-    Clipboard, ClipboardAccess, ClipboardText, DesktopNotification, FileStore,
-    NotificationCapabilities, NotificationId, NotificationResponse, NotificationSink,
+    BluetoothAdapter, BluetoothAddress, BluetoothDevice, CallState, Clipboard, ClipboardAccess,
+    ClipboardText, DesktopNotification, FileStore, Gateway, GatewayCall, NotificationCapabilities,
+    NotificationId, NotificationResponse, NotificationSink, PairingEvent, PairingPrompt,
     PlatformError,
 };
 use link2linux_protocol::Payload;
 use link2linux_protocol::v1::{
-    ClipboardPush, ErrorCode, FileAccept, FileChunk, FileInfo, FileOffer, GoodbyeReason,
-    NotificationAction, NotificationCategory, NotificationContent, NotificationImportance,
-    NotificationPosted, NotificationSyncBatch, PairingProof, PhoneNotification, PhoneStatusChanged,
-    PhoneStatusReply, RingEndReason, RingEnded, SyncCursor,
+    BluetoothPairingRequest, ClipboardPush, ErrorCode, FileAccept, FileChunk, FileInfo, FileOffer,
+    GoodbyeReason, NotificationAction, NotificationCategory, NotificationContent,
+    NotificationImportance, NotificationPosted, NotificationSyncBatch, PairingProof,
+    PhoneNotification, PhoneStatusChanged, PhoneStatusReply, RingEndReason, RingEnded, SyncCursor,
 };
+use link2linux_runtime::calls::CallsPort;
 use link2linux_runtime::clipboard::ClipboardPort;
 use link2linux_runtime::notify::{
     BoxFuture, DriverError, DriverFactory, NotificationsDriver, PhoneSession, ServiceFactory,
 };
 use link2linux_runtime::paths::DataDir;
 use link2linux_runtime::view::{
-    ClipboardDirection, ClipboardMode, ClipboardPhoneState, ClipboardProblemKind, ClipboardStatus,
-    Device, DeviceStatus, EventSink, FileTransfer, FileTransferEvent, NotificationEvent,
-    PairingMethod, PairingState, PhoneStatus, PhoneTarget, RingEnd, RingPhase, RingProblem,
-    RingStatus, TransferDirection, TransferStatus,
+    CallLink, CallStateView, CallsDesktop, CallsStatus, ClipboardDirection, ClipboardMode,
+    ClipboardPhoneState, ClipboardProblemKind, ClipboardStatus, Device, DeviceStatus, EventSink,
+    FileTransfer, FileTransferEvent, NotificationEvent, PairingMethod, PairingRequestState,
+    PairingState, PhoneStatus, PhoneTarget, RingEnd, RingPhase, RingProblem, RingStatus,
+    TransferDirection, TransferStatus,
 };
 use link2linux_runtime::{Runtime, RuntimeConfig, Shell};
 use support::{PhoneTls, TestPhone};
@@ -334,6 +337,7 @@ struct Events {
     transfers: Mutex<Vec<(String, FileTransferEvent)>>,
     phone_status: Mutex<Vec<(String, PhoneStatus)>>,
     rings: Mutex<Vec<(String, RingStatus)>>,
+    calls: Mutex<Vec<CallsStatus>>,
     changed: Notify,
 }
 
@@ -384,12 +388,30 @@ impl EventSink for Events {
             .push((device_id.to_owned(), *ring));
         self.changed.notify_waiters();
     }
+
+    fn calls_changed(&self, status: &CallsStatus) {
+        self.calls.lock().unwrap().push(status.clone());
+        self.changed.notify_waiters();
+    }
 }
 
 impl Events {
     async fn pairing_matching<T>(&self, pick: impl Fn(&PairingState) -> Option<T>) -> T {
         wait(&self.changed, || {
             self.pairing.lock().unwrap().iter().find_map(&pick)
+        })
+        .await
+    }
+
+    async fn calls_where(&self, check: impl Fn(&CallsStatus) -> bool) -> CallsStatus {
+        wait(&self.changed, || {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|status| check(status))
+                .cloned()
         })
         .await
     }
@@ -513,6 +535,16 @@ fn start_full(
     clipboard: Option<Arc<dyn ClipboardPort>>,
     drivers: Option<Arc<dyn DriverFactory>>,
 ) -> Rig {
+    start_rig(clipboard, drivers, None)
+}
+
+/// A runtime as [`start_full`] makes it, with `calls` as the desktop's
+/// Bluetooth and telephony.
+fn start_rig(
+    clipboard: Option<Arc<dyn ClipboardPort>>,
+    drivers: Option<Arc<dyn DriverFactory>>,
+    calls: Option<Arc<dyn CallsPort>>,
+) -> Rig {
     let data = tempfile::tempdir().unwrap();
     let (sink, respond) = FakeSink::new();
     let events = Arc::new(Events::default());
@@ -542,6 +574,7 @@ fn start_full(
         presenter,
         clipboard,
         files: Some(files.clone()),
+        calls,
         events: events.clone(),
     };
     let runtime = Runtime::start(tokio::runtime::Handle::current(), &config, shell).unwrap();
@@ -2396,4 +2429,414 @@ async fn the_phone_shows_its_status_and_rings_when_asked() {
         rig.runtime.phone_status("nobody"),
         Err(link2linux_runtime::view::BackendError::NotFound)
     );
+}
+
+/// The phone's Bluetooth address in the calls tests.
+const PHONE_BT: &str = "0C:1A:2B:3C:4D:5E";
+const GATEWAY: &str = "/org/pipewire/Telephony/ag0";
+
+/// What the desktop's Bluetooth and telephony hold, in memory.
+#[derive(Default)]
+struct FakeCallState {
+    devices: Vec<BluetoothDevice>,
+    gateways: Vec<Gateway>,
+    open: bool,
+    /// What the desktop asked of them, in order.
+    log: Vec<String>,
+}
+
+/// The desktop's Bluetooth and telephony, in memory, which the tests
+/// script: devices pair, gateways connect and calls ring.
+struct FakeCalls {
+    state: Mutex<FakeCallState>,
+    bluetooth: watch::Sender<u64>,
+    bluetooth_seen: tokio::sync::Mutex<watch::Receiver<u64>>,
+    telephony: watch::Sender<u64>,
+    telephony_seen: tokio::sync::Mutex<watch::Receiver<u64>>,
+    prompts: mpsc::UnboundedSender<PairingEvent>,
+    prompts_seen: tokio::sync::Mutex<mpsc::UnboundedReceiver<PairingEvent>>,
+    changed: Notify,
+}
+
+impl FakeCalls {
+    fn new() -> Arc<Self> {
+        let (bluetooth, bluetooth_seen) = watch::channel(0);
+        let (telephony, telephony_seen) = watch::channel(0);
+        let (prompts, prompts_seen) = mpsc::unbounded_channel();
+        Arc::new(Self {
+            state: Mutex::default(),
+            bluetooth,
+            bluetooth_seen: tokio::sync::Mutex::new(bluetooth_seen),
+            telephony,
+            telephony_seen: tokio::sync::Mutex::new(telephony_seen),
+            prompts,
+            prompts_seen: tokio::sync::Mutex::new(prompts_seen),
+            changed: Notify::new(),
+        })
+    }
+
+    fn adapter() -> BluetoothAdapter {
+        BluetoothAdapter {
+            address: "A0:B1:C2:D3:E4:F5".parse().unwrap(),
+            name: "Desk BT".into(),
+            powered: true,
+        }
+    }
+
+    fn record(&self, entry: String) {
+        self.state.lock().unwrap().log.push(entry);
+        self.changed.notify_waiters();
+    }
+
+    async fn wait_for(&self, entry: &str) {
+        wait(&self.changed, || {
+            self.state
+                .lock()
+                .unwrap()
+                .log
+                .iter()
+                .any(|e| e == entry)
+                .then_some(())
+        })
+        .await;
+    }
+
+    /// A device asks to pair and shows `code`.
+    fn prompt(&self, id: u64, code: u32) {
+        self.prompts
+            .send(PairingEvent::Confirm(PairingPrompt {
+                id,
+                device: PHONE_BT.parse().unwrap(),
+                device_name: "Pixel".into(),
+                code,
+            }))
+            .unwrap();
+    }
+
+    /// The phone named `name` is now paired.
+    fn pair_device(&self, name: &str) {
+        self.state.lock().unwrap().devices.push(BluetoothDevice {
+            address: PHONE_BT.parse().unwrap(),
+            name: name.into(),
+            paired: true,
+            trusted: false,
+            connected: true,
+            phone: true,
+            hands_free_gateway: true,
+        });
+        self.bluetooth.send_modify(|v| *v += 1);
+    }
+
+    /// A call to `number` rings on the phone's gateway.
+    fn ring(&self, number: &str) {
+        let mut state = self.state.lock().unwrap();
+        state.gateways[0].calls.push(GatewayCall {
+            id: format!("{GATEWAY}/call0"),
+            number: number.into(),
+            name: String::new(),
+            state: CallState::Incoming,
+            multiparty: false,
+        });
+        drop(state);
+        self.telephony.send_modify(|v| *v += 1);
+    }
+
+    fn change_calls(&self, change: impl FnOnce(&mut Vec<GatewayCall>)) {
+        if let Some(gateway) = self.state.lock().unwrap().gateways.first_mut() {
+            change(&mut gateway.calls);
+        }
+        self.telephony.send_modify(|v| *v += 1);
+    }
+}
+
+impl CallsPort for FakeCalls {
+    fn adapter(&self) -> BoxFuture<'_, Result<Option<BluetoothAdapter>, PlatformError>> {
+        Box::pin(async { Ok(Some(Self::adapter())) })
+    }
+
+    fn devices(&self) -> BoxFuture<'_, Result<Vec<BluetoothDevice>, PlatformError>> {
+        Box::pin(async { Ok(self.state.lock().unwrap().devices.clone()) })
+    }
+
+    fn bluetooth_changed(&self) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(async {
+            let mut seen = self.bluetooth_seen.lock().await;
+            seen.changed()
+                .await
+                .map_err(|_| PlatformError::Unsupported("Bluetooth"))
+        })
+    }
+
+    fn open_pairing(
+        &self,
+        _window: Duration,
+    ) -> BoxFuture<'_, Result<BluetoothAdapter, PlatformError>> {
+        Box::pin(async {
+            self.state.lock().unwrap().open = true;
+            self.record("open".into());
+            Ok(Self::adapter())
+        })
+    }
+
+    fn close_pairing(&self) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(async {
+            let was_open = std::mem::take(&mut self.state.lock().unwrap().open);
+            if was_open {
+                self.record("close".into());
+            }
+            Ok(())
+        })
+    }
+
+    fn next_pairing_event(&self) -> BoxFuture<'_, PairingEvent> {
+        Box::pin(async {
+            let mut prompts = self.prompts_seen.lock().await;
+            match prompts.recv().await {
+                Some(event) => event,
+                None => std::future::pending().await,
+            }
+        })
+    }
+
+    fn answer_pairing(&self, id: u64, accept: bool) {
+        self.record(format!("answer pairing {id} {accept}"));
+    }
+
+    fn connect_hands_free(
+        &self,
+        device: BluetoothAddress,
+    ) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("connect {device}"));
+            self.state.lock().unwrap().gateways = vec![Gateway {
+                id: GATEWAY.into(),
+                address: Some(device),
+                calls: Vec::new(),
+                muted: None,
+            }];
+            self.telephony.send_modify(|v| *v += 1);
+            Ok(())
+        })
+    }
+
+    fn disconnect_hands_free(
+        &self,
+        device: BluetoothAddress,
+    ) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("disconnect {device}"));
+            self.state.lock().unwrap().gateways.clear();
+            self.telephony.send_modify(|v| *v += 1);
+            Ok(())
+        })
+    }
+
+    fn gateways(&self) -> BoxFuture<'_, Result<Vec<Gateway>, PlatformError>> {
+        Box::pin(async { Ok(self.state.lock().unwrap().gateways.clone()) })
+    }
+
+    fn telephony_changed(&self) -> BoxFuture<'_, Result<(), PlatformError>> {
+        Box::pin(async {
+            let mut seen = self.telephony_seen.lock().await;
+            seen.changed()
+                .await
+                .map_err(|_| PlatformError::Unsupported("telephony"))
+        })
+    }
+
+    fn answer<'a>(&'a self, call: &'a str) -> BoxFuture<'a, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("answer {call}"));
+            self.change_calls(|calls| {
+                for c in calls.iter_mut().filter(|c| c.id == call) {
+                    c.state = CallState::Active;
+                }
+            });
+            Ok(())
+        })
+    }
+
+    fn hang_up<'a>(&'a self, call: &'a str) -> BoxFuture<'a, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("hang up {call}"));
+            self.change_calls(|calls| calls.retain(|c| c.id != call));
+            Ok(())
+        })
+    }
+
+    fn dial<'a>(
+        &'a self,
+        gateway: &'a str,
+        number: &'a str,
+    ) -> BoxFuture<'a, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("dial {gateway} {number}"));
+            Ok(())
+        })
+    }
+
+    fn send_tones<'a>(
+        &'a self,
+        gateway: &'a str,
+        tones: &'a str,
+    ) -> BoxFuture<'a, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("tones {gateway} {tones}"));
+            Ok(())
+        })
+    }
+
+    fn set_muted<'a>(
+        &'a self,
+        gateway: &'a str,
+        muted: bool,
+    ) -> BoxFuture<'a, Result<(), PlatformError>> {
+        Box::pin(async move {
+            self.record(format!("muted {gateway} {muted}"));
+            Ok(())
+        })
+    }
+}
+
+/// The phone side of a session for a phone that offers calls, once calls
+/// are ready on both devices.
+async fn calls_session(
+    phone: &TestPhone,
+    desktop: CertificateFingerprint,
+) -> Session<TlsStream<TcpStream>> {
+    let connection = phone.accept(PhoneTls::pinned(desktop)).await.unwrap();
+    let info = DeviceInfo::new(
+        phone.id.clone(),
+        phone.name.clone(),
+        DeviceKind::Phone,
+        [Feature::Calls],
+    );
+    let mut session =
+        Session::handshake(connection.wire.into_inner(), info, SessionConfig::phone())
+            .await
+            .unwrap();
+    assert!(session.peer().features.contains(&Feature::Calls));
+    while !session.is_ready(Feature::Calls) {
+        next_event(&mut session).await;
+    }
+    session
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() {
+    let calls = FakeCalls::new();
+    let rig = start_rig(None, None, Some(calls.clone()));
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "calls-1").await);
+    let (desktop, device) = pair(&rig, &phone).await;
+    let mut session = within(calls_session(&phone, desktop)).await;
+    let status = rig
+        .events
+        .calls_where(|s| {
+            s.phones
+                .first()
+                .is_some_and(|p| p.link == CallLink::NotPaired)
+        })
+        .await;
+    assert_eq!(status.desktop, CallsDesktop::Ready);
+
+    // The user pairs the phone over Bluetooth: the phone is asked to.
+    rig.runtime.start_bluetooth_pairing(&device.id).unwrap();
+    let (seq, request) = loop {
+        if let SessionEvent::Request {
+            seq,
+            payload: Payload::BluetoothPairingRequest(request),
+        } = next_event(&mut session).await
+        {
+            break (seq, request);
+        }
+    };
+    assert_eq!(
+        request,
+        BluetoothPairingRequest {
+            name: "Desk BT".into(),
+            address: "A0:B1:C2:D3:E4:F5".into(),
+        }
+    );
+    session.ack(seq).await.unwrap();
+    rig.events
+        .calls_where(|s| {
+            s.pairing
+                .as_ref()
+                .is_some_and(|p| p.phone == PairingRequestState::Asked)
+        })
+        .await;
+    calls.wait_for("open").await;
+
+    // The phone pairs, and the user confirms the code here.
+    calls.prompt(5, 123_456);
+    let status = rig
+        .events
+        .calls_where(|s| s.pairing.as_ref().is_some_and(|p| p.prompt.is_some()))
+        .await;
+    assert_eq!(status.pairing.unwrap().prompt.unwrap().code, "123456");
+    rig.runtime.confirm_bluetooth_code(5, true).unwrap();
+    calls.wait_for("answer pairing 5 true").await;
+    calls.pair_device(&phone.name);
+    calls.wait_for("close").await;
+    calls.wait_for(&format!("connect {PHONE_BT}")).await;
+    rig.events
+        .calls_where(|s| {
+            s.pairing.is_none()
+                && s.phones
+                    .first()
+                    .is_some_and(|p| matches!(p.link, CallLink::Connected { .. }))
+        })
+        .await;
+
+    // A call comes in: a pop-up offers it, and answering it there answers
+    // over Bluetooth.
+    calls.ring("+15550100");
+    let (id, popup) = rig.sink.wait_for_banners(1).await[0].clone();
+    assert_eq!(popup.summary, "Call from +15550100");
+    rig.respond
+        .send(NotificationResponse::Action {
+            id,
+            key: "calls.answer".into(),
+        })
+        .unwrap();
+    calls.wait_for(&format!("answer {GATEWAY}/call0")).await;
+    let status = rig
+        .events
+        .calls_where(|s| {
+            s.phones
+                .first()
+                .and_then(|p| p.calls.first())
+                .is_some_and(|c| c.state == CallStateView::Active)
+        })
+        .await;
+    assert!(status.phones[0].calls[0].active_since_unix_ms.is_some());
+    wait(&rig.sink.changed, || {
+        rig.sink.closed.lock().unwrap().contains(&id).then_some(())
+    })
+    .await;
+
+    // The keypad and the dial pad go to the gateway.
+    rig.runtime.send_tones(&device.id, "1#").unwrap();
+    calls.wait_for(&format!("tones {GATEWAY} 1#")).await;
+    rig.runtime.dial(&device.id, "+1 (555) 0123").unwrap();
+    calls.wait_for(&format!("dial {GATEWAY} +15550123")).await;
+    rig.runtime
+        .hang_up_call(&device.id, &format!("bt:{GATEWAY}/call0"))
+        .unwrap();
+    calls.wait_for(&format!("hang up {GATEWAY}/call0")).await;
+
+    // Calls turned off here: the phone hears of it, and the hands-free
+    // link goes down so the phone keeps its calls.
+    rig.runtime.set_calls_enabled(false);
+    loop {
+        next_event(&mut session).await;
+        let disabled = session
+            .peer_availability()
+            .and_then(|states| states.get(&Feature::Calls))
+            .is_some_and(|state| *state == Availability::Disabled);
+        if disabled {
+            break;
+        }
+    }
+    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
 }

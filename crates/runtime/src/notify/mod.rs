@@ -172,6 +172,13 @@ pub trait NotificationsDriver: Send {
         key: &'a str,
     ) -> BoxFuture<'a, Result<(), DriverError>>;
 
+    /// Whether the phone's call notifications get banners of their own:
+    /// not while the desktop shows the phone's calls itself.
+    fn set_call_banners(&mut self, show: bool) -> BoxFuture<'_, ()> {
+        let _ = show;
+        Box::pin(async {})
+    }
+
     /// The user ran an action of a notification on the notifications page,
     /// with `reply` for actions that take text.
     fn run_action<'a>(
