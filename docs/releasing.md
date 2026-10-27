@@ -17,9 +17,10 @@ Every release has exactly these files. The website's download buttons and
 
 | File | Contents |
 |---|---|
-| `link2linux_amd64.deb` | Desktop app for Debian, Ubuntu and derivatives (x86_64) |
-| `link2linux.x86_64.rpm` | Desktop app for Fedora, openSUSE and other RPM systems |
-| `link2linux-x86_64.AppImage` | Desktop app for any distribution |
+| `link2linux_amd64.deb`, `link2linux_arm64.deb` | Desktop app for Debian, Ubuntu and derivatives |
+| `link2linux.x86_64.rpm`, `link2linux.aarch64.rpm` | Desktop app for Fedora, openSUSE and other RPM systems |
+| `link2linux-x86_64.AppImage`, `link2linux-aarch64.AppImage` | Desktop app for any distribution |
+| `link2linux.x86_64.flatpak`, `link2linux.aarch64.flatpak` | Desktop app as a Flatpak bundle, built from the `.deb` |
 | `link2linux.apk` | Android app, signed with the release key |
 | `SHA256SUMS` | SHA-256 of every file above |
 
@@ -102,7 +103,8 @@ install the `.deb` and the APK, and pair them.
    The workflow refuses a tag that doesn't match all three versions, or
    that has no `CHANGELOG.md` section.
 4. **Check the draft** under Releases once the workflow is green:
-   - all five files are there;
+   - all 10 files are there: the four desktop formats for each of x86_64
+     and ARM64, the APK, and `SHA256SUMS`;
    - the notes read well;
    - the APK installs on a phone;
    - the `.deb` installs with `sudo apt install ./link2linux_amd64.deb`.

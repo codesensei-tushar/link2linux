@@ -1,0 +1,58 @@
+# The desktop app as a Flatpak. The release workflow builds it from the
+# .deb of the same run, put next to this file as link2linux.deb, so the
+# Flatpak runs the very binary the other downloads ship: the runtime has
+# every library it links (GTK 3, WebKitGTK 4.1, libsoup 3, D-Bus).
+#
+# Each permission below is for one feature, as the comments say. Received
+# files and saved photos go to Downloads and Pictures, so those are the
+# only folders the app can reach.
+id: dev.link2linux.desktop
+runtime: org.gnome.Platform
+runtime-version: "49"
+sdk: org.gnome.Sdk
+command: link2linux-desktop
+finish-args:
+  # Finding the phone (mDNS, beacons) and the connection to it.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  # X11 next to Wayland, not only in its place: GNOME lets apps follow the
+  # clipboard in the background only through Xwayland.
+  - --socket=x11
+  - --device=dri
+  # Pop-ups for mirrored notifications, with their buttons and replies.
+  - --talk-name=org.freedesktop.Notifications
+  # "Show in folder" for received files and saved photos.
+  - --talk-name=org.freedesktop.FileManager1
+  # Calls: answering and hanging up through the audio system.
+  - --talk-name=org.pipewire.Telephony
+  # Calls: pairing with the phone over Bluetooth and connecting it.
+  - --system-talk-name=org.bluez
+  # Keeping notification text off pop-ups while the screen is locked.
+  - --system-talk-name=org.freedesktop.login1
+  - --filesystem=xdg-download
+  - --filesystem=xdg-pictures
+modules:
+  - name: link2linux
+    buildsystem: simple
+    sources:
+      - type: file
+        path: link2linux.deb
+      - type: file
+        path: dev.link2linux.desktop.metainfo.xml
+    build-commands:
+      - ar x link2linux.deb
+      - tar -xf data.tar.gz
+      - install -Dm755 usr/bin/link2linux-desktop -t /app/bin
+      - >-
+        install -Dm644 usr/share/applications/link2linux.desktop
+        /app/share/applications/dev.link2linux.desktop.desktop
+      - >-
+        desktop-file-edit --set-icon=dev.link2linux.desktop
+        /app/share/applications/dev.link2linux.desktop.desktop
+      - >-
+        for dir in usr/share/icons/hicolor/*/apps; do
+        install -Dm644 "$dir/link2linux-desktop.png"
+        "/app/share/icons/hicolor/$(basename "$(dirname "$dir")")/apps/dev.link2linux.desktop.png";
+        done
+      - install -Dm644 dev.link2linux.desktop.metainfo.xml -t /app/share/metainfo

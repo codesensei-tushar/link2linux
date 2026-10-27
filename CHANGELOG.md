@@ -8,6 +8,22 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+### Added
+
+- Desktop builds for 64-bit ARM computers: a .deb, an .rpm and an
+  AppImage. The install script picks them by itself on an ARM computer.
+- The desktop app as a Flatpak bundle, for x86 and ARM. Install it with
+  `flatpak install --user ./link2linux.x86_64.flatpak`, or with the install
+  script's `--flatpak`. It runs in Flatpak's sandbox, where it can reach
+  only your Downloads and Pictures folders. It keeps its own pairing, so
+  pair your phone again after switching to it from a package.
+
+### Known limitations
+
+- The Flatpak, like the AppImage, comes without the firewalld and ufw
+  profiles that the .deb and .rpm install. Where a firewall blocks the
+  phone's announcements, allow mDNS (UDP 5353) and UDP port 27381 yourself.
+
 ## [0.3.0] - 2026-10-27
 
 Phone status, ring my phone, and calls over Bluetooth.

@@ -2,8 +2,13 @@
 
 Files that the Linux packages install next to the app. `src-tauri/tauri.conf.json`
 (`bundle.linux.deb.files` and `bundle.linux.rpm.files`) maps each one to its
-installed path. The AppImage can't install system files, so the app shows the
-commands below instead.
+installed path. The AppImage and the Flatpak can't install system files, so
+their users run the commands below instead.
+
+`flatpak/` holds the Flatpak manifest and the AppStream metadata. The release
+workflow builds the Flatpak from the `.deb` of the same run, so both ship
+the same binary; the manifest's comments say what each sandbox permission is
+for.
 
 | File | Installed as | Purpose |
 |---|---|---|
