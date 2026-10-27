@@ -565,6 +565,51 @@ fn call_notifications_count_only_while_the_phone_has_a_session() {
 }
 
 #[test]
+fn a_phone_with_calls_off_keeps_them_to_itself() {
+    let phones = phones();
+    let ringing = || {
+        seen(
+            vec![device(PIXEL, "Pixel 8")],
+            vec![gateway(
+                Some(PIXEL),
+                vec![call("/ag0/call0", "+15550100", CallState::Incoming)],
+            )],
+        )
+    };
+    let mut center = ready(vec![], vec![]);
+    feed(&mut center, ringing(), 0);
+    center.set_note("p1", "k1", Some(ringing_note("k1", "Anna")));
+    // A phone that has not said yet counts as on.
+    assert!(center.shows_calls(&phones[0], &phones));
+    assert!(center.to_disconnect(&phones).is_empty());
+
+    assert!(!center.set_phone_ready("p1", false));
+    assert!(!center.shows_calls(&phones[0], &phones));
+    assert!(center.plan_popups(&phones).show.is_empty());
+    assert_eq!(center.to_disconnect(&phones), [address(PIXEL)]);
+    let status = center.status(&phones, Instant::now(), 0);
+    assert_eq!(status.phones[0].link, CallLink::PhoneOff);
+    // Its call shows from its notification, answered on the phone.
+    assert_eq!(status.phones[0].calls.len(), 1);
+    assert!(!status.phones[0].calls[0].audio_here);
+
+    // Its link stays down while calls are off on it.
+    feed(&mut center, seen(vec![device(PIXEL, "Pixel 8")], vec![]), 0);
+    center.want_connect("p1");
+    assert!(center.take_connects(&phones).is_empty());
+    assert!(center.to_disconnect(&phones).is_empty());
+
+    // Turned on again: the desktop may connect it.
+    assert!(center.set_phone_ready("p1", true));
+    assert!(!center.set_phone_ready("p1", true));
+    center.want_connect("p1");
+    assert_eq!(
+        center.take_connects(&phones),
+        [("p1".to_owned(), address(PIXEL))]
+    );
+}
+
+#[test]
 fn a_link_to_connect_waits_for_bluetooth_but_not_for_calls_turned_on() {
     let phones = phones();
     let pixel = || vec![device(PIXEL, "Pixel 8")];

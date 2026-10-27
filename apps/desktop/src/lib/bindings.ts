@@ -214,6 +214,11 @@ export type CallLink =
  *  [`CallsStatus::desktop`].
  */
 { state: "off" } | 
+/**
+ *  The phone has calls turned off, or cannot take them, by what it
+ *  last reported: the desktop leaves its calls to it.
+ */
+{ state: "phoneOff" } | 
 /**  The phone is not paired with this desktop over Bluetooth. */
 { state: "notPaired" } | 
 /**  Several paired devices may be the phone: the user picks one. */
@@ -430,7 +435,7 @@ export type CommandError = {
 	message: string,
 };
 
-export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted" | "folderNotSendable" | "fileUnreadable" | "tooManyFiles" | "filesOff" | "callsUnavailable" | "callsNotConnected" | "notDialable";
+export type CommandErrorCode = "wrongState" | "invalidAddress" | "notFound" | "notSaved" | "notStarted" | "folderNotSendable" | "fileUnreadable" | "tooManyFiles" | "filesOff" | "callsUnavailable" | "callsNotConnected" | "notDialable" | "callsOffOnPhone";
 
 export type ConversationMessageInfo = {
 	/**  Empty for messages the phone's user sent. */

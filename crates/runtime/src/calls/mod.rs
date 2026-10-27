@@ -123,8 +123,21 @@ impl Calls {
         self.nudge.notify_one();
     }
 
-    /// Phone `device_id` connected: its hands-free link is connected too,
-    /// unless that was tried lately.
+    /// Phone `device_id` reported whether calls are ready on it. While
+    /// they are not, the desktop neither takes its calls nor keeps its
+    /// hands-free link up; once its user turns them on again, the link is
+    /// connected.
+    pub fn phone_ready(&self, device_id: &str, ready: bool) {
+        let mut center = lock(&self.center);
+        if center.set_phone_ready(device_id, ready) {
+            center.want_connect(device_id);
+        }
+        drop(center);
+        self.nudge.notify_one();
+    }
+
+    /// Phone `device_id` connected with calls on: its hands-free link is
+    /// connected too, unless that was tried lately.
     pub fn phone_connected(&self, device_id: &str) {
         let now = Instant::now();
         let mut reconnected = lock(&self.reconnected);
@@ -316,17 +329,10 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
         let paired = center.pairing_done();
         let choices = (settled || paired.is_some()).then(|| center.choices().clone());
         let connect = center.take_connects(&phones);
-        // While calls are off, a phone that connects its hands-free link
-        // by itself is disconnected again, so it keeps its calls.
-        let disconnect: Vec<BluetoothAddress> = if center.is_enabled() {
-            Vec::new()
-        } else {
-            phones
-                .iter()
-                .filter(|p| center.gateway_of(p, &phones).is_some())
-                .filter_map(|p| center.found(p))
-                .collect()
-        };
+        // While calls are off, here or on the phone, a phone that connects
+        // its hands-free link by itself is disconnected again, so it keeps
+        // its calls.
+        let disconnect = center.to_disconnect(&phones);
         (choices, paired, connect, disconnect)
     };
     if let Some(choices) = choices {
@@ -340,7 +346,7 @@ async fn refresh(core: &Arc<Core>, port: &Arc<dyn CallsPort>) {
         connect_link(core, port, device_id, address, Connect::Auto);
     }
     for address in disconnect {
-        tracing::info!(%address, "calls are off: disconnecting the phone's hands-free link");
+        tracing::info!(%address, "calls are off: disconnecting a phone's hands-free link");
         if let Err(error) = port.disconnect_hands_free(address).await {
             tracing::debug!(%error, "could not disconnect the hands-free link");
         }
@@ -527,6 +533,18 @@ fn phone_of(core: &Core, device_id: &str) -> Result<(Phone, Vec<Phone>), Backend
     core.calls.phone(device_id).ok_or(BackendError::NotFound)
 }
 
+/// Why the desktop does not take phone `device_id`'s calls now, if it
+/// does not.
+fn takes_calls(center: &Center, device_id: &str) -> Result<(), BackendError> {
+    if center.availability() != Availability::Ready {
+        return Err(BackendError::CallsUnavailable);
+    }
+    if center.phone_off(device_id) {
+        return Err(BackendError::CallsOffOnPhone);
+    }
+    Ok(())
+}
+
 /// Turns calls on this desktop on or off. Turned off, the phones'
 /// hands-free links are disconnected; turned on, they are connected.
 pub(crate) fn set_enabled(core: &Core, enabled: bool) {
@@ -553,9 +571,7 @@ pub(crate) fn set_enabled(core: &Core, enabled: bool) {
 pub(crate) fn start_pairing(core: &Arc<Core>, device_id: &str) -> Result<(), BackendError> {
     let port = port(core)?;
     phone_of(core, device_id)?;
-    if lock(&core.calls.center).availability() != Availability::Ready {
-        return Err(BackendError::CallsUnavailable);
-    }
+    takes_calls(&lock(&core.calls.center), device_id)?;
     let core = core.clone();
     let device_id = device_id.to_owned();
     core.clone().handle.spawn(async move {
@@ -627,9 +643,7 @@ pub(crate) fn connect(core: &Arc<Core>, device_id: &str) -> Result<(), BackendEr
     let (phone, _) = phone_of(core, device_id)?;
     let address = {
         let center = lock(&core.calls.center);
-        if center.availability() != Availability::Ready {
-            return Err(BackendError::CallsUnavailable);
-        }
+        takes_calls(&center, device_id)?;
         center
             .found(&phone)
             .ok_or(BackendError::CallsNotConnected)?
@@ -680,6 +694,9 @@ pub(crate) fn act(
 fn gateway_id(core: &Core, device_id: &str) -> Result<(String, Option<bool>), BackendError> {
     let (phone, phones) = phone_of(core, device_id)?;
     let center = lock(&core.calls.center);
+    if center.phone_off(device_id) {
+        return Err(BackendError::CallsOffOnPhone);
+    }
     if !center.shows_calls(&phone, &phones) {
         return Err(BackendError::CallsNotConnected);
     }

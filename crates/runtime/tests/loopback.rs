@@ -2489,14 +2489,14 @@ impl FakeCalls {
     }
 
     async fn wait_for(&self, entry: &str) {
+        self.wait_for_times(entry, 1).await;
+    }
+
+    /// Waits until the desktop asked for `entry` `times` times.
+    async fn wait_for_times(&self, entry: &str, times: usize) {
         wait(&self.changed, || {
-            self.state
-                .lock()
-                .unwrap()
-                .log
-                .iter()
-                .any(|e| e == entry)
-                .then_some(())
+            let state = self.state.lock().unwrap();
+            (state.log.iter().filter(|e| *e == entry).count() >= times).then_some(())
         })
         .await;
     }
@@ -2729,14 +2729,23 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
     let phone = Arc::new(TestPhone::bind(LOCALHOST, "calls-1").await);
     let (desktop, device) = pair(&rig, &phone).await;
     let mut session = within(calls_session(&phone, desktop)).await;
-    let status = rig
-        .events
-        .calls_where(|s| {
-            s.phones
+    // The pairing's own session offered no calls, which counts as calls
+    // off on the phone until this session's status arrives: wait for the
+    // desktop's current state, not an earlier one.
+    let status = within(async {
+        loop {
+            let status = rig.runtime.calls();
+            if status
+                .phones
                 .first()
                 .is_some_and(|p| p.link == CallLink::NotPaired)
-        })
-        .await;
+            {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert_eq!(status.desktop, CallsDesktop::Ready);
 
     // The user pairs the phone over Bluetooth: the phone is asked to.
@@ -2827,6 +2836,32 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
         .unwrap();
     calls.wait_for(&format!("hang up {GATEWAY}/call0")).await;
 
+    // Calls turned off on the phone: its link goes down and the desktop
+    // leaves its calls to it, until they are on again.
+    session
+        .set_availability(Feature::Calls, Availability::Disabled)
+        .await
+        .unwrap();
+    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    rig.events
+        .calls_where(|s| {
+            s.phones
+                .first()
+                .is_some_and(|p| p.link == CallLink::PhoneOff)
+        })
+        .await;
+    assert_eq!(
+        rig.runtime.dial(&device.id, "123"),
+        Err(link2linux_runtime::view::BackendError::CallsOffOnPhone)
+    );
+    session
+        .set_availability(Feature::Calls, Availability::Ready)
+        .await
+        .unwrap();
+    calls
+        .wait_for_times(&format!("connect {PHONE_BT}"), 2)
+        .await;
+
     // Calls turned off here: the phone hears of it, and the hands-free
     // link goes down so the phone keeps its calls.
     rig.runtime.set_calls_enabled(false);
@@ -2840,5 +2875,7 @@ async fn a_phone_pairs_over_bluetooth_and_its_call_is_answered_from_the_popup() 
             break;
         }
     }
-    calls.wait_for(&format!("disconnect {PHONE_BT}")).await;
+    calls
+        .wait_for_times(&format!("disconnect {PHONE_BT}"), 2)
+        .await;
 }

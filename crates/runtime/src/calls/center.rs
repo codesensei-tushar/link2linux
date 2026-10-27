@@ -96,6 +96,9 @@ pub(crate) struct Center {
     /// The phones with a session: their call notifications count only
     /// while they have one.
     sessions: HashSet<String>,
+    /// Whether calls are ready on each phone, by what its latest session
+    /// reported. A phone that has not said yet is missing.
+    phone_ready: HashMap<String, bool>,
     /// When each shown call became active, for its timer.
     active_since: HashMap<String, i64>,
     problems: HashMap<String, CallProblem>,
@@ -134,6 +137,7 @@ impl Center {
             window: None,
             notes: HashMap::new(),
             sessions: HashSet::new(),
+            phone_ready: HashMap::new(),
             active_since: HashMap::new(),
             problems: HashMap::new(),
             connecting: HashSet::new(),
@@ -294,16 +298,50 @@ impl Center {
     }
 
     /// Whether the desktop shows `phone`'s calls itself, with answer and
-    /// decline over Bluetooth: calls are on and its hands-free link is up.
-    /// The phone's call notifications then get no banners of their own.
+    /// decline over Bluetooth: calls are on, here and on the phone, and
+    /// its hands-free link is up. The phone's call notifications then get
+    /// no banners of their own.
     pub fn shows_calls(&self, phone: &Phone, phones: &[Phone]) -> bool {
-        self.desktop() == CallsDesktop::Ready && self.gateway_of(phone, phones).is_some()
+        self.takes_calls(&phone.id) && self.gateway_of(phone, phones).is_some()
     }
 
-    /// `phone`'s calls, merged from its hands-free link while calls are on
-    /// and its call notifications.
+    /// Whether the desktop takes phone `device_id`'s calls over Bluetooth:
+    /// it can and the user wants it here, and the phone did not say it
+    /// has calls off.
+    pub fn takes_calls(&self, device_id: &str) -> bool {
+        self.desktop() == CallsDesktop::Ready && !self.phone_off(device_id)
+    }
+
+    /// Phone `device_id` reported whether calls are ready on it. Returns
+    /// whether they just came on after it had them off.
+    pub fn set_phone_ready(&mut self, device_id: &str, ready: bool) -> bool {
+        let before = self.phone_ready.insert(device_id.to_owned(), ready);
+        ready && before == Some(false)
+    }
+
+    /// Whether phone `device_id` has calls turned off, or cannot take
+    /// them, by what it reported last. A phone that has not said yet
+    /// counts as on: its hands-free link may be up before the app connects.
+    pub fn phone_off(&self, device_id: &str) -> bool {
+        self.phone_ready.get(device_id) == Some(&false)
+    }
+
+    /// The devices whose hands-free link is up while calls are off, here
+    /// or on their phone: they are disconnected, so the phone keeps its
+    /// calls to itself.
+    pub fn to_disconnect(&self, phones: &[Phone]) -> Vec<BluetoothAddress> {
+        phones
+            .iter()
+            .filter(|p| !self.enabled || self.phone_off(&p.id))
+            .filter(|p| self.gateway_of(p, phones).is_some())
+            .filter_map(|p| self.found(p))
+            .collect()
+    }
+
+    /// `phone`'s calls, merged from its hands-free link while the desktop
+    /// takes them and its call notifications.
     pub fn calls_of(&self, phone: &Phone, phones: &[Phone]) -> Vec<ShownCall> {
-        let gateway = if self.desktop() == CallsDesktop::Ready {
+        let gateway = if self.takes_calls(&phone.id) {
             self.gateway_of(phone, phones)
         } else {
             None
@@ -359,7 +397,8 @@ impl Center {
     /// and whose link is down. Wishes wait while the services were not
     /// read yet, and while Bluetooth or the telephony service is away,
     /// since the phone connected to the app meanwhile asks only once. They
-    /// are dropped while calls are off here.
+    /// are dropped while calls are off here, and for a phone that has
+    /// them off.
     pub fn take_connects(&mut self, phones: &[Phone]) -> Vec<(String, BluetoothAddress)> {
         match self.desktop() {
             CallsDesktop::Ready => {}
@@ -376,6 +415,7 @@ impl Center {
         phones
             .iter()
             .filter(|phone| wanted.contains(&phone.id))
+            .filter(|phone| !self.phone_off(&phone.id))
             .filter(|phone| !self.connecting.contains(&phone.id))
             .filter(|phone| self.gateway_of(phone, phones).is_none())
             .filter_map(|phone| Some((phone.id.clone(), self.found(phone)?)))
@@ -404,6 +444,7 @@ impl Center {
         }
         self.notes.remove(device_id);
         self.sessions.remove(device_id);
+        self.phone_ready.remove(device_id);
         self.problems.remove(device_id);
         self.connecting.remove(device_id);
         self.want_connect.remove(device_id);
@@ -509,6 +550,9 @@ impl Center {
     fn link(&self, phone: &Phone, phones: &[Phone], desktop: CallsDesktop) -> CallLink {
         if desktop != CallsDesktop::Ready {
             return CallLink::Off;
+        }
+        if self.phone_off(&phone.id) {
+            return CallLink::PhoneOff;
         }
         let choice = |address: BluetoothAddress| BluetoothChoice {
             address: address.to_string(),

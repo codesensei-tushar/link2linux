@@ -69,6 +69,13 @@ describe("CallsPage", () => {
     expect(api.setSettings).toHaveBeenCalledWith(expect.objectContaining({ useForCalls: true }));
   });
 
+  it("says when a phone keeps its calls to itself", async () => {
+    renderPage({ phones: [phone({ link: { state: "phoneOff" } })] });
+    expect(await screen.findByRole("heading", { name: "Calls are off on Pixel" })).toBeVisible();
+    expect(screen.getByText(/turn on Calls in the link2linux app on the phone/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Pair over Bluetooth" })).not.toBeInTheDocument();
+  });
+
   it("pairs a phone that isn't paired over Bluetooth", async () => {
     const user = userEvent.setup();
     const api = renderPage({ phones: [phone({ link: { state: "notPaired" } })] });
