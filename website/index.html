@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>link2linux · Your Android phone on your Linux desktop</title>
-  <meta name="description" content="link2linux connects your Android phone to your Linux desktop: notifications, messages, calls, photos, files and clipboard, directly over your own network. Free and open source.">
+  <meta name="description" content="link2linux connects your Android phone to your Linux desktop: notifications, calls, phone status, files and clipboard, directly over your own network. Free and open source.">
   <link rel="canonical" href="https://codesensei-tushar.github.io/link2linux/">
   <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
@@ -45,12 +45,12 @@
         <div>
           <span class="eyebrow"><span class="dot"></span>Open source · In early development</span>
           <h1>Your Android phone, <em>right on your Linux desktop</em>.</h1>
-          <p class="lead">See notifications, reply to messages, take calls, and move photos, files and your clipboard between devices. link2linux connects them directly over your own network, with no account and no cloud.</p>
+          <p class="lead">See notifications and reply to messages, take calls, find your phone, and move files and your clipboard between devices. link2linux connects them directly over your own network, with no account and no cloud.</p>
           <div class="cta-row">
             <a class="btn btn-primary" href="#download">Download</a>
             <a class="btn btn-ghost" href="https://github.com/codesensei-tushar/link2linux">View on GitHub</a>
           </div>
-          <p class="hero-note">Free and open source under Apache-2.0. Version 0.2.0 is out as a pre-release, with pairing, notifications, clipboard sharing and file transfer.</p>
+          <p class="hero-note">Free and open source under Apache-2.0. Version 0.3.0 is out as a pre-release, with pairing, notifications, calls, phone status, ring my phone, clipboard sharing and file transfer.</p>
         </div>
 
         <div class="showcase" aria-hidden="true">
@@ -58,7 +58,7 @@
             <div class="window-bar"><span>link2linux</span><span class="window-controls"><i></i><i></i><i></i></span></div>
             <div class="window-body">
               <div class="mock-nav">
-                <span class="active">Notifications</span><span>Messages</span><span>Calls</span><span>Photos</span><span>Files</span>
+                <span class="active">Notifications</span><span>Calls</span><span>Files</span><span>Clipboard</span>
               </div>
               <div class="mock-list">
                 <div class="mock-card">
@@ -97,7 +97,7 @@
         <div class="section-head">
           <span class="kicker">Features</span>
           <h2 id="features-title">The parts of your phone you reach for, on your desktop</h2>
-          <p>link2linux is being built feature by feature. This is what the first release is designed to do.</p>
+          <p>link2linux is built feature by feature. This is what it does today; photos and screen mirroring come later.</p>
         </div>
         <ul class="feature-grid">
           <li class="feature">
@@ -106,19 +106,14 @@
             <p>Phone notifications show up on your desktop. Reply inline, or dismiss them on both devices at once.</p>
           </li>
           <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></span>
-            <h3>Messages</h3>
-            <p>Answer texts from your keyboard, straight from the notification, without picking up your phone.</p>
+            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 7h4M9 12h6v5H9z"/></svg></span>
+            <h3>Phone status</h3>
+            <p>See your phone's battery and signal on your desktop, and make it ring at full volume when you can't find it, even on silent.</p>
           </li>
           <li class="feature">
             <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/></svg></span>
             <h3>Calls</h3>
             <p>See who's calling and talk through your computer's speakers and microphone over Bluetooth.</p>
-          </li>
-          <li class="feature">
-            <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m21 16-5-5-8 8"/></svg></span>
-            <h3>Photos</h3>
-            <p>Send the photos you just took to your PC in a couple of taps. No cables, no cloud uploads.</p>
           </li>
           <li class="feature">
             <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
@@ -206,7 +201,7 @@
           <span class="kicker">Download</span>
           <h2 id="download-title">Install on your computer and your phone</h2>
           <p>The desktop app runs on Linux with GNOME, KDE Plasma and other desktops, on Wayland or X11. The first releases ship it as a .deb, an .rpm and an AppImage for 64-bit x86 PCs; Flatpak and ARM64 builds follow. The phone app needs Android 8.0 or newer.</p>
-          <p class="release-status" id="release-status" role="status">Pre-release v0.2.0.</p>
+          <p class="release-status" id="release-status" role="status">Pre-release v0.3.0.</p>
         </div>
         <div class="downloads">
           <div class="dl-group">
@@ -222,21 +217,21 @@
               <li class="dl-item">
                 <div class="dl-head">
                   <div><strong>.deb package</strong><p>Ubuntu, Debian, Linux Mint, Pop!_OS.</p></div>
-                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.2.0/link2linux_amd64.deb">Download .deb</a></div>
+                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux_amd64.deb" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.3.0/link2linux_amd64.deb">Download .deb</a></div>
                 </div>
                 <pre><code>sudo apt install ./link2linux_amd64.deb</code></pre>
               </li>
               <li class="dl-item">
                 <div class="dl-head">
                   <div><strong>.rpm package</strong><p>Fedora, openSUSE and other RPM-based systems.</p></div>
-                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.2.0/link2linux.x86_64.rpm">Download .rpm</a></div>
+                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux.x86_64.rpm" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.3.0/link2linux.x86_64.rpm">Download .rpm</a></div>
                 </div>
                 <pre><code>sudo dnf install ./link2linux.x86_64.rpm</code></pre>
               </li>
               <li class="dl-item">
                 <div class="dl-head">
                   <div><strong>AppImage</strong><p>Any distribution, without installing. Needs FUSE 2.</p></div>
-                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux-x86_64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.2.0/link2linux-x86_64.AppImage">Download AppImage</a></div>
+                  <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux-x86_64.AppImage" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.3.0/link2linux-x86_64.AppImage">Download AppImage</a></div>
                 </div>
                 <pre><code>chmod +x link2linux-x86_64.AppImage
 ./link2linux-x86_64.AppImage</code></pre>
@@ -254,7 +249,7 @@
               <li class="dl-item">
             <div class="dl-head">
               <div><strong>APK</strong><p>Android 8.0 and newer.</p></div>
-              <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux.apk" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.2.0/link2linux.apk">Download APK</a></div>
+              <div class="dl-actions"><a class="btn btn-primary btn-sm" data-asset="link2linux.apk" href="https://github.com/codesensei-tushar/link2linux/releases/download/v0.3.0/link2linux.apk">Download APK</a></div>
             </div>
             <ol class="dl-steps">
               <li>Open the downloaded file on your phone.</li>
@@ -287,7 +282,7 @@
         <div class="faq">
           <details>
             <summary>When can I download it?</summary>
-            <p>Now. Version 0.2.0 is out as a pre-release: it pairs your phone, shows its notifications on your desktop, shares the clipboard both ways and sends files in either direction. The <a href="#download">Download</a> section has every package. Messages, calls and photos follow in later releases; watch the repository on GitHub to hear when they land.</p>
+            <p>Now. Version 0.3.0 is out as a pre-release: it pairs your phone, shows its notifications on your desktop, takes its calls over Bluetooth, shows its battery and signal, rings it when you can't find it, shares the clipboard both ways and sends files in either direction. The <a href="#download">Download</a> section has every package. Photos and screen mirroring follow in later releases; watch the repository on GitHub to hear when they land.</p>
           </details>
           <details>
             <summary>Is it free?</summary>
