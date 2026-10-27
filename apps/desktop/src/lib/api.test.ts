@@ -15,6 +15,14 @@ vi.mock("./bindings", () => ({
     pickFilesToSend: vi.fn(() =>
       refused({ code: "filesOff", message: "Turn on Files in Settings to send files." }),
     ),
+    photoThumbnail: vi.fn((_deviceId: string, photoId: string) =>
+      photoId === "gone"
+        ? refused({ code: "photoGone", message: "That photo is no longer on your phone." })
+        : Promise.resolve({
+            status: "ok" as const,
+            data: Uint8Array.from([0xff, 0xd8, 0xff, 0xdb]).buffer,
+          }),
+    ),
   },
   events: {},
 }));
@@ -28,6 +36,15 @@ describe("tauriApi", () => {
     );
     await expect(tauriApi.pickFilesToSend("phone-1")).rejects.toThrow(
       "Turn on Files in Settings to send files.",
+    );
+  });
+
+  it("turns a thumbnail's raw bytes into an image the page can show", async () => {
+    const image = await tauriApi.photoThumbnail("phone-1", "42", 256);
+    expect(image.type).toBe("image/jpeg");
+    expect(image.size).toBe(4);
+    await expect(tauriApi.photoThumbnail("phone-1", "gone", 256)).rejects.toThrow(
+      "That photo is no longer on your phone.",
     );
   });
 });

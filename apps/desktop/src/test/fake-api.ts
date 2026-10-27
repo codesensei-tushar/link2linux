@@ -12,7 +12,9 @@ import type {
   FileTransfer,
   FileTransferEvent,
   PairingState,
+  PhonePhotos,
   PhoneStatus,
+  Photo,
   RingStatus,
   ScreenStatus,
 } from "@/lib/api";
@@ -127,6 +129,20 @@ export function testRing(overrides: Partial<RingStatus> = {}): RingStatus {
   return { phase: "idle", blocked: null, problem: null, ended: null, ...overrides };
 }
 
+export function testPhoto(overrides: Partial<Photo> = {}): Photo {
+  return {
+    id: "1",
+    name: "IMG_1.jpg",
+    mimeType: "image/jpeg",
+    size: 2_400_000,
+    takenUnixMs: Date.UTC(2026, 9, 27, 9, 30),
+    modifiedUnixMs: Date.UTC(2026, 9, 27, 9, 30),
+    width: 4080,
+    height: 3072,
+    ...overrides,
+  };
+}
+
 export function testTransfer(overrides: Partial<FileTransfer> = {}): FileTransfer {
   return {
     id: "t1",
@@ -203,6 +219,13 @@ export interface FakeApi extends DesktopApi {
   setCallMuted: Mock<DesktopApi["setCallMuted"]>;
   /** Pushes a calls status, as the backend would. */
   emitCalls(status: CallsStatus): void;
+  listPhotos: Mock<DesktopApi["listPhotos"]>;
+  photoThumbnail: Mock<DesktopApi["photoThumbnail"]>;
+  savePhoto: Mock<DesktopApi["savePhoto"]>;
+  openSavedPhoto: Mock<DesktopApi["openSavedPhoto"]>;
+  showSavedPhoto: Mock<DesktopApi["showSavedPhoto"]>;
+  /** Pushes a phone's photos, as the backend would. */
+  emitPhotos(deviceId: string, photos: PhonePhotos): void;
   unpairDevice: Mock<DesktopApi["unpairDevice"]>;
   getPairingState: Mock<DesktopApi["getPairingState"]>;
   startPairing: Mock<DesktopApi["startPairing"]>;
@@ -233,6 +256,7 @@ export function createFakeApi(): FakeApi {
   const ringListeners = new Set<(deviceId: string, ring: RingStatus) => void>();
   const screenListeners = new Set<(deviceId: string, screen: ScreenStatus) => void>();
   let onScreenPacket: ((packet: ArrayBuffer) => void) | null = null;
+  const photosListeners = new Set<(deviceId: string, photos: PhonePhotos) => void>();
   const ok = () => vi.fn<Methods["startPairing"]>().mockResolvedValue(undefined);
 
   return {
@@ -403,6 +427,29 @@ export function createFakeApi(): FakeApi {
         });
       });
     },
+    listPhotos: vi
+      .fn<DesktopApi["listPhotos"]>()
+      .mockResolvedValue({ state: "waiting", photos: [] } satisfies PhonePhotos),
+    onPhotosChanged: (deviceId, listener) => {
+      const forDevice = (id: string, photos: PhonePhotos) => {
+        if (id === deviceId) listener(photos);
+      };
+      photosListeners.add(forDevice);
+      return Promise.resolve(() => photosListeners.delete(forDevice));
+    },
+    emitPhotos: (deviceId, photos) => {
+      act(() => {
+        photosListeners.forEach((listener) => {
+          listener(deviceId, photos);
+        });
+      });
+    },
+    photoThumbnail: vi
+      .fn<DesktopApi["photoThumbnail"]>()
+      .mockResolvedValue(new Blob([Uint8Array.from([0xff, 0xd8, 0xff])], { type: "image/jpeg" })),
+    savePhoto: vi.fn<DesktopApi["savePhoto"]>().mockResolvedValue({ name: "IMG_1.jpg" }),
+    openSavedPhoto: vi.fn<DesktopApi["openSavedPhoto"]>().mockResolvedValue(undefined),
+    showSavedPhoto: vi.fn<DesktopApi["showSavedPhoto"]>().mockResolvedValue(undefined),
     unpairDevice: vi.fn<DesktopApi["unpairDevice"]>().mockResolvedValue(undefined),
     getPairingState: vi
       .fn<DesktopApi["getPairingState"]>()
@@ -448,6 +495,7 @@ export function createFakeApi(): FakeApi {
       dropListeners.size +
       statusListeners.size +
       ringListeners.size +
-      screenListeners.size,
+      screenListeners.size +
+      photosListeners.size,
   };
 }
