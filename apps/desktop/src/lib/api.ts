@@ -1,4 +1,4 @@
-import { isTauri } from "@tauri-apps/api/core";
+import { Channel, isTauri } from "@tauri-apps/api/core";
 import { createContext, use } from "react";
 
 import type { MirroredNotification, NotificationEvent } from "@/features/notifications/types";
@@ -19,6 +19,9 @@ import {
   type PhoneStatus,
   type PhoneTarget,
   type RingStatus,
+  type ScreenCodec,
+  type ScreenInput,
+  type ScreenStatus,
   type Settings,
   type StartupError,
 } from "./bindings";
@@ -63,6 +66,16 @@ export type {
   RingPhase,
   RingProblem,
   RingStatus,
+  ScreenCodec,
+  ScreenEnd,
+  ScreenFormat,
+  ScreenInput,
+  ScreenInputProblem,
+  ScreenKey,
+  ScreenPhase,
+  ScreenPoint,
+  ScreenProblem,
+  ScreenStatus,
   Settings,
   StartupError,
   TransferDirection,
@@ -150,6 +163,27 @@ export interface DesktopApi {
   ringPhone(deviceId: string): Promise<void>;
   /** Stops a phone ringing. */
   stopRinging(deviceId: string): Promise<void>;
+
+  /** What the page shows of a phone's screen. */
+  getScreenStatus(deviceId: string): Promise<ScreenStatus>;
+  onScreenChanged(deviceId: string, listener: (screen: ScreenStatus) => void): Promise<Unsubscribe>;
+  /**
+   * Asks a phone to show its screen, in one of `codecs` (most preferred first) with its longer
+   * side at most `maxSize` pixels. The phone asks its user first. Each frame arrives at
+   * `onPacket` (see `features/screen/packet.ts`) until the stream ends; how it goes arrives as
+   * new screen statuses.
+   */
+  startScreen(
+    deviceId: string,
+    codecs: ScreenCodec[],
+    maxSize: number,
+    onPacket: (packet: ArrayBuffer) => void,
+  ): Promise<void>;
+  stopScreen(deviceId: string): Promise<void>;
+  /** Sends what the user did on the phone's screen. A refusal shows in the screen status. */
+  sendScreenInput(deviceId: string, input: ScreenInput): Promise<void>;
+  /** Asks for a key frame, after a frame could not be decoded or the page fell behind. */
+  requestScreenKeyFrame(deviceId: string): Promise<void>;
   /** The phones' calls and this computer's part in them. */
   getCallsStatus(): Promise<CallsStatus>;
   /** Subscribe before reading a snapshot, so nothing is missed in between. */
@@ -281,6 +315,21 @@ export const tauriApi: DesktopApi = {
     }),
   ringPhone: (deviceId) => expectOk(commands.ringPhone(deviceId)),
   stopRinging: (deviceId) => expectOk(commands.stopRinging(deviceId)),
+  getScreenStatus: (deviceId) => expectData(commands.getScreenStatus(deviceId)),
+  onScreenChanged: (deviceId, listener) =>
+    events.screenChanged.listen((event) => {
+      if (event.payload.deviceId === deviceId) listener(event.payload.screen);
+    }),
+  startScreen: (deviceId, codecs, maxSize, onPacket) => {
+    // Frames travel as raw bytes and arrive as ArrayBuffers.
+    const frames = new Channel<unknown>((message) => {
+      if (message instanceof ArrayBuffer) onPacket(message);
+    });
+    return expectOk(commands.startScreen(deviceId, codecs, maxSize, frames));
+  },
+  stopScreen: (deviceId) => expectOk(commands.stopScreen(deviceId)),
+  sendScreenInput: (deviceId, input) => expectOk(commands.sendScreenInput(deviceId, input)),
+  requestScreenKeyFrame: (deviceId) => expectOk(commands.requestScreenKeyFrame(deviceId)),
   getCallsStatus: () => commands.getCallsStatus(),
   onCallsChanged: (listener) =>
     events.callsChanged.listen((event) => {

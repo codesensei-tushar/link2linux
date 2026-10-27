@@ -1,6 +1,7 @@
 import { demoCall, demoCallsStatus } from "@/features/calls/demo";
 import { demoTransfers } from "@/features/files/demo";
 import { demoNotifications } from "@/features/notifications/demo";
+import { demoScreenFormat, demoScreenPacket } from "@/features/screen/demo";
 
 import type {
   CallsStatus,
@@ -12,6 +13,7 @@ import type {
   PhoneStatus,
   PhoneTarget,
   RingStatus,
+  ScreenStatus,
   Settings,
   Unsubscribe,
 } from "./api";
@@ -202,6 +204,31 @@ export function createPreviewApi(search: string = globalThis.location.search): D
       listener({ deviceId, ring });
     });
   };
+  const screenListeners = new Set<(change: { deviceId: string; screen: ScreenStatus }) => void>();
+  const screens = new Map<string, ScreenStatus>();
+  const screenTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const screenOf = (deviceId: string): ScreenStatus => {
+    const blocked = isConnected(deviceId) ? null : "notConnected";
+    const screen = screens.get(deviceId) ?? {
+      phase: "idle",
+      blocked,
+      problem: null,
+      ended: null,
+      format: null,
+      inputProblem: null,
+    };
+    return { ...screen, blocked };
+  };
+  const setScreen = (deviceId: string, screen: ScreenStatus) => {
+    screens.set(deviceId, screen);
+    screenListeners.forEach((listener) => {
+      listener({ deviceId, screen });
+    });
+  };
+  const stopScreen = (deviceId: string) => {
+    clearTimeout(screenTimers.get(deviceId));
+    screenTimers.delete(deviceId);
+  };
 
   return {
     appInfo: () =>
@@ -330,6 +357,44 @@ export function createPreviewApi(search: string = globalThis.location.search): D
       setRing(deviceId, { ...ringOf(deviceId), phase: "idle", problem: null });
       return Promise.resolve();
     },
+    getScreenStatus: (deviceId) => Promise.resolve(screenOf(deviceId)),
+    onScreenChanged: (deviceId, listener) =>
+      listen(screenListeners, (change) => {
+        if (change.deviceId === deviceId) listener(change.screen);
+      }),
+    startScreen: (deviceId, _codecs, _maxSize, onPacket) => {
+      stopScreen(deviceId);
+      const screen = screenOf(deviceId);
+      if (screen.blocked) {
+        setScreen(deviceId, { ...screen, problem: screen.blocked, ended: null });
+        return Promise.resolve();
+      }
+      // The pretend user agrees after a moment, then the screen plays.
+      setScreen(deviceId, { ...screen, phase: "asking", problem: null, ended: null });
+      let index = 0;
+      const play = () => {
+        void demoScreenPacket(index).then((packet) => {
+          if (packet && screenTimers.has(deviceId)) onPacket(packet);
+        });
+        index += 1;
+        screenTimers.set(deviceId, setTimeout(play, 100));
+      };
+      screenTimers.set(
+        deviceId,
+        setTimeout(() => {
+          setScreen(deviceId, { ...screenOf(deviceId), phase: "showing", format: demoScreenFormat });
+          play();
+        }, 1500),
+      );
+      return Promise.resolve();
+    },
+    stopScreen: (deviceId) => {
+      stopScreen(deviceId);
+      setScreen(deviceId, { ...screenOf(deviceId), phase: "idle", format: null, problem: null });
+      return Promise.resolve();
+    },
+    sendScreenInput: () => Promise.resolve(),
+    requestScreenKeyFrame: () => Promise.resolve(),
     getCallsStatus: () => Promise.resolve(calls),
     onCallsChanged: (listener) => listen(callsListeners, listener),
     startBluetoothPairing: (deviceId) => {

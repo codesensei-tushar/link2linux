@@ -14,6 +14,7 @@ import type {
   PairingState,
   PhoneStatus,
   RingStatus,
+  ScreenStatus,
 } from "@/lib/api";
 
 export const testAppInfo: AppInfo = {
@@ -108,6 +109,19 @@ export function testPhoneStatus(
   };
 }
 
+/** A phone that can show its screen and does not. */
+export function testScreen(overrides: Partial<ScreenStatus> = {}): ScreenStatus {
+  return {
+    phase: "idle",
+    blocked: null,
+    problem: null,
+    ended: null,
+    format: null,
+    inputProblem: null,
+    ...overrides,
+  };
+}
+
 /** A phone that can ring and does not. */
 export function testRing(overrides: Partial<RingStatus> = {}): RingStatus {
   return { phase: "idle", blocked: null, problem: null, ended: null, ...overrides };
@@ -166,6 +180,15 @@ export interface FakeApi extends DesktopApi {
   emitPhoneStatus(deviceId: string, status: PhoneStatus): void;
   /** Pushes a phone's ring status, as the backend would. */
   emitRing(deviceId: string, ring: RingStatus): void;
+  getScreenStatus: Mock<DesktopApi["getScreenStatus"]>;
+  startScreen: Mock<DesktopApi["startScreen"]>;
+  stopScreen: Mock<DesktopApi["stopScreen"]>;
+  sendScreenInput: Mock<DesktopApi["sendScreenInput"]>;
+  requestScreenKeyFrame: Mock<DesktopApi["requestScreenKeyFrame"]>;
+  /** Pushes a phone's screen status, as the backend would. */
+  emitScreen(deviceId: string, screen: ScreenStatus): void;
+  /** Sends a frame packet to the page that started the screen last. */
+  emitScreenPacket(packet: ArrayBuffer): void;
   getCallsStatus: Mock<DesktopApi["getCallsStatus"]>;
   startBluetoothPairing: Mock<DesktopApi["startBluetoothPairing"]>;
   cancelBluetoothPairing: Mock<DesktopApi["cancelBluetoothPairing"]>;
@@ -208,6 +231,8 @@ export function createFakeApi(): FakeApi {
   const dropListeners = new Set<(drop: FilesDropped) => void>();
   const statusListeners = new Set<(deviceId: string, status: PhoneStatus) => void>();
   const ringListeners = new Set<(deviceId: string, ring: RingStatus) => void>();
+  const screenListeners = new Set<(deviceId: string, screen: ScreenStatus) => void>();
+  let onScreenPacket: ((packet: ArrayBuffer) => void) | null = null;
   const ok = () => vi.fn<Methods["startPairing"]>().mockResolvedValue(undefined);
 
   return {
@@ -320,6 +345,33 @@ export function createFakeApi(): FakeApi {
     },
     ringPhone: vi.fn<DesktopApi["ringPhone"]>().mockResolvedValue(undefined),
     stopRinging: vi.fn<DesktopApi["stopRinging"]>().mockResolvedValue(undefined),
+    getScreenStatus: vi.fn<DesktopApi["getScreenStatus"]>().mockResolvedValue(testScreen()),
+    onScreenChanged: (deviceId, listener) => {
+      const forDevice = (id: string, screen: ScreenStatus) => {
+        if (id === deviceId) listener(screen);
+      };
+      screenListeners.add(forDevice);
+      return Promise.resolve(() => screenListeners.delete(forDevice));
+    },
+    startScreen: vi.fn<DesktopApi["startScreen"]>((_deviceId, _codecs, _maxSize, onPacket) => {
+      onScreenPacket = onPacket;
+      return Promise.resolve();
+    }),
+    stopScreen: vi.fn<DesktopApi["stopScreen"]>().mockResolvedValue(undefined),
+    sendScreenInput: vi.fn<DesktopApi["sendScreenInput"]>().mockResolvedValue(undefined),
+    requestScreenKeyFrame: vi.fn<DesktopApi["requestScreenKeyFrame"]>().mockResolvedValue(undefined),
+    emitScreen: (deviceId, screen) => {
+      act(() => {
+        screenListeners.forEach((listener) => {
+          listener(deviceId, screen);
+        });
+      });
+    },
+    emitScreenPacket: (packet) => {
+      act(() => {
+        onScreenPacket?.(packet);
+      });
+    },
     getCallsStatus: vi.fn<DesktopApi["getCallsStatus"]>().mockResolvedValue(testCallsStatus()),
     onCallsChanged: (listener) => {
       callsListeners.add(listener);
@@ -393,6 +445,7 @@ export function createFakeApi(): FakeApi {
       dragListeners.size +
       dropListeners.size +
       statusListeners.size +
-      ringListeners.size,
+      ringListeners.size +
+      screenListeners.size,
   };
 }
