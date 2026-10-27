@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="status_toggle_title">Show phone status on your computer</string>
+    <string name="status_toggle_summary">Your computer shows your battery, signal and sound mode while it is connected.</string>
+    <string name="status_shared_title">What your computer sees</string>
+    <string name="status_shared_body">The battery level, whether the phone is charging and whether battery saver is on, the signal bars, mobile network and carrier name, the Wi-Fi bars, the ringer mode and Do Not Disturb. Nothing that tells where you are: no Wi-Fi network names and no cell location. link2linux needs no permission for this.</string>
+</resources>

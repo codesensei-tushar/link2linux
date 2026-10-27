@@ -96,13 +96,16 @@ class InMemoryRepositoriesTest {
     }
 
     @Test
-    fun featuresStartOffAndToggle() = runBlocking {
+    fun featuresStartAsTheirDefaultAndToggle() = runBlocking {
         val settings = InMemoryFeatureSettingsRepository()
-        assertTrue(settings.enabledFeatures.first().isEmpty())
+        assertEquals(setOf(Feature.CALLS, Feature.STATUS, Feature.RING), settings.enabledFeatures.first())
 
         settings.setEnabled(Feature.CLIPBOARD, true)
         settings.setEnabled(Feature.FILES, true)
         settings.setEnabled(Feature.CLIPBOARD, false)
+        settings.setEnabled(Feature.CALLS, false)
+        settings.setEnabled(Feature.STATUS, false)
+        settings.setEnabled(Feature.RING, false)
 
         assertEquals(setOf(Feature.FILES), settings.enabledFeatures.first())
     }

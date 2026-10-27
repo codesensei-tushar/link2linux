@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="calls_toggle_title">Take calls on your computer</string>
+    <string name="calls_toggle_summary">Your computer rings with your phone, and you talk through its microphone and speakers.</string>
+    <string name="calls_no_bluetooth">This phone has no Bluetooth, which calls on your computer need.</string>
+    <string name="calls_no_telephony">This phone cannot make phone calls.</string>
+    <string name="calls_how_title">How it works</string>
+    <string name="calls_how_body">Calls go over Bluetooth, as they do with a car or a headset. Pair your phone with your computer once: start pairing in link2linux on your computer, tap the notification that appears here, and check that both show the same code. From then on your computer shows incoming calls, and you can answer, decline and dial there.</string>
+    <string name="calls_bluetooth_settings_title">Bluetooth settings</string>
+    <string name="calls_bluetooth_settings_summary">Pair or unpair your computer, or choose what it may use.</string>
+    <string name="calls_bluetooth_settings_action">Open</string>
+    <string name="calls_direct_title">Pair from the notification</string>
+    <string name="calls_direct_summary">Tapping the pairing notification starts pairing with your computer at once, instead of opening Bluetooth settings. Needs the Nearby devices permission.</string>
+    <string name="calls_direct_allow">Allow</string>
+    <string name="calls_direct_allowed">Allowed</string>
+    <string name="calls_channel_name">Bluetooth pairing</string>
+    <string name="calls_channel_description">Shown when your computer is ready to pair over Bluetooth for calls</string>
+    <string name="calls_pair_title">Pair with %1$s to take calls on your computer</string>
+    <string name="calls_pair_text">Tap to pair over Bluetooth, then check that your phone and your computer show the same code.</string>
+</resources>

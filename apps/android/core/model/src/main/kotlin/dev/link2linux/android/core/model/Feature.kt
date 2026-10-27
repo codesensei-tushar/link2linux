@@ -6,29 +6,42 @@ package dev.link2linux.android.core.model
  * a module in `crates/core`.
  *
  * [wireName] is the string sent in `Hello.features`, so it must never change.
+ * `messages` was a planned feature that was dropped; its wire name stays
+ * reserved and must not be given to another feature.
  */
 enum class Feature(val wireName: String) {
     PAIRING("pairing"),
     NOTIFICATIONS("notifications"),
-    MESSAGES("messages"),
     CALLS("calls"),
     PHOTOS("photos"),
     FILES("files"),
     CLIPBOARD("clipboard"),
     SCREEN("screen"),
+    STATUS("status"),
+    RING("ring"),
     ;
 
     /**
-     * Opt-in features stay off until the user turns them on, and only then
-     * ask for their Android permissions. Pairing is the prerequisite for all
-     * of them, so it is always available.
+     * Whether the user can turn the feature on and off. Pairing is the
+     * prerequisite for all the others, so it is always on.
      */
-    val isOptIn: Boolean
+    val isSwitchable: Boolean
         get() = this != PAIRING
 
+    /**
+     * Whether the feature is on until the user turns it off. Most features
+     * share what is on the phone, so they are opt-in: off until the user
+     * turns them on, and only then ask for their Android permissions. Calls,
+     * phone status and ring share nothing by themselves and need no
+     * permission, and a phone that has to ring is already mislaid, too late
+     * to turn ringing on, so these start on.
+     */
+    val isOnByDefault: Boolean
+        get() = this == CALLS || this == STATUS || this == RING
+
     companion object {
-        /** The features a user can turn on one by one. */
-        val optIn: List<Feature> = entries.filter(Feature::isOptIn)
+        /** The features a user can turn on and off, each on its own screen. */
+        val switchable: List<Feature> = entries.filter(Feature::isSwitchable)
 
         /** Looks up a feature by its wire name; unknown names (from newer peers) give null. */
         fun fromWireName(name: String): Feature? = entries.firstOrNull { it.wireName == name }

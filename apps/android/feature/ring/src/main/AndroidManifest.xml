@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Vibrate while the phone rings for a computer that looks for it. Granted at install. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application>
+        <!-- Stop on the ringing notification; reached only through the app's PendingIntents. -->
+        <receiver
+            android:name=".RingStopReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

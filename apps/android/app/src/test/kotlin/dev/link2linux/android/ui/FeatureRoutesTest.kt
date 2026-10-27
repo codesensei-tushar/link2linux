@@ -7,8 +7,8 @@ import org.junit.Test
 class FeatureRoutesTest {
 
     @Test
-    fun everyOptInFeatureHasItsOwnRoute() {
-        assertEquals(Feature.optIn, featureRoutes.keys.toList())
+    fun everySwitchableFeatureHasItsOwnRoute() {
+        assertEquals(Feature.switchable, featureRoutes.keys.toList())
         assertEquals(featureRoutes.size, featureRoutes.values.toSet().size)
     }
 }

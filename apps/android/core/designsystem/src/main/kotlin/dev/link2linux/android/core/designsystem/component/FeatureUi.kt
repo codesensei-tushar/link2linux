@@ -23,12 +23,13 @@ val Feature.titleRes: Int
     get() = when (this) {
         Feature.PAIRING -> R.string.feature_title_pairing
         Feature.NOTIFICATIONS -> R.string.feature_title_notifications
-        Feature.MESSAGES -> R.string.feature_title_messages
         Feature.CALLS -> R.string.feature_title_calls
         Feature.PHOTOS -> R.string.feature_title_photos
         Feature.FILES -> R.string.feature_title_files
         Feature.CLIPBOARD -> R.string.feature_title_clipboard
         Feature.SCREEN -> R.string.feature_title_screen
+        Feature.STATUS -> R.string.feature_title_status
+        Feature.RING -> R.string.feature_title_ring
     }
 
 @get:StringRes
@@ -36,12 +37,13 @@ val Feature.summaryRes: Int
     get() = when (this) {
         Feature.PAIRING -> R.string.feature_summary_pairing
         Feature.NOTIFICATIONS -> R.string.feature_summary_notifications
-        Feature.MESSAGES -> R.string.feature_summary_messages
         Feature.CALLS -> R.string.feature_summary_calls
         Feature.PHOTOS -> R.string.feature_summary_photos
         Feature.FILES -> R.string.feature_summary_files
         Feature.CLIPBOARD -> R.string.feature_summary_clipboard
         Feature.SCREEN -> R.string.feature_summary_screen
+        Feature.STATUS -> R.string.feature_summary_status
+        Feature.RING -> R.string.feature_summary_ring
     }
 
 @get:DrawableRes
@@ -49,12 +51,13 @@ val Feature.iconRes: Int
     get() = when (this) {
         Feature.PAIRING -> R.drawable.ic_link
         Feature.NOTIFICATIONS -> R.drawable.ic_notifications
-        Feature.MESSAGES -> R.drawable.ic_chat
         Feature.CALLS -> R.drawable.ic_call
         Feature.PHOTOS -> R.drawable.ic_photo_library
         Feature.FILES -> R.drawable.ic_folder
         Feature.CLIPBOARD -> R.drawable.ic_content_paste
         Feature.SCREEN -> R.drawable.ic_screen_share
+        Feature.STATUS -> R.drawable.ic_battery
+        Feature.RING -> R.drawable.ic_ring
     }
 
 /** One row in a list of features: icon, name, one-line summary. */

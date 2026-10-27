@@ -7,14 +7,20 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.link2linux.android.core.data.loggingUncaught
+import dev.link2linux.android.core.network.features.CallsSessionHooks
 import dev.link2linux.android.core.network.features.ClipboardSessionHooks
 import dev.link2linux.android.core.network.features.CompositeSessionHooks
 import dev.link2linux.android.core.network.features.FileSessionHooks
 import dev.link2linux.android.core.network.features.NotificationSessionHooks
+import dev.link2linux.android.core.network.features.RingSessionHooks
+import dev.link2linux.android.core.network.features.StatusSessionHooks
 import dev.link2linux.android.core.network.pairing.SessionHooks
+import dev.link2linux.android.feature.calls.CallsRuntime
 import dev.link2linux.android.feature.clipboard.ClipboardRuntime
 import dev.link2linux.android.feature.files.FilesRuntime
 import dev.link2linux.android.feature.notifications.NotificationsRuntime
+import dev.link2linux.android.feature.ring.RingRuntime
+import dev.link2linux.android.feature.status.StatusRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,7 +33,13 @@ internal object RuntimeModule {
 
     @Provides
     @Singleton
-    fun sessionHooks(@ApplicationContext context: Context, files: FilesRuntime): SessionHooks = CompositeSessionHooks(
+    fun sessionHooks(
+        @ApplicationContext context: Context,
+        files: FilesRuntime,
+        status: StatusRuntime,
+        ring: RingRuntime,
+        calls: CallsRuntime,
+    ): SessionHooks = CompositeSessionHooks(
         NotificationSessionHooks(
             engine = NotificationsRuntime.get(context).engine,
             // Closes the sessions the engine gives up on; the app outlives them all.
@@ -39,5 +51,12 @@ internal object RuntimeModule {
             // Each session's worker lives as long as the session; the app outlives them all.
             scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + loggingUncaught("the file sessions")),
         ),
+        StatusSessionHooks(
+            engine = status.engine,
+            // Each session's follower lives as long as the session; the app outlives them all.
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + loggingUncaught("the status sessions")),
+        ),
+        RingSessionHooks(ring.engine),
+        CallsSessionHooks(calls.availability) { name, address -> calls.promptPairing(name, address) },
     )
 }

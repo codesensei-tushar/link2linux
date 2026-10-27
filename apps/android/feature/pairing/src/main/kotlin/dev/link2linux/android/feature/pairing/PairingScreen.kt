@@ -99,7 +99,7 @@ private fun HomePreview() {
     L2lTheme(dynamicColor = false) {
         PairingScreen(
             uiState = PairingUiState(emptyList(), PairingScreenState.Home, null, connectionEnabled = true, connected = emptyList()),
-            features = Feature.optIn,
+            features = Feature.switchable,
             onOpenFeature = {},
             actions = PairingActions(),
         )
