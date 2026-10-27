@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package link2linux.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.link2linux.protocol.v1";
+
+// The screen feature, capability token "screen": the desktop shows the
+// phone's screen in a window, and, where the user allows it on the phone,
+// controls the phone from there.
+//
+// The desktop asks with ScreenStart. The phone asks its user, and once the
+// user agrees it sends ScreenFormat, then the screen as ScreenFrame events,
+// until either side stops. docs/protocol.md, "Screen", gives the rules.
+
+// Desktop to phone: start sending the screen. Answered by an Ack once the
+// phone has asked its user, or by an ErrorReply such as ERROR_CODE_DISABLED,
+// ERROR_CODE_BUSY or ERROR_CODE_NOT_ALLOWED. What the user decides arrives
+// later, as ScreenFormat or ScreenEnded.
+message ScreenStart {
+  // The codecs the desktop can decode, most preferred first: 1 to 8.
+  repeated ScreenCodec codecs = 1;
+  // The longest side the desktop wants, in pixels, or 0 to leave it to the
+  // phone. The phone never sends a larger picture than its screen.
+  uint32 max_size = 2;
+}
+
+enum ScreenCodec {
+  SCREEN_CODEC_UNSPECIFIED = 0;
+  // H.264. ScreenFormat.codec_config holds the avcC record, and each
+  // ScreenFrame one access unit whose NAL units each start with a 4-byte
+  // big-endian length instead of a start code.
+  SCREEN_CODEC_H264 = 1;
+  // Each ScreenFrame is a whole JPEG image, for desktops without an H.264
+  // decoder.
+  SCREEN_CODEC_JPEG = 2;
+}
+
+// Desktop to phone: stop sending the screen. Answered by an Ack once the
+// phone stopped, also when it was not sending. No ScreenEnded follows.
+message ScreenStop {}
+
+// Phone to desktop, one-way: how the frames that follow are encoded. Sent
+// before the first frame, and again whenever something in it changes.
+message ScreenFormat {
+  // Names the video's size and encoding within the session. It changes
+  // whenever codec, width, height or codec_config change, and then a key
+  // frame comes next. A ScreenFormat that only changes input keeps its id.
+  uint32 id = 1;
+  ScreenCodec codec = 2;
+  // The frames' size in pixels.
+  uint32 width = 3;
+  uint32 height = 4;
+  // For SCREEN_CODEC_H264, the AVCDecoderConfigurationRecord: at most
+  // 4 KiB. Empty for SCREEN_CODEC_JPEG.
+  bytes codec_config = 5;
+  // Whether the phone accepts ScreenInput now.
+  bool input = 6;
+}
+
+// Phone to desktop, one-way: one frame of the screen.
+message ScreenFrame {
+  // When the frame was captured, in microseconds from a start the phone
+  // picks. It grows from frame to frame.
+  uint64 timestamp_us = 1;
+  // Decoding can start at this frame. Every JPEG frame is a key frame.
+  bool key_frame = 2;
+  // At most 448 KiB.
+  bytes data = 3;
+}
+
+// Desktop to phone, one-way: send a key frame soon, because the desktop
+// dropped frames or could not decode one.
+message ScreenKeyFrameRequest {}
+
+// Phone to desktop, one-way: the phone stopped sending its screen, or will
+// not start.
+message ScreenEnded {
+  ScreenEndReason reason = 1;
+}
+
+enum ScreenEndReason {
+  SCREEN_END_REASON_UNSPECIFIED = 0;
+  // The user did not agree to share the screen.
+  SCREEN_END_REASON_DECLINED = 1;
+  // The user did not answer the phone's question in time.
+  SCREEN_END_REASON_TIMED_OUT = 2;
+  // The user stopped sharing on the phone.
+  SCREEN_END_REASON_STOPPED_ON_PHONE = 3;
+  // The phone locked, which ends screen sharing.
+  SCREEN_END_REASON_LOCKED = 4;
+  // The phone could not go on, for example because its encoder failed or
+  // the user turned the feature off.
+  SCREEN_END_REASON_INTERRUPTED = 5;
+}
+
+// Desktop to phone: something the user did in the window that shows the
+// phone's screen. Answered by an Ack once the phone carried it out, or by
+// an ErrorReply such as ERROR_CODE_NOT_ALLOWED or ERROR_CODE_EXPIRED.
+message ScreenInput {
+  oneof input {
+    ScreenGesture gesture = 1;
+    ScreenKey key = 2;
+    // Text to type into the field that has the focus: 1 to 4096 bytes.
+    string text = 3;
+  }
+}
+
+// A touch with one finger, following its points in order.
+message ScreenGesture {
+  // The ScreenFormat.id of the frames the user saw.
+  uint32 format_id = 1;
+  // 1 to 64 points. One point is a tap.
+  repeated ScreenPoint points = 2;
+}
+
+message ScreenPoint {
+  // In the frames' pixels: x below ScreenFormat.width, y below its height.
+  uint32 x = 1;
+  uint32 y = 2;
+  // Milliseconds after the first point: 0 for the first, never less than
+  // the previous point's, and at most 10000.
+  uint32 time_ms = 3;
+}
+
+enum ScreenKey {
+  SCREEN_KEY_UNSPECIFIED = 0;
+  SCREEN_KEY_BACK = 1;
+  SCREEN_KEY_HOME = 2;
+  // The list of recent apps.
+  SCREEN_KEY_RECENTS = 3;
+  // Opens the notification shade.
+  SCREEN_KEY_NOTIFICATIONS = 4;
+  // Deletes the selection, or else the character before the cursor, in the
+  // field that has the focus.
+  SCREEN_KEY_BACKSPACE = 5;
+  // Enter in the field that has the focus, such as "send" or "search".
+  SCREEN_KEY_ENTER = 6;
+}

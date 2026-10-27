@@ -25,7 +25,10 @@ const FEATURE_STATUS: u32 = 14;
 const IMAGE_DATA: u32 = 18;
 const NOTIFICATION_SYNC_BATCH: u32 = 101;
 const NOTIFICATION_POSTED: u32 = 102;
+const PHOTO_LIST_REPLY: u32 = 251;
+const PHOTO_LIST_CHANGED: u32 = 252;
 const FILE_OFFER: u32 = 300;
+const SCREEN_INPUT: u32 = 406;
 
 /// A repeated field and the most entries a frame may hold.
 #[derive(Debug, Clone, Copy)]
@@ -86,6 +89,17 @@ const FILES: Limit = Limit {
     max: 500,
 };
 
+/// Of a `PhotoListReply` and `PhotoListChanged` together.
+const PHOTOS: Limit = Limit {
+    field: "Photo",
+    max: 200,
+};
+
+const GESTURE_POINTS: Limit = Limit {
+    field: "ScreenGesture.points",
+    max: 64,
+};
+
 /// Entries counted over a whole frame.
 #[derive(Debug, Default)]
 struct Totals {
@@ -94,6 +108,8 @@ struct Totals {
     notifications: usize,
     removed_keys: usize,
     files: usize,
+    photos: usize,
+    gesture_points: usize,
 }
 
 /// Checks the frame body `body` (one serialized `Envelope`) before it is
@@ -118,7 +134,12 @@ pub(crate) fn check(body: &[u8], max_message_len: usize) -> Result<(), FrameErro
             1 => notification(value, &mut totals.notifications),
             _ => Ok(()),
         }),
+        PHOTO_LIST_REPLY | PHOTO_LIST_CHANGED => count(contents, 1, PHOTOS, &mut totals.photos),
         FILE_OFFER => count(contents, 3, FILES, &mut totals.files),
+        SCREEN_INPUT => for_each_field(contents, |field, gesture| match field {
+            1 => count(gesture, 2, GESTURE_POINTS, &mut totals.gesture_points),
+            _ => Ok(()),
+        }),
         _ => Ok(()),
     })?;
     let len = body.len() - image_len;
@@ -207,7 +228,8 @@ mod tests {
     use super::*;
     use crate::v1::{
         FeatureState, FeatureStatus, FileInfo, FileOffer, ImageData, NotificationAction,
-        NotificationPosted, NotificationSyncBatch, PhoneNotification,
+        NotificationPosted, NotificationSyncBatch, PhoneNotification, Photo, PhotoListChanged,
+        PhotoListReply, ScreenGesture, ScreenInput, ScreenPoint, screen_input,
     };
     use crate::{Envelope, Hello, Payload};
 
@@ -239,6 +261,21 @@ mod tests {
         Payload::FileOffer(FileOffer {
             files: vec![FileInfo::default(); files],
             ..FileOffer::default()
+        })
+    }
+
+    fn photos(photos: usize) -> Payload {
+        Payload::PhotoListReply(PhotoListReply {
+            photos: vec![Photo::default(); photos],
+        })
+    }
+
+    fn gesture(points: usize) -> Payload {
+        Payload::ScreenInput(ScreenInput {
+            input: Some(screen_input::Input::Gesture(ScreenGesture {
+                format_id: 1,
+                points: vec![ScreenPoint::default(); points],
+            })),
         })
     }
 
@@ -283,6 +320,8 @@ mod tests {
         }
         checked(&frame(batch)).unwrap();
         checked(&frame(offer(500))).unwrap();
+        checked(&frame(photos(200))).unwrap();
+        checked(&frame(gesture(64))).unwrap();
     }
 
     #[test]
@@ -307,6 +346,11 @@ mod tests {
             "PhoneNotification"
         );
         assert_eq!(too_many(checked(&frame(offer(501)))), "FileOffer.files");
+        assert_eq!(too_many(checked(&frame(photos(201)))), "Photo");
+        assert_eq!(
+            too_many(checked(&frame(gesture(65)))),
+            "ScreenGesture.points"
+        );
         assert_eq!(
             too_many(checked(&frame(batch(0, 1001)))),
             "NotificationSyncBatch.removed_keys"
@@ -357,6 +401,13 @@ mod tests {
         let mut body = frame(batch(100, 0));
         body.extend(frame(posted(PhoneNotification::default())));
         assert_eq!(too_many(checked(&body)), "PhoneNotification");
+
+        // So do the photos of a reply and of a change.
+        let mut body = frame(photos(150));
+        body.extend(frame(Payload::PhotoListChanged(PhotoListChanged {
+            photos: vec![Photo::default(); 51],
+        })));
+        assert_eq!(too_many(checked(&body)), "Photo");
     }
 
     #[test]

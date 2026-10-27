@@ -24,8 +24,10 @@ no relay: the two devices talk to each other directly or not at all.
 - [Errors](#errors)
 - [Notifications](#notifications)
 - [Calls](#calls)
+- [Photos](#photos)
 - [Files](#files)
 - [Clipboard](#clipboard)
+- [Screen](#screen)
 - [Phone status](#phone-status)
 - [Ring](#ring)
 - [Security considerations](#security-considerations)
@@ -818,14 +820,16 @@ streams. A frame body MUST NOT exceed 16 KiB until the session starts
 (during the Hello exchange, and on a pairing connection until the pairing
 is stored), and after that 1.25 MiB when its payload is `ImageData`, and
 512 KiB otherwise. It MUST NOT hold more than 64 `Hello.features` or
-`FeatureStatus.features`, 100 notifications, 1000 `removed_keys`, or 32
-actions, 32 messages or 16 reply choices per notification or action,
-counted over the whole frame. A receiver checks these before decoding, and
-closes the connection on a frame that breaks them or does not decode,
-because the stream is out of sync.
+`FeatureStatus.features`, 100 notifications, 1000 `removed_keys`, 32
+actions, 32 messages or 16 reply choices per notification or action, 500
+files, 200 photos, or 64 gesture points, counted over the whole frame. A
+receiver checks these before decoding, and closes the connection on a
+frame that breaks them or does not decode, because the stream is out of
+sync.
 
 Senders SHOULD keep frames below 256 KiB, splitting large answers into
-batches, so that a `Ping` never waits long behind a bulk frame. Each side
+batches, so that a `Ping` never waits long behind a bulk frame. Only images
+and screen frames may be larger, up to their features' limits. Each side
 MUST keep reading frames while it writes: when both send bulk data, such as
 files in both directions, two sides that stop reading while they write
 block each other once the TCP buffers fill.
@@ -985,9 +989,10 @@ after Hello and a new complete one whenever a state changes:
 | `UNAVAILABLE` | The device cannot offer it, e.g. a phone without telephony | Nothing, or "Not available" |
 
 A side only sends a feature's requests while the feature is active and
-`READY` on both sides. Version 1 defines two permission tokens,
-`notification-access` (the phone's notification listener access) and
-`storage` (see [Files](#files)). Each feature section defines its own.
+`READY` on both sides. Version 1 defines three permission tokens:
+`notification-access` (the phone's notification listener access),
+`photos` (see [Photos](#photos)) and `storage` (see [Files](#files)). Each
+feature section defines its own.
 
 ### Sequence numbers
 
@@ -1468,6 +1473,82 @@ off calls on the desktop.
 | `BluetoothPairingRequest.name` | 1 to 248 bytes |
 | Pairing window | 2 minutes |
 
+## Photos
+
+Capability token `photos`. The desktop shows the phone's recent photos, and
+the user views them and saves the ones they want there.
+
+The phone keeps the feature off until the user turns it on. It needs the
+OS permission to read the phone's photos, permission token `photos`, and
+reports `PERMISSION_REQUIRED` until the user grants it. Where the user lets
+the app see only the photos they pick, which Android allows from version
+14, the list holds only those. The desktop only asks, and reports the
+feature `READY`.
+
+### The list
+
+- Whenever `photos` becomes active and `READY` on both sides, the desktop
+  sends `PhotoListRequest`. The phone answers `PhotoListReply` with its
+  current list.
+- That request subscribes the desktop to changes. Until the session ends or
+  the feature leaves `READY` on either side, the phone sends
+  `PhotoListChanged` with the complete new list when the list changes. When
+  the feature becomes `READY` again, the desktop asks again.
+- The phone sends at most one `PhotoListChanged` every 5 seconds to each
+  desktop. A change made in the meantime replaces the update still
+  waiting, and the newest list goes out when the 5 seconds have passed. It
+  sends nothing when the list did not change.
+- The list holds the photos the phone's camera took and the phone's
+  screenshots, newest first, at most 200. It leaves out every other image,
+  such as those other apps saved or received, and videos.
+- A photo whose `id` stays the same but whose `modified_unix_ms` changes is
+  a new version: the desktop drops what it fetched of the old one.
+
+### Thumbnails and photos
+
+- The desktop fetches what it shows: `PhotoThumbnailRequest` for a smaller
+  copy, with the longest side it wants, 64 to 2048 pixels. The phone
+  answers `PhotoThumbnail`, a JPEG scaled down to fit and never up, of at
+  most 400 KiB, lowering its quality or size to stay below that.
+- To view a photo at full size or save it, the desktop fetches the original
+  file with `PhotoDataRequest`, from offset 0 on, each request starting
+  where the previous answer's `data` ended. The phone answers `PhotoData`
+  with 256 KiB from that offset, or fewer where the file ends first, and
+  the file's `size` and `modified_unix_ms`. The desktop has the photo once
+  it holds `size` bytes. When `size` or `modified_unix_ms` change between
+  answers, the photo changed on the phone: the desktop drops what it
+  fetched and starts again from offset 0, once.
+- The desktop keeps at most 8 thumbnail requests and 4 data requests
+  unanswered per session.
+- The phone answers only for photos in the list it last sent to that
+  desktop: `NOT_FOUND` for any other `id`, also one that names another
+  image on the phone, and for a photo deleted since. It answers
+  `INVALID_ARGUMENT` to a `max_size` out of range or an offset past the end
+  of the file, and `BUSY` when it has too much to do, with
+  `retry_after_ms`.
+- The desktop keeps thumbnails and fetched photos in memory only, never in
+  a cache on disk, and drops them when the phone's `photos` feature leaves
+  `READY` or the phone is unpaired. It MAY keep them across sessions with
+  the same phone while it runs, keyed by `id` and `modified_unix_ms`.
+- A photo the user saves goes into the user's Pictures directory, or where
+  the user picks. Its name comes from the phone, so the desktop follows the
+  rules for received file names in [Files](#receiving): it keeps only the
+  name, never overwrites a file, and never makes the file executable or
+  opens it by itself.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| Photos in a list | 200 |
+| `id` | 1 to 64 bytes |
+| `name` | 1 to 255 bytes |
+| `PhotoThumbnailRequest.max_size` | 64 to 2048 pixels |
+| `PhotoThumbnail.data` | 400 KiB |
+| `PhotoData.data` | 256 KiB |
+| Unanswered requests | 8 thumbnail and 4 data requests per session |
+| `PhotoListChanged` | 1 every 5 seconds per desktop |
+
 ## Files
 
 Capability token `files`. The user sends files from one device to the
@@ -1671,6 +1752,115 @@ The sender keeps pushes few and in order:
 | `text` | 1 byte to 256 KiB |
 | Pushes waiting for an answer | 1 per peer |
 
+## Screen
+
+Capability token `screen`. The desktop shows the phone's screen in a
+window. Where the user allows it on the phone, the user also controls the
+phone from that window: taps, swipes, the navigation keys and typing.
+
+The phone keeps the feature off until the user turns it on. It needs no
+permission up front, because Android asks the user on the phone each time
+sharing starts. Control has a switch of its own on the phone, off until the
+user turns it on, and on Android it also needs the app's accessibility
+service. The desktop only asks, and reports the feature `READY`.
+
+### Starting and stopping
+
+1. The desktop sends `ScreenStart` with the codecs it can decode, most
+   preferred first, and the longest side it wants: 0 to leave it to the
+   phone, or 240 to 4096 pixels.
+2. The phone asks its user whether to share the screen with the desktop,
+   naming it, and answers `Ack`. Where it cannot ask, for example because
+   the user blocked the app's notifications, it answers `NOT_ALLOWED`. It
+   answers `BUSY` while it shares its screen with another desktop or asks
+   for one, `UNAVAILABLE` when it cannot share its screen right now, and
+   `INVALID_ARGUMENT` when it can encode none of the codecs or a field is
+   out of range.
+3. Once the user agrees, the phone sends `ScreenFormat`, then the screen as
+   `ScreenFrame` events. When the user declines, or does not answer within
+   1 minute, it sends `ScreenEnded` with `DECLINED` or `TIMED_OUT`.
+
+- A `ScreenStart` from the desktop the phone already sends to gets an
+  `Ack`, and the phone sends a `ScreenFormat` with a new `id` and a key
+  frame, without asking again.
+- The desktop stops with `ScreenStop`. The phone stops sharing and answers
+  `Ack`, also when it was not sending, and sends no `ScreenEnded`. Frames
+  that arrive between the `ScreenStop` and its `Ack` are left over from the
+  stream the desktop stopped, and it drops them.
+- The phone ends the stream when its user stops sharing, when it locks,
+  which ends screen sharing on Android, when the feature leaves `READY` on
+  either side, or when it cannot go on, and sends `ScreenEnded` with the
+  reason. A stream also ends with its session, without a message.
+- The desktop stops the stream when the user closes the window that shows
+  it.
+
+### Video
+
+- The phone takes the first codec in `ScreenStart.codecs` that it can
+  encode. It scales its screen down, keeping its shape, so that the longer
+  side is at most `max_size`, and sends the size it picked in
+  `ScreenFormat`.
+- `ScreenFormat.id` changes whenever the codec, the size or `codec_config`
+  change, for example when the phone rotates, and the next frame is then a
+  key frame. A `ScreenFormat` that only changes `input` keeps its `id`, and
+  the video goes on.
+- With `SCREEN_CODEC_H264`, `codec_config` holds the avcC record
+  (AVCDecoderConfigurationRecord) with the sequence and picture parameter
+  sets, and each frame one access unit whose NAL units each start with a
+  4-byte big-endian length instead of a start code. With
+  `SCREEN_CODEC_JPEG`, each frame is a whole JPEG image and a key frame.
+- A frame is at most 448 KiB, and the phone sends at most 60 frames per
+  second. `timestamp_us` grows from frame to frame.
+- The phone keeps no more than about half a second of video waiting to be
+  written. When more would wait, it drops frames, and with H.264 then sends
+  nothing until a key frame.
+- A desktop that drops a frame, because it falls behind or cannot decode
+  it, drops the frames up to the next key frame and sends
+  `ScreenKeyFrameRequest`, at most once per second. The phone sends a key
+  frame within a second of it.
+- The desktop shows the frames only in its window. It never writes them to
+  disk.
+
+### Control
+
+- `ScreenFormat.input` says whether the phone accepts `ScreenInput` right
+  now: the user turned control on, its accessibility service is on, and the
+  phone is sending its screen to that desktop. When this changes, the phone
+  sends a `ScreenFormat` that says so.
+- The desktop sends `ScreenInput` only for what the user does in the window
+  that shows the phone's screen, and only while the current format has
+  `input` set. It sends them in the order the user made them, and the
+  phone carries them out in the order they arrive.
+- A gesture is one finger following 1 to 64 points, in the pixels of the
+  frames of `format_id`: one point is a tap, and a finger that stays at one
+  point for 500 ms or more is a long press. The times start at 0 and never
+  go back, and the last is at most 10 seconds. The phone maps the points
+  onto its screen.
+- `SCREEN_KEY_BACK`, `HOME`, `RECENTS` and `NOTIFICATIONS` are the
+  system's navigation actions. `BACKSPACE`, `ENTER` and `text` act on the
+  text field that has the focus; `text` is 1 to 4096 bytes, typed at the
+  cursor in place of any selection.
+- The phone answers `Ack` once it carried the input out, `NOT_ALLOWED`
+  while it does not accept input from that desktop, `EXPIRED` to a gesture
+  whose `format_id` is not the current one, `NOT_FOUND` to text or a text
+  key when no text field has the focus, and `INVALID_ARGUMENT` to a point
+  outside the frame or other fields out of range.
+
+### Limits
+
+| Item | Limit |
+|---|---|
+| `ScreenStart.codecs` | 1 to 8 |
+| `ScreenStart.max_size` | 0, or 240 to 4096 pixels |
+| `ScreenFormat.codec_config` | 4 KiB |
+| `ScreenFrame.data` | 448 KiB |
+| Frames | 60 per second |
+| The user's answer on the phone | 1 minute |
+| `ScreenKeyFrameRequest` | 1 per second |
+| Points per gesture | 1 to 64 |
+| Gesture length | 10 seconds |
+| `ScreenInput.text` | 1 to 4096 bytes |
+
 ## Phone status
 
 Capability token `status`. The desktop shows the phone's battery, signal
@@ -1765,8 +1955,8 @@ sends requests, and reports the feature `READY`.
 
 ### What is protected
 
-Notification content, messages, call data, files, clipboard content and
-the phone's status;
+Notification content, messages, call data, photos, files, clipboard
+content, the phone's screen and the phone's status;
 the ability to act as the user on the other device (send replies, dismiss
 notifications); and the user's privacy on the network (where the phone is,
 and which devices belong together).
@@ -1873,6 +2063,9 @@ from the desktop app's data. The desktop app narrows what it leaves open:
 - Its main process is not dumpable, so other programs of the user cannot
   attach a debugger to it or read its memory. The webview that draws the
   window runs in separate processes, which this does not cover.
+- Photos and the phone's screen stay in the app's memory. Thumbnails and
+  fetched photos are never cached on disk, and screen frames are never
+  written anywhere; only a photo the user saves reaches the disk.
 - Text the phone shares through the clipboard feature lands on the
   desktop's clipboard, where any program of the user can read it, as with
   anything the user copies there. Text marked secret keeps its mark, so
@@ -1935,6 +2128,12 @@ The rules that matter most for security, gathered in one place:
     only after the user confirmed the code on the desktop. Never trust,
     connect or keep a device that paired without that confirmation, and
     remove one that paired during the window.
+13. Answer photo requests only for photos in the list sent to the asking
+    desktop, never for another image on the phone.
+14. Share the screen only after the user agreed on the phone for that
+    stream, and carry out `ScreenInput` only while the user has control
+    turned on, and only from the desktop the screen is shared with, while
+    it is shared.
 
 ## Versioning
 
@@ -1982,11 +2181,25 @@ The rules that matter most for security, gathered in one place:
 | 104 | `NotificationDismissRequest` | desktop to phone | outbox request: `Ack` |
 | 105 | `NotificationActionRequest` | desktop to phone | outbox request: `Ack` |
 | 200 | `BluetoothPairingRequest` | desktop to phone | request: `Ack` |
+| 250 | `PhotoListRequest` | desktop to phone | request: `PhotoListReply` |
+| 251 | `PhotoListReply` | phone to desktop | reply |
+| 252 | `PhotoListChanged` | phone to desktop | event |
+| 253 | `PhotoThumbnailRequest` | desktop to phone | request: `PhotoThumbnail` |
+| 254 | `PhotoThumbnail` | phone to desktop | reply |
+| 255 | `PhotoDataRequest` | desktop to phone | request: `PhotoData` |
+| 256 | `PhotoData` | phone to desktop | reply |
 | 300 | `FileOffer` | both | request: `FileAccept` |
 | 301 | `FileAccept` | both | reply |
 | 302 | `FileChunk` | both | request: `Ack` |
 | 303 | `FileCancel` | both | request: `Ack` |
 | 350 | `ClipboardPush` | both | request: `Ack` |
+| 400 | `ScreenStart` | desktop to phone | request: `Ack` |
+| 401 | `ScreenStop` | desktop to phone | request: `Ack` |
+| 402 | `ScreenFormat` | phone to desktop | event |
+| 403 | `ScreenFrame` | phone to desktop | event |
+| 404 | `ScreenKeyFrameRequest` | desktop to phone | event |
+| 405 | `ScreenEnded` | phone to desktop | event |
+| 406 | `ScreenInput` | desktop to phone | request: `Ack` |
 | 450 | `PhoneStatusRequest` | desktop to phone | request: `PhoneStatusReply` |
 | 451 | `PhoneStatusReply` | phone to desktop | reply |
 | 452 | `PhoneStatusChanged` | phone to desktop | event |

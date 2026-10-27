@@ -8,6 +8,8 @@ import dev.link2linux.protocol.v1.FeatureState
 import dev.link2linux.protocol.v1.FileInfo
 import dev.link2linux.protocol.v1.NotificationAction
 import dev.link2linux.protocol.v1.PhoneNotification
+import dev.link2linux.protocol.v1.Photo
+import dev.link2linux.protocol.v1.ScreenPoint
 import dev.link2linux.protocol.v1.envelope
 import dev.link2linux.protocol.v1.featureStatus
 import dev.link2linux.protocol.v1.fileOffer
@@ -17,6 +19,10 @@ import dev.link2linux.protocol.v1.notificationAction
 import dev.link2linux.protocol.v1.notificationPosted
 import dev.link2linux.protocol.v1.notificationSyncBatch
 import dev.link2linux.protocol.v1.phoneNotification
+import dev.link2linux.protocol.v1.photoListChanged
+import dev.link2linux.protocol.v1.photoListReply
+import dev.link2linux.protocol.v1.screenGesture
+import dev.link2linux.protocol.v1.screenInput
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -44,6 +50,19 @@ class FrameLimitsTest {
 
     private fun offer(files: Int) = frame { fileOffer = fileOffer { this.files += List(files) { FileInfo.getDefaultInstance() } } }
 
+    private fun photos(photos: Int) = frame {
+        photoListReply = photoListReply { this.photos += List(photos) { Photo.getDefaultInstance() } }
+    }
+
+    private fun gesture(points: Int) = frame {
+        screenInput = screenInput {
+            gesture = screenGesture {
+                formatId = 1
+                this.points += List(points) { ScreenPoint.getDefaultInstance() }
+            }
+        }
+    }
+
     private val full = phoneNotification {
         actions += List(32) { notificationAction { replyChoices += List(16) { "ok" } } }
         messages += List(32) { ConversationMessage.getDefaultInstance() }
@@ -57,6 +76,8 @@ class FrameLimitsTest {
         check(posted(full))
         check(frame { notificationSyncBatch = notificationSyncBatch { notifications += List(100) { full } } })
         check(offer(500))
+        check(photos(200))
+        check(gesture(64))
     }
 
     @Test
@@ -83,6 +104,11 @@ class FrameLimitsTest {
         assertEquals("FileOffer.files", tooMany(offer(501)))
         // Offers merged from two copies count together.
         assertEquals("FileOffer.files", tooMany(offer(300) + offer(300)))
+        assertEquals("Photo", tooMany(photos(201)))
+        // The photos of a reply and of a change count together.
+        val changed = frame { photoListChanged = photoListChanged { photos += List(51) { Photo.getDefaultInstance() } } }
+        assertEquals("Photo", tooMany(photos(150) + changed))
+        assertEquals("ScreenGesture.points", tooMany(gesture(65)))
     }
 
     @Test

@@ -8,7 +8,9 @@ import "link2linux/v1/common.proto";
 import "link2linux/v1/files.proto";
 import "link2linux/v1/notifications.proto";
 import "link2linux/v1/pairing.proto";
+import "link2linux/v1/photos.proto";
 import "link2linux/v1/ring.proto";
+import "link2linux/v1/screen.proto";
 import "link2linux/v1/status.proto";
 
 option java_multiple_files = true;
@@ -64,12 +66,28 @@ message Envelope {
 
     BluetoothPairingRequest bluetooth_pairing_request = 200;
 
+    PhotoListRequest photo_list_request = 250;
+    PhotoListReply photo_list_reply = 251;
+    PhotoListChanged photo_list_changed = 252;
+    PhotoThumbnailRequest photo_thumbnail_request = 253;
+    PhotoThumbnail photo_thumbnail = 254;
+    PhotoDataRequest photo_data_request = 255;
+    PhotoData photo_data = 256;
+
     FileOffer file_offer = 300;
     FileAccept file_accept = 301;
     FileChunk file_chunk = 302;
     FileCancel file_cancel = 303;
 
     ClipboardPush clipboard_push = 350;
+
+    ScreenStart screen_start = 400;
+    ScreenStop screen_stop = 401;
+    ScreenFormat screen_format = 402;
+    ScreenFrame screen_frame = 403;
+    ScreenKeyFrameRequest screen_key_frame_request = 404;
+    ScreenEnded screen_ended = 405;
+    ScreenInput screen_input = 406;
 
     PhoneStatusRequest phone_status_request = 450;
     PhoneStatusReply phone_status_reply = 451;
