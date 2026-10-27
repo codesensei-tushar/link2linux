@@ -23,7 +23,7 @@ mod service;
 
 pub use merge::{CallAction, CallNotification, Control, Operation, ShownCall, merge, operation};
 pub use pairing::{PAIRING_WINDOW, PairingWindow, PhoneAnswer};
-pub use phone::{PhoneDevice, find_phone};
+pub use phone::{Chosen, PhoneDevice, find_phone};
 pub use service::{CallsService, Handled};
 
 /// The longest number the hands-free link dials.

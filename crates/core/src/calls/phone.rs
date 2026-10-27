@@ -1,11 +1,31 @@
 //! Which of the desktop's paired Bluetooth devices is a paired phone.
 //!
 //! The phone's name in its `Hello` is usually its Bluetooth name too, so a
-//! paired device of that name is the phone. When names do not settle it,
-//! a single device that could be a phone is taken, and with several the
-//! user picks one once; the desktop keeps that choice.
+//! paired device of that name is the phone, when the Bluetooth stack
+//! trusts it. Otherwise the user picks the phone's device among those that
+//! could be it, even when there is only one, and the desktop keeps that
+//! choice, as it keeps the device whose pairing code the user confirmed.
+//!
+//! Nothing else is taken without asking. A nearby device can pair with no
+//! prompt at all: the kernel accepts "just works" pairing by itself when
+//! neither side asks for protection, so being paired says nothing about
+//! what the user wanted. The desktop's Bluetooth settings trust a device
+//! the user paired there. And a device that could be a phone may be
+//! another phone, such as an old one, whose calls would then ring here.
 
 use link2linux_platform::{BluetoothAddress, BluetoothDevice};
+
+/// The device kept for a phone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chosen {
+    /// The device's address.
+    pub address: BluetoothAddress,
+    /// The user picked it, or confirmed its pairing code, since the
+    /// desktop started, so it is the phone's before the Bluetooth stack
+    /// trusts it. A kept device that is not trusted is offered to the
+    /// user again otherwise.
+    pub confirmed: bool,
+}
 
 /// What the desktop knows about a phone's Bluetooth device.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,13 +45,15 @@ pub enum PhoneDevice {
 pub fn find_phone(
     devices: &[BluetoothDevice],
     phone_name: &str,
-    chosen: Option<BluetoothAddress>,
+    chosen: Option<Chosen>,
     taken: &[BluetoothAddress],
 ) -> PhoneDevice {
     if let Some(chosen) = chosen
-        && devices.iter().any(|d| d.address == chosen && d.paired)
+        && devices
+            .iter()
+            .any(|d| d.address == chosen.address && d.paired && (d.trusted || chosen.confirmed))
     {
-        return PhoneDevice::Found(chosen);
+        return PhoneDevice::Found(chosen.address);
     }
     let candidates: Vec<&BluetoothDevice> = devices
         .iter()
@@ -40,14 +62,13 @@ pub fn find_phone(
         .collect();
     let named: Vec<BluetoothAddress> = candidates
         .iter()
-        .filter(|d| same_name(&d.name, phone_name))
+        .filter(|d| d.trusted && same_name(&d.name, phone_name))
         .map(|d| d.address)
         .collect();
     match (named.as_slice(), candidates.as_slice()) {
         ([one], _) => PhoneDevice::Found(*one),
         ([], []) => PhoneDevice::NotPaired,
-        ([], [only]) => PhoneDevice::Found(only.address),
-        ([], several) => PhoneDevice::Choose(several.iter().map(|d| d.address).collect()),
+        ([], all) => PhoneDevice::Choose(all.iter().map(|d| d.address).collect()),
         (several, _) => PhoneDevice::Choose(several.to_vec()),
     }
 }
@@ -68,7 +89,7 @@ mod tests {
             address: address.parse().unwrap(),
             name: name.into(),
             paired: true,
-            trusted: false,
+            trusted: true,
             connected: false,
             phone: true,
             hands_free_gateway: true,
@@ -77,6 +98,13 @@ mod tests {
 
     fn address(text: &str) -> BluetoothAddress {
         text.parse().unwrap()
+    }
+
+    fn kept(text: &str) -> Option<Chosen> {
+        Some(Chosen {
+            address: address(text),
+            confirmed: false,
+        })
     }
 
     const A: &str = "00:00:00:00:00:0A";
@@ -96,25 +124,26 @@ mod tests {
     fn a_kept_choice_wins_while_it_stays_paired() {
         let mut devices = vec![device(A, "Pixel 8"), device(B, "Other")];
         assert_eq!(
-            find_phone(&devices, "Pixel 8", Some(address(B)), &[]),
+            find_phone(&devices, "Pixel 8", kept(B), &[]),
             PhoneDevice::Found(address(B))
         );
         devices[1].paired = false;
         assert_eq!(
-            find_phone(&devices, "Pixel 8", Some(address(B)), &[]),
+            find_phone(&devices, "Pixel 8", kept(B), &[]),
             PhoneDevice::Found(address(A))
         );
     }
 
     #[test]
-    fn a_single_phone_is_taken_and_several_are_offered() {
+    fn devices_not_named_like_the_phone_are_offered_even_alone() {
+        // Maybe an old phone, still paired: its calls are not this one's.
         let mut headset = device(C, "Headphones");
         headset.phone = false;
         headset.hands_free_gateway = false;
         let one = [device(A, "Galaxy"), headset.clone()];
         assert_eq!(
             find_phone(&one, "Pixel 8", None, &[]),
-            PhoneDevice::Found(address(A))
+            PhoneDevice::Choose(vec![address(A)])
         );
         let two = [device(A, "Galaxy"), device(B, "Moto"), headset];
         assert_eq!(
@@ -145,8 +174,47 @@ mod tests {
     }
 
     #[test]
+    fn a_device_that_is_not_trusted_is_never_taken_without_asking() {
+        // Paired with no prompt, as "just works" pairing allows, and named
+        // like the phone: offered, not taken.
+        let mut stranger = device(A, "Pixel 8");
+        stranger.trusted = false;
+        assert_eq!(
+            find_phone(std::slice::from_ref(&stranger), "Pixel 8", None, &[]),
+            PhoneDevice::Choose(vec![address(A)])
+        );
+        // Next to the trusted phone of the same name, the phone is taken.
+        assert_eq!(
+            find_phone(&[stranger, device(B, "Pixel 8")], "Pixel 8", None, &[]),
+            PhoneDevice::Found(address(B))
+        );
+    }
+
+    #[test]
+    fn a_kept_device_that_is_not_trusted_counts_only_once_the_user_picked_it() {
+        let mut stranger = device(A, "Pixel 8");
+        stranger.trusted = false;
+        let devices = [stranger];
+        // Kept from an earlier run: the user is asked again.
+        assert_eq!(
+            find_phone(&devices, "Pixel 8", kept(A), &[]),
+            PhoneDevice::Choose(vec![address(A)])
+        );
+        // Picked (or paired with a confirmed code) since the desktop
+        // started: the phone's, until the Bluetooth stack trusts it.
+        let picked = Chosen {
+            address: address(A),
+            confirmed: true,
+        };
+        assert_eq!(
+            find_phone(&devices, "Pixel 8", Some(picked), &[]),
+            PhoneDevice::Found(address(A))
+        );
+    }
+
+    #[test]
     fn a_device_that_only_offers_calls_counts_as_a_phone() {
-        let mut gateway = device(A, "Car phone");
+        let mut gateway = device(A, "Pixel 8");
         gateway.phone = false;
         assert_eq!(
             find_phone(&[gateway], "Pixel 8", None, &[]),

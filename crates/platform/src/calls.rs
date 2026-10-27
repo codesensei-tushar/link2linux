@@ -38,9 +38,12 @@ pub struct BluetoothDevice {
     pub address: BluetoothAddress,
     /// Its name, as the user renamed it or as it calls itself.
     pub name: String,
-    /// Paired (bonded) with the desktop.
+    /// Paired with the desktop for good (bonded). A device can pair
+    /// without the user's say ("just works" pairing), so this alone does
+    /// not make it the user's.
     pub paired: bool,
-    /// Allowed to connect without asking the user.
+    /// Allowed to connect without asking the user: the user paired it in
+    /// the desktop's Bluetooth settings, or the desktop trusted it.
     pub trusted: bool,
     /// Connected now, through any profile.
     pub connected: bool,
@@ -115,7 +118,9 @@ pub trait Bluetooth: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<Option<BluetoothAdapter>, PlatformError>> + Send;
 
-    /// The devices the adapter knows.
+    /// The devices the adapter knows. While pairing is open, a device
+    /// that paired since it opened counts as paired only once the user
+    /// confirmed its code.
     fn devices(&self) -> impl Future<Output = Result<Vec<BluetoothDevice>, PlatformError>> + Send;
 
     /// Resolves the next time the adapter or one of its devices changes:
@@ -133,7 +138,9 @@ pub trait Bluetooth: Send + Sync {
 
     /// Ends what [`open_pairing`](Self::open_pairing) started: the adapter
     /// is discoverable and pairable as before, and prompts still open are
-    /// refused. Does nothing when pairing is not open.
+    /// refused. A device that paired meanwhile without a code the user
+    /// confirmed, and that nobody trusted since, is removed. Does nothing
+    /// when pairing is not open.
     fn close_pairing(&self) -> impl Future<Output = Result<(), PlatformError>> + Send;
 
     /// Waits for the next [`PairingEvent`]. Never resolves while pairing
@@ -145,7 +152,9 @@ pub trait Bluetooth: Send + Sync {
 
     /// Trusts the paired `device`, so it connects without asking, and
     /// connects its hands-free audio gateway, and only that: the phone's
-    /// media audio stays on the phone.
+    /// media audio stays on the phone. While pairing is open, a device
+    /// that paired since it opened is refused unless the user confirmed
+    /// its code.
     fn connect_hands_free(
         &self,
         device: BluetoothAddress,

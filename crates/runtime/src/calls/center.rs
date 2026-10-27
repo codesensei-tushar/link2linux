@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use link2linux_core::calls::{
-    CallAction, CallNotification, PairingWindow, PhoneAnswer, PhoneDevice, ShownCall, find_phone,
-    merge, operation,
+    CallAction, CallNotification, Chosen, PairingWindow, PhoneAnswer, PhoneDevice, ShownCall,
+    find_phone, merge, operation,
 };
 use link2linux_core::session::Availability;
 use link2linux_platform::{
@@ -78,6 +78,10 @@ pub(crate) struct Center {
     seen: Seen,
     /// The Bluetooth device of each phone, kept across runs.
     choices: BTreeMap<String, BluetoothAddress>,
+    /// The kept devices the user picked, or paired with a confirmed code,
+    /// since the desktop started. Each is its phone's even before the
+    /// Bluetooth stack trusts it, which connecting it does.
+    confirmed: HashSet<BluetoothAddress>,
     window: Option<PairingWindow>,
     /// Each phone's call notifications, by key.
     notes: HashMap<String, BTreeMap<String, CallNotification>>,
@@ -118,6 +122,7 @@ impl Center {
             read: false,
             seen: Seen::default(),
             choices,
+            confirmed: HashSet::new(),
             window: None,
             notes: HashMap::new(),
             sessions: HashSet::new(),
@@ -178,23 +183,27 @@ impl Center {
             .filter(|(id, _)| **id != phone.id)
             .map(|(_, address)| *address)
             .collect();
-        find_phone(
-            &self.seen.devices,
-            &phone.name,
-            self.choices.get(&phone.id).copied(),
-            &taken,
-        )
+        find_phone(&self.seen.devices, &phone.name, self.chosen(phone), &taken)
+    }
+
+    /// The device kept for `phone`, if any.
+    fn chosen(&self, phone: &Phone) -> Option<Chosen> {
+        let address = *self.choices.get(&phone.id)?;
+        Some(Chosen {
+            address,
+            confirmed: self.confirmed.contains(&address),
+        })
     }
 
     /// Keeps each phone's device once it is found, so it stays the same
-    /// when more devices are paired later. Phones whose device carries
-    /// their name are settled first, so a lone device does not go to the
-    /// wrong phone. Returns whether a choice changed.
+    /// when more devices are paired later. Only a trusted device named
+    /// like its phone is found without the user (see [`find_phone`]).
+    /// Returns whether a choice changed.
     pub fn settle_choices(&mut self, phones: &[Phone]) -> bool {
         let mut changed = false;
         for by_name in [true, false] {
             for phone in phones {
-                let chosen = self.choices.get(&phone.id).copied();
+                let chosen = self.chosen(phone);
                 let device = if by_name {
                     let named: Vec<BluetoothDevice> = self
                         .seen
@@ -216,7 +225,7 @@ impl Center {
                     self.device_of(phone)
                 };
                 if let PhoneDevice::Found(address) = device
-                    && chosen != Some(address)
+                    && chosen.map(|c| c.address) != Some(address)
                 {
                     self.choices.insert(phone.id.clone(), address);
                     changed = true;
@@ -231,8 +240,9 @@ impl Center {
         &self.choices
     }
 
-    /// The user picked `address` as `device_id`'s device. Returns whether
-    /// it is a paired device that may be the phone.
+    /// The user picked `address` as `device_id`'s device, in the list or
+    /// by confirming its pairing code. Returns whether it is a paired
+    /// device that may be the phone.
     pub fn choose(&mut self, device_id: &str, address: BluetoothAddress) -> bool {
         let known = self
             .seen
@@ -242,7 +252,10 @@ impl Center {
         if known {
             self.choices
                 .retain(|id, a| id == device_id || *a != address);
-            self.choices.insert(device_id.to_owned(), address);
+            if let Some(earlier) = self.choices.insert(device_id.to_owned(), address) {
+                self.confirmed.remove(&earlier);
+            }
+            self.confirmed.insert(address);
             self.problems.remove(device_id);
         }
         known
@@ -373,7 +386,9 @@ impl Center {
 
     /// Phone `device_id` is no longer paired.
     pub fn forget(&mut self, device_id: &str) {
-        self.choices.remove(device_id);
+        if let Some(address) = self.choices.remove(device_id) {
+            self.confirmed.remove(&address);
+        }
         self.notes.remove(device_id);
         self.sessions.remove(device_id);
         self.problems.remove(device_id);

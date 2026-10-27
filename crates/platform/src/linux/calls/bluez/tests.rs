@@ -19,6 +19,8 @@ struct MockDevice {
     alias: &'static str,
     adapter: &'static str,
     paired: bool,
+    /// `None` for a BlueZ that does not report `Bonded`.
+    bonded: Option<bool>,
     trusted: bool,
     class: Option<u32>,
     icon: Option<&'static str>,
@@ -57,6 +59,7 @@ fn phone() -> MockDevice {
         alias: "Pixel 8",
         adapter: HCI0,
         paired: true,
+        bonded: Some(true),
         trusted: false,
         class: Some(0x5a020c),
         icon: None,
@@ -70,6 +73,7 @@ fn headset() -> MockDevice {
         alias: "Headphones",
         adapter: HCI0,
         paired: true,
+        bonded: None,
         trusted: true,
         class: Some(0x240404),
         icon: Some("audio-headset"),
@@ -108,6 +112,9 @@ impl MockObjectManager {
                 value(ObjectPath::try_from(device.adapter).unwrap()),
             );
             properties.insert("Paired".to_owned(), value(device.paired));
+            if let Some(bonded) = device.bonded {
+                properties.insert("Bonded".to_owned(), value(bonded));
+            }
             properties.insert("Trusted".to_owned(), value(device.trusted));
             properties.insert("Connected".to_owned(), value(false));
             if let Some(class) = device.class {
@@ -183,6 +190,15 @@ impl MockAdapter {
     #[zbus(property)]
     fn set_pairable(&mut self, on: bool) {
         self.0.lock().unwrap().pairable = on;
+    }
+
+    fn remove_device(&self, device: OwnedObjectPath) {
+        let mut state = self.0.lock().unwrap();
+        state.devices.retain(|d| d.path() != device.as_str());
+        let address = device.as_str().rsplit("dev_").next().unwrap_or_default();
+        state
+            .calls
+            .push(format!("remove {}", address.replace('_', ":")));
     }
 }
 
@@ -487,6 +503,130 @@ async fn the_user_confirms_the_code_before_a_pairing_is_accepted() {
                 .await
         ),
         "org.bluez.Error.Rejected"
+    );
+}
+
+/// A phone-like device that pairs while pairing is open, by itself.
+fn stranger() -> MockDevice {
+    MockDevice {
+        address: "0A:0B:0C:0D:0E:0F",
+        ..phone()
+    }
+}
+
+#[tokio::test]
+async fn devices_that_pair_without_a_confirmed_code_are_ignored_and_removed() {
+    const STRANGER: &str = "0A:0B:0C:0D:0E:0F";
+    const SETTINGS: &str = "0A:0B:0C:0D:0E:10";
+    let m = mock().await;
+    let bluetooth = m.bluetooth();
+    bluetooth
+        .open_pairing(Duration::from_secs(120))
+        .await
+        .unwrap();
+    // One device pairs with no prompt ("just works"); the user pairs
+    // another in the desktop's Bluetooth settings, which trust it.
+    let settings = MockDevice {
+        address: SETTINGS,
+        trusted: true,
+        ..phone()
+    };
+    m.state
+        .lock()
+        .unwrap()
+        .devices
+        .extend([stranger(), settings]);
+
+    let paired = |devices: &[BluetoothDevice], address: &str| {
+        devices
+            .iter()
+            .find(|d| d.address.to_string() == address)
+            .map(|d| d.paired)
+    };
+    let devices = bluetooth.devices().await.unwrap();
+    assert_eq!(paired(&devices, STRANGER), Some(false));
+    assert_eq!(paired(&devices, SETTINGS), Some(true));
+    // Paired before pairing opened, though not trusted: still paired.
+    assert_eq!(paired(&devices, PHONE), Some(true));
+    assert!(
+        bluetooth
+            .connect_hands_free(STRANGER.parse().unwrap())
+            .await
+            .is_err()
+    );
+
+    bluetooth.close_pairing().await.unwrap();
+    let changed: Vec<String> = m
+        .calls()
+        .into_iter()
+        .filter(|c| c.starts_with("remove") || c.starts_with("trust"))
+        .collect();
+    assert_eq!(changed, [format!("remove {STRANGER}")]);
+    let devices = bluetooth.devices().await.unwrap();
+    assert_eq!(paired(&devices, STRANGER), None);
+    assert_eq!(paired(&devices, SETTINGS), Some(true));
+}
+
+#[tokio::test]
+async fn the_device_whose_code_the_user_confirmed_is_trusted_and_kept() {
+    let mut not_yet = phone();
+    not_yet.paired = false;
+    not_yet.bonded = Some(false);
+    let m = mock_with(state(vec![not_yet])).await;
+    let bluetooth = Arc::new(m.bluetooth());
+    bluetooth
+        .open_pairing(Duration::from_secs(120))
+        .await
+        .unwrap();
+    let agent = m.agent().await;
+    let asked = tokio::spawn({
+        let agent = agent.clone();
+        let path = ObjectPath::try_from(phone().path()).unwrap();
+        async move {
+            agent
+                .call::<_, _, ()>("RequestConfirmation", &(path, 123_456u32))
+                .await
+        }
+    });
+    let PairingEvent::Confirm(prompt) = bluetooth.next_pairing_event().await else {
+        panic!("expected a prompt");
+    };
+    bluetooth.answer_pairing(prompt.id, true);
+    asked.await.unwrap().unwrap();
+    // BlueZ finishes pairing; the phone may connect just after.
+    {
+        let mut state = m.state.lock().unwrap();
+        state.devices[0].paired = true;
+        state.devices[0].bonded = Some(true);
+    }
+    let devices = bluetooth.devices().await.unwrap();
+    assert!(devices[0].paired);
+    let address: BluetoothAddress = PHONE.parse().unwrap();
+    bluetooth.connect_hands_free(address).await.unwrap();
+    bluetooth.close_pairing().await.unwrap();
+    let calls = m.calls();
+    assert!(calls.contains(&format!("trust {PHONE} true")), "{calls:?}");
+    assert!(
+        calls.contains(&format!("connect {PHONE} {HANDS_FREE_GATEWAY_UUID}")),
+        "{calls:?}"
+    );
+    assert!(!calls.iter().any(|c| c.starts_with("remove")), "{calls:?}");
+}
+
+#[tokio::test]
+async fn a_pairing_that_keeps_no_keys_does_not_count() {
+    let mut passing = phone();
+    passing.bonded = Some(false);
+    // The headset's BlueZ reports no `Bonded`: `Paired` counts alone.
+    let m = mock_with(state(vec![passing, headset()])).await;
+    let devices = m.bluetooth().devices().await.unwrap();
+    let paired: Vec<(String, bool)> = devices
+        .iter()
+        .map(|d| (d.address.to_string(), d.paired))
+        .collect();
+    assert_eq!(
+        paired,
+        [(HEADSET.to_owned(), true), (PHONE.to_owned(), false)]
     );
 }
 
