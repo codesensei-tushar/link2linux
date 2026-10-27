@@ -959,7 +959,7 @@ pub(crate) fn send_tones(
     tones: &str,
 ) -> Result<(), BackendError> {
     if !are_tones(tones) {
-        return Err(BackendError::WrongState);
+        return Err(BackendError::NotDialable);
     }
     let tones = tones.to_owned();
     let (gateway, _) = gateway_id(core, device_id)?;
