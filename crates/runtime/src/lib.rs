@@ -22,6 +22,7 @@ pub mod paths;
 pub mod phone;
 pub mod qr;
 mod runtime;
+pub mod screen;
 pub mod settings;
 mod shared;
 pub mod view;

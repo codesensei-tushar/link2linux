@@ -44,6 +44,10 @@ use link2linux_runtime::notify::{
     BoxFuture, DriverError, DriverFactory, NotificationsDriver, PhoneSession, ServiceFactory,
 };
 use link2linux_runtime::paths::DataDir;
+use link2linux_runtime::screen::{
+    ScreenCodec, ScreenInput, ScreenInputProblem, ScreenKey, ScreenPhase, ScreenStatus,
+    ScreenViewer,
+};
 use link2linux_runtime::view::{
     CallLink, CallStateView, CallsDesktop, CallsStatus, ClipboardDirection, ClipboardMode,
     ClipboardPhoneState, ClipboardProblemKind, ClipboardStatus, Device, DeviceStatus, EventSink,
@@ -338,6 +342,7 @@ struct Events {
     phone_status: Mutex<Vec<(String, PhoneStatus)>>,
     rings: Mutex<Vec<(String, RingStatus)>>,
     calls: Mutex<Vec<CallsStatus>>,
+    screens: Mutex<Vec<(String, ScreenStatus)>>,
     changed: Notify,
 }
 
@@ -393,6 +398,14 @@ impl EventSink for Events {
         self.calls.lock().unwrap().push(status.clone());
         self.changed.notify_waiters();
     }
+
+    fn screen_changed(&self, device_id: &str, screen: &ScreenStatus) {
+        self.screens
+            .lock()
+            .unwrap()
+            .push((device_id.to_owned(), screen.clone()));
+        self.changed.notify_waiters();
+    }
 }
 
 impl Events {
@@ -433,6 +446,16 @@ impl Events {
     async fn status_where(&self, id: &str, check: impl Fn(&PhoneStatus) -> bool) -> PhoneStatus {
         wait(&self.changed, || {
             let reported = self.phone_status.lock().unwrap();
+            let (_, latest) = reported.iter().rev().find(|(device, _)| device == id)?;
+            check(latest).then(|| latest.clone())
+        })
+        .await
+    }
+
+    /// Waits until the latest screen status of phone `id` passes `check`.
+    async fn screen_where(&self, id: &str, check: impl Fn(&ScreenStatus) -> bool) -> ScreenStatus {
+        wait(&self.changed, || {
+            let reported = self.screens.lock().unwrap();
             let (_, latest) = reported.iter().rev().find(|(device, _)| device == id)?;
             check(latest).then(|| latest.clone())
         })
@@ -754,6 +777,37 @@ async fn status_session(
         next_event(&mut session).await;
     }
     session
+}
+
+/// A session from the phone, which shares its screen.
+async fn screen_session(
+    phone: &TestPhone,
+    desktop: CertificateFingerprint,
+) -> Session<TlsStream<TcpStream>> {
+    let connection = phone.accept(PhoneTls::pinned(desktop)).await.unwrap();
+    let info = DeviceInfo::new(
+        phone.id.clone(),
+        phone.name.clone(),
+        DeviceKind::Phone,
+        [Feature::Screen],
+    );
+    let mut session =
+        Session::handshake(connection.wire.into_inner(), info, SessionConfig::phone())
+            .await
+            .unwrap();
+    while !session.is_ready(Feature::Screen) {
+        next_event(&mut session).await;
+    }
+    session
+}
+
+/// A window that shows a phone's screen: it passes on what it gets.
+struct Window(mpsc::UnboundedSender<Vec<u8>>);
+
+impl ScreenViewer for Window {
+    fn show(&self, packet: Vec<u8>) -> bool {
+        self.0.send(packet).is_ok()
+    }
 }
 
 /// The desktop's next request, which the phone takes; returns its
@@ -2429,6 +2483,110 @@ async fn the_phone_shows_its_status_and_rings_when_asked() {
         rig.runtime.phone_status("nobody"),
         Err(link2linux_runtime::view::BackendError::NotFound)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_phone_shows_its_screen_in_a_window_and_takes_input() {
+    use link2linux_protocol::v1::{self as wire, ScreenCodec as WireCodec};
+
+    let rig = start();
+    let phone = Arc::new(TestPhone::bind(LOCALHOST, "screen-1").await);
+    let (desktop, device) = pair(&rig, &phone).await;
+    let id = device.id.clone();
+    let mut session = within(screen_session(&phone, desktop)).await;
+    rig.events
+        .screen_where(&id, |screen| screen.blocked.is_none())
+        .await;
+
+    let (packets, mut window) = mpsc::unbounded_channel();
+    rig.runtime
+        .start_screen(&id, &[ScreenCodec::Jpeg], 1280, Arc::new(Window(packets)))
+        .unwrap();
+    let (start, request) = within(next_request(&mut session)).await;
+    let Payload::ScreenStart(asked) = request else {
+        panic!("expected a ScreenStart, got {request:?}");
+    };
+    assert_eq!(asked.codecs, [WireCodec::Jpeg as i32]);
+    assert_eq!(asked.max_size, 1280);
+    session.ack(start).await.unwrap();
+    rig.events
+        .screen_where(&id, |screen| screen.phase == ScreenPhase::Asking)
+        .await;
+
+    // The user agreed on the phone.
+    session
+        .send(Payload::ScreenFormat(wire::ScreenFormat {
+            id: 7,
+            codec: WireCodec::Jpeg.into(),
+            width: 4,
+            height: 8,
+            codec_config: Vec::new(),
+            input: true,
+        }))
+        .await
+        .unwrap();
+    session
+        .send(Payload::ScreenFrame(wire::ScreenFrame {
+            timestamp_us: 5,
+            key_frame: true,
+            data: vec![0xff, 0xd8, 1, 2],
+        }))
+        .await
+        .unwrap();
+    let packet = within(window.recv()).await.unwrap();
+    assert_eq!(
+        packet,
+        [
+            1, 3, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 5, 2, 0, 0, 0, 4, 0, 0, 0, 8, 0, 0, 0xff, 0xd8,
+            1, 2
+        ]
+    );
+    let shown = rig
+        .events
+        .screen_where(&id, |screen| screen.phase == ScreenPhase::Showing)
+        .await;
+    assert_eq!(
+        shown.format.map(|format| (format.id, format.input)),
+        Some((7, true))
+    );
+    assert_eq!(rig.runtime.screen_status(&id).unwrap(), shown);
+
+    // The user's input reaches the phone, and its refusal shows.
+    rig.runtime
+        .send_screen_input(
+            &id,
+            ScreenInput::Key {
+                key: ScreenKey::Enter,
+            },
+        )
+        .unwrap();
+    let (typed, request) = within(next_request(&mut session)).await;
+    assert!(matches!(request, Payload::ScreenInput(_)), "{request:?}");
+    session
+        .reply_error(
+            typed,
+            wire::ErrorReply {
+                code: ErrorCode::NotFound.into(),
+                ..wire::ErrorReply::default()
+            },
+        )
+        .await
+        .unwrap();
+    rig.events
+        .screen_where(&id, |screen| {
+            screen.input_problem == Some(ScreenInputProblem::NoTextField)
+        })
+        .await;
+
+    // Stopped on the desktop: the window gets nothing more.
+    rig.runtime.stop_screen(&id).unwrap();
+    let (stop, request) = within(next_request(&mut session)).await;
+    assert!(matches!(request, Payload::ScreenStop(_)), "{request:?}");
+    assert_eq!(within(window.recv()).await, None);
+    session.ack(stop).await.unwrap();
+    rig.events
+        .screen_where(&id, |screen| screen.phase == ScreenPhase::Idle)
+        .await;
 }
 
 /// The phone's Bluetooth address in the calls tests.

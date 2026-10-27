@@ -20,6 +20,7 @@ use crate::files;
 use crate::link::{Command, lock};
 use crate::pairing;
 use crate::phone::PhoneCommand;
+use crate::screen::{ScreenCodec, ScreenCommand, ScreenInput, ScreenStatus, ScreenViewer};
 use crate::shared::{Core, RuntimeConfig, RuntimeError, Shell};
 use crate::view::{
     BackendError, CallsStatus, ClipboardStatus, Device, FileTransfer, MirroredNotification,
@@ -424,6 +425,79 @@ impl Runtime {
                 .commands
                 .send(Command::Phone(PhoneCommand::StatusSwitch));
         }
+    }
+
+    /// Phone `device_id`'s screen as the UI shows it. Changes arrive
+    /// through the event sink.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn screen_status(&self, device_id: &str) -> Result<ScreenStatus, BackendError> {
+        self.check_paired(device_id)?;
+        Ok(self.core.phone.screen(device_id))
+    }
+
+    /// Asks phone `device_id` to show its screen in `viewer`, in one of
+    /// `codecs` (most preferred first) with its longer side at most
+    /// `max_size` pixels, or as the phone likes with 0. The phone asks its
+    /// user first; what came of it arrives as a new screen status.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn start_screen(
+        &self,
+        device_id: &str,
+        codecs: &[ScreenCodec],
+        max_size: u32,
+        viewer: Arc<dyn ScreenViewer>,
+    ) -> Result<(), BackendError> {
+        let request = link2linux_core::screen::ScreenRequest {
+            codecs: codecs.iter().map(|codec| codec.to_core()).collect(),
+            max_size,
+        };
+        self.send(
+            device_id,
+            Command::Screen(ScreenCommand::Start { request, viewer }),
+        )
+    }
+
+    /// Stops showing phone `device_id`'s screen.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn stop_screen(&self, device_id: &str) -> Result<(), BackendError> {
+        self.send(device_id, Command::Screen(ScreenCommand::Stop))
+    }
+
+    /// Sends what the user did in the window that shows phone
+    /// `device_id`'s screen. Input the phone did not take shows in the
+    /// screen status.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn send_screen_input(
+        &self,
+        device_id: &str,
+        input: ScreenInput,
+    ) -> Result<(), BackendError> {
+        self.send(
+            device_id,
+            Command::Screen(ScreenCommand::Input(input.into_core())),
+        )
+    }
+
+    /// Asks phone `device_id` for a key frame, because the window could not
+    /// decode a frame or fell behind.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a phone that is not paired.
+    pub fn request_screen_key_frame(&self, device_id: &str) -> Result<(), BackendError> {
+        self.send(device_id, Command::Screen(ScreenCommand::KeyFrame))
     }
 
     fn check_paired(&self, device_id: &str) -> Result<(), BackendError> {

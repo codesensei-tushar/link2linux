@@ -46,6 +46,10 @@ pub use crate::phone::dto::{
     CellularNetwork, PhoneBattery, PhoneCellular, PhoneStatus, PhoneWifi, RingEnd, RingPhase,
     RingProblem, RingStatus, RingerMode,
 };
+pub use crate::screen::dto::{
+    ScreenCodec, ScreenEnd, ScreenFormat, ScreenInput, ScreenInputProblem, ScreenKey, ScreenPhase,
+    ScreenPoint, ScreenProblem, ScreenStatus,
+};
 
 /// How the user pairs a new phone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -289,6 +293,7 @@ pub trait EventSink: Send + Sync {
     fn phone_status_changed(&self, _device_id: &str, _status: &PhoneStatus) {}
     /// What the UI shows of ringing a phone changed.
     fn ring_changed(&self, _device_id: &str, _ring: &RingStatus) {}
+    fn screen_changed(&self, _device_id: &str, _screen: &ScreenStatus) {}
     /// The phones' calls, or this desktop's part in them, changed.
     fn calls_changed(&self, _status: &CallsStatus) {}
 }
