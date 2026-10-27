@@ -1,7 +1,10 @@
+import { demoCall, demoCallsStatus } from "@/features/calls/demo";
 import { demoTransfers } from "@/features/files/demo";
 import { demoNotifications } from "@/features/notifications/demo";
 
 import type {
+  CallsStatus,
+  CallView,
   ClipboardStatus,
   DesktopApi,
   Device,
@@ -92,6 +95,8 @@ export function createPreviewApi(search: string = globalThis.location.search): D
   const ringListeners = new Set<(change: { deviceId: string; ring: RingStatus }) => void>();
   const rings = new Map<string, RingStatus>();
   const ringTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const callsListeners = new Set<(status: CallsStatus) => void>();
+  let calls: CallsStatus = demoCallsStatus();
 
   const qr: PairingState = {
     step: "qrOffer",
@@ -150,6 +155,22 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     clipboardListeners.forEach((listener) => {
       listener(next);
     });
+  };
+  const setCalls = (next: CallsStatus) => {
+    calls = next;
+    callsListeners.forEach((listener) => {
+      listener(next);
+    });
+  };
+  /** Changes phone `deviceId`'s calls. */
+  const changeCalls = (deviceId: string, change: (calls: CallView[]) => CallView[]) => {
+    setCalls({
+      ...calls,
+      phones: calls.phones.map((phone) =>
+        phone.deviceId === deviceId ? { ...phone, calls: change(phone.calls) } : phone,
+      ),
+    });
+    return Promise.resolve();
   };
   const listen = <T>(set: Set<(value: T) => void>, listener: (value: T) => void) => {
     set.add(listener);
@@ -307,6 +328,94 @@ export function createPreviewApi(search: string = globalThis.location.search): D
     stopRinging: (deviceId) => {
       clearTimeout(ringTimers.get(deviceId));
       setRing(deviceId, { ...ringOf(deviceId), phase: "idle", problem: null });
+      return Promise.resolve();
+    },
+    getCallsStatus: () => Promise.resolve(calls),
+    onCallsChanged: (listener) => listen(callsListeners, listener),
+    startBluetoothPairing: (deviceId) => {
+      setCalls({
+        ...calls,
+        pairing: {
+          deviceId,
+          adapterName: "This computer",
+          adapterAddress: "A0:B1:C2:D3:E4:F5",
+          endsUnixMs: Date.now() + 120_000,
+          phone: "asked",
+          prompt: { id: 1, deviceName: "Old Galaxy", code: "482913" },
+        },
+      });
+      return Promise.resolve();
+    },
+    cancelBluetoothPairing: () => {
+      setCalls({ ...calls, pairing: null });
+      return Promise.resolve();
+    },
+    confirmBluetoothCode: (_promptId, matches) => {
+      const deviceId = calls.pairing?.deviceId;
+      setCalls({
+        ...calls,
+        pairing: null,
+        phones: calls.phones.map((phone) =>
+          matches && phone.deviceId === deviceId
+            ? {
+                ...phone,
+                link: {
+                  state: "connected",
+                  device: { address: "00:11:22:33:44:55", name: phone.phoneName },
+                  canMute: true,
+                  muted: false,
+                },
+              }
+            : phone,
+        ),
+      });
+      return Promise.resolve();
+    },
+    chooseBluetoothDevice: () => Promise.resolve(),
+    connectCalls: () => Promise.resolve(),
+    answerCall: (deviceId, callId) =>
+      changeCalls(deviceId, (list) =>
+        list.map((call) =>
+          call.id === callId
+            ? demoCall({
+                ...call,
+                state: "active",
+                canAnswer: false,
+                canDecline: false,
+                canHangUp: true,
+                canSendTones: true,
+                activeSinceUnixMs: Date.now(),
+              })
+            : call,
+        ),
+      ),
+    declineCall: (deviceId, callId) =>
+      changeCalls(deviceId, (list) => list.filter((call) => call.id !== callId)),
+    hangUpCall: (deviceId, callId) =>
+      changeCalls(deviceId, (list) => list.filter((call) => call.id !== callId)),
+    dialNumber: (deviceId, number) =>
+      changeCalls(deviceId, (list) => [
+        ...list,
+        demoCall({
+          id: `bt:/ag0/call${String(list.length + 2)}`,
+          number,
+          name: "",
+          state: "alerting",
+          canAnswer: false,
+          canDecline: false,
+          canHangUp: true,
+        }),
+      ]),
+    sendCallTones: () => Promise.resolve(),
+    setCallMuted: (deviceId, muted) => {
+      setCalls({
+        ...calls,
+        phones: calls.phones.map((phone) =>
+          phone.deviceId === deviceId && phone.link.state === "connected"
+            ? { ...phone, link: { ...phone.link, muted } }
+            : phone,
+        ),
+      });
       return Promise.resolve();
     },
     getSettings: () => Promise.resolve(settings),

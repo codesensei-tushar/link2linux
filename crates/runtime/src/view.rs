@@ -24,6 +24,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+pub use crate::calls::dto::{
+    BluetoothChoice, BluetoothPairing, CallLink, CallProblem, CallStateView, CallView,
+    CallsDesktop, CallsStatus, PairingCode, PairingRequestState, PhoneCalls,
+};
 pub use crate::clipboard::{
     ClipboardActivity, ClipboardDirection, ClipboardMode, ClipboardPhone, ClipboardPhoneState,
     ClipboardProblem, ClipboardProblemKind, ClipboardStatus, HeldClipboard,
@@ -244,6 +248,15 @@ pub enum BackendError {
     /// Files are turned off on this computer.
     #[error("Turn on Files in Settings to send files.")]
     FilesOff,
+    /// Calls can't be used on this computer now, as without Bluetooth.
+    #[error("Calls aren't available on this computer right now.")]
+    CallsUnavailable,
+    /// The phone's hands-free link with this computer is down.
+    #[error("Connect your phone to this computer over Bluetooth first.")]
+    CallsNotConnected,
+    /// The number has characters a phone can't dial.
+    #[error("Enter a phone number: digits, and + * # if needed.")]
+    NotDialable,
 }
 
 /// Why the app could not start, for the page shown instead of the app.
@@ -273,4 +286,6 @@ pub trait EventSink: Send + Sync {
     fn phone_status_changed(&self, _device_id: &str, _status: &PhoneStatus) {}
     /// What the UI shows of ringing a phone changed.
     fn ring_changed(&self, _device_id: &str, _ring: &RingStatus) {}
+    /// The phones' calls, or this desktop's part in them, changed.
+    fn calls_changed(&self, _status: &CallsStatus) {}
 }

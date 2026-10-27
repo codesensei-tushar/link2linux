@@ -32,6 +32,18 @@ fn main() {
         "stop_ringing",
         "get_settings",
         "set_settings",
+        "get_calls_status",
+        "start_bluetooth_pairing",
+        "cancel_bluetooth_pairing",
+        "confirm_bluetooth_code",
+        "choose_bluetooth_device",
+        "connect_calls",
+        "answer_call",
+        "decline_call",
+        "hang_up_call",
+        "dial_number",
+        "send_call_tones",
+        "set_call_muted",
     ]);
 
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))

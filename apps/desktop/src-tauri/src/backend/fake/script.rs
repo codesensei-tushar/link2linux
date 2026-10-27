@@ -33,6 +33,9 @@ pub enum Script {
     Declined,
     /// Like `Success`, with two phones already paired.
     Demo,
+    /// Like `Demo`, with the first phone connected for calls over
+    /// Bluetooth, and a call that rings on it a few seconds after start.
+    IncomingCall,
 }
 
 impl Script {
@@ -45,8 +48,14 @@ impl Script {
             "not-found" => Some(Self::NotFound),
             "declined" => Some(Self::Declined),
             "demo" => Some(Self::Demo),
+            "incoming-call" => Some(Self::IncomingCall),
             _ => None,
         }
+    }
+
+    /// Whether the app starts with the demo phones paired.
+    pub fn has_demo_phones(self) -> bool {
+        matches!(self, Self::Demo | Self::IncomingCall)
     }
 }
 

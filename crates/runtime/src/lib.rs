@@ -7,6 +7,7 @@
 //! phone, pairs new ones, and reports every change as a snapshot through
 //! [`view::EventSink`].
 
+pub mod calls;
 pub mod candidates;
 pub mod clipboard;
 mod device;

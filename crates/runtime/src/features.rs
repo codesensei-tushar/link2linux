@@ -11,12 +11,14 @@
 //! [`Features::next_deadline`], and the loop calls [`Features::tick`] then;
 //! banner responses go through [`Features::handle_response`]. What the user
 //! asks of the phone's status or ringing goes through
-//! [`Features::phone_command`].
+//! [`Features::phone_command`], and the desktop's calls tell each phone of a
+//! change through [`Features::calls_changed`].
 
-use link2linux_core::session::SessionEvent;
+use link2linux_core::session::{SessionError, SessionEvent};
 use link2linux_platform::NotificationResponse;
 use tokio::time::Instant;
 
+use crate::calls::CallsDriver;
 use crate::clipboard::ClipboardDriver;
 use crate::files::FilesDriver;
 use crate::notify::{DriverError, NotificationsDriver, PhoneSession};
@@ -34,6 +36,8 @@ pub struct Features {
     pub status: StatusDriver,
     /// Ringing it.
     pub ring: RingDriver,
+    /// Its calls.
+    pub calls: CallsDriver,
 }
 
 /// The phone broke a feature's rules: the session ends as a protocol error.
@@ -57,6 +61,9 @@ impl Features {
             tracing::debug!(%error, "the phone's status could not start");
         }
         self.ring.session_started(session);
+        if let Err(error) = self.calls.session_started(session).await {
+            tracing::debug!(%error, "calls could not start");
+        }
     }
 
     /// Hands `event` to each feature in turn, and returns what none of them
@@ -79,6 +86,8 @@ impl Features {
                 .await;
             self.files_event(session, SessionEvent::FeatureStatus(states.clone()))
                 .await;
+            self.calls_event(session, SessionEvent::FeatureStatus(states.clone()))
+                .await;
             self.status_event(session, SessionEvent::FeatureStatus(states.clone()))
                 .await;
             self.ring
@@ -97,7 +106,10 @@ impl Features {
         let Some(event) = self.status_event(session, event).await else {
             return Ok(None);
         };
-        Ok(self.ring.handle_event(session, event))
+        let Some(event) = self.ring.handle_event(session, event) else {
+            return Ok(None);
+        };
+        Ok(self.calls_event(session, event).await)
     }
 
     async fn notifications_event(
@@ -178,6 +190,37 @@ impl Features {
         }
     }
 
+    async fn calls_event(
+        &mut self,
+        session: &mut PhoneSession,
+        event: SessionEvent,
+    ) -> Option<SessionEvent> {
+        self.calls
+            .handle_event(session, event)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(%error, "calls event failed");
+                None
+            })
+    }
+
+    /// The desktop's calls changed. The phone's call notifications get
+    /// banners of their own only while the desktop does not show its calls
+    /// itself. `session` is `None` between sessions.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the session fails.
+    pub async fn calls_changed(
+        &mut self,
+        session: Option<&mut PhoneSession>,
+    ) -> Result<(), SessionError> {
+        self.notifications
+            .set_call_banners(!self.calls.shows_calls())
+            .await;
+        self.calls.changed(session).await
+    }
+
     /// Acts on what the user did with a banner: each feature looks for its
     /// own. `session` is `None` between sessions.
     ///
@@ -247,5 +290,6 @@ impl Features {
         self.files.session_ended();
         self.status.session_ended();
         self.ring.session_ended();
+        self.calls.session_ended();
     }
 }

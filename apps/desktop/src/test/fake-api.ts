@@ -4,6 +4,7 @@ import { vi, type Mock } from "vitest";
 import type { MirroredNotification, NotificationEvent } from "@/features/notifications/types";
 import type {
   AppInfo,
+  CallsStatus,
   ClipboardStatus,
   DesktopApi,
   Device,
@@ -35,7 +36,21 @@ export function testDevice(overrides: Partial<Device> = {}): Device {
   };
 }
 
-type Methods = Omit<DesktopApi, "onPairingChanged" | "onDevicesChanged" | "onClipboardChanged">;
+type Methods = Omit<
+  DesktopApi,
+  "onPairingChanged" | "onDevicesChanged" | "onClipboardChanged" | "onCallsChanged"
+>;
+
+/** A desktop that can take calls, with no phones. */
+export function testCallsStatus(overrides: Partial<CallsStatus> = {}): CallsStatus {
+  return {
+    desktop: "ready",
+    enabled: true,
+    pairing: null,
+    phones: [],
+    ...overrides,
+  };
+}
 
 /** A clipboard shared automatically, with no phones and nothing sent yet. */
 export function testClipboardStatus(overrides: Partial<ClipboardStatus> = {}): ClipboardStatus {
@@ -151,6 +166,20 @@ export interface FakeApi extends DesktopApi {
   emitPhoneStatus(deviceId: string, status: PhoneStatus): void;
   /** Pushes a phone's ring status, as the backend would. */
   emitRing(deviceId: string, ring: RingStatus): void;
+  getCallsStatus: Mock<DesktopApi["getCallsStatus"]>;
+  startBluetoothPairing: Mock<DesktopApi["startBluetoothPairing"]>;
+  cancelBluetoothPairing: Mock<DesktopApi["cancelBluetoothPairing"]>;
+  confirmBluetoothCode: Mock<DesktopApi["confirmBluetoothCode"]>;
+  chooseBluetoothDevice: Mock<DesktopApi["chooseBluetoothDevice"]>;
+  connectCalls: Mock<DesktopApi["connectCalls"]>;
+  answerCall: Mock<DesktopApi["answerCall"]>;
+  declineCall: Mock<DesktopApi["declineCall"]>;
+  hangUpCall: Mock<DesktopApi["hangUpCall"]>;
+  dialNumber: Mock<DesktopApi["dialNumber"]>;
+  sendCallTones: Mock<DesktopApi["sendCallTones"]>;
+  setCallMuted: Mock<DesktopApi["setCallMuted"]>;
+  /** Pushes a calls status, as the backend would. */
+  emitCalls(status: CallsStatus): void;
   unpairDevice: Mock<DesktopApi["unpairDevice"]>;
   getPairingState: Mock<DesktopApi["getPairingState"]>;
   startPairing: Mock<DesktopApi["startPairing"]>;
@@ -173,6 +202,7 @@ export function createFakeApi(): FakeApi {
   const deviceListeners = new Set<(devices: Device[]) => void>();
   const subscribers = new Set<(event: NotificationEvent) => void>();
   const clipboardListeners = new Set<(status: ClipboardStatus) => void>();
+  const callsListeners = new Set<(status: CallsStatus) => void>();
   const transferSubscribers = new Set<(event: FileTransferEvent) => void>();
   const dragListeners = new Set<(over: boolean) => void>();
   const dropListeners = new Set<(drop: FilesDropped) => void>();
@@ -290,6 +320,35 @@ export function createFakeApi(): FakeApi {
     },
     ringPhone: vi.fn<DesktopApi["ringPhone"]>().mockResolvedValue(undefined),
     stopRinging: vi.fn<DesktopApi["stopRinging"]>().mockResolvedValue(undefined),
+    getCallsStatus: vi.fn<DesktopApi["getCallsStatus"]>().mockResolvedValue(testCallsStatus()),
+    onCallsChanged: (listener) => {
+      callsListeners.add(listener);
+      return Promise.resolve(() => callsListeners.delete(listener));
+    },
+    startBluetoothPairing: vi
+      .fn<DesktopApi["startBluetoothPairing"]>()
+      .mockResolvedValue(undefined),
+    cancelBluetoothPairing: vi
+      .fn<DesktopApi["cancelBluetoothPairing"]>()
+      .mockResolvedValue(undefined),
+    confirmBluetoothCode: vi.fn<DesktopApi["confirmBluetoothCode"]>().mockResolvedValue(undefined),
+    chooseBluetoothDevice: vi
+      .fn<DesktopApi["chooseBluetoothDevice"]>()
+      .mockResolvedValue(undefined),
+    connectCalls: vi.fn<DesktopApi["connectCalls"]>().mockResolvedValue(undefined),
+    answerCall: vi.fn<DesktopApi["answerCall"]>().mockResolvedValue(undefined),
+    declineCall: vi.fn<DesktopApi["declineCall"]>().mockResolvedValue(undefined),
+    hangUpCall: vi.fn<DesktopApi["hangUpCall"]>().mockResolvedValue(undefined),
+    dialNumber: vi.fn<DesktopApi["dialNumber"]>().mockResolvedValue(undefined),
+    sendCallTones: vi.fn<DesktopApi["sendCallTones"]>().mockResolvedValue(undefined),
+    setCallMuted: vi.fn<DesktopApi["setCallMuted"]>().mockResolvedValue(undefined),
+    emitCalls: (status) => {
+      act(() => {
+        callsListeners.forEach((listener) => {
+          listener(status);
+        });
+      });
+    },
     unpairDevice: vi.fn<DesktopApi["unpairDevice"]>().mockResolvedValue(undefined),
     getPairingState: vi
       .fn<DesktopApi["getPairingState"]>()
@@ -330,6 +389,7 @@ export function createFakeApi(): FakeApi {
       pairingListeners.size +
       deviceListeners.size +
       clipboardListeners.size +
+      callsListeners.size +
       dragListeners.size +
       dropListeners.size +
       statusListeners.size +

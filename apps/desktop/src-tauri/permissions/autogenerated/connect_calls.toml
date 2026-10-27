@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-connect-calls"
+description = "Enables the connect_calls command without any pre-configured scope."
+commands.allow = ["connect_calls"]
+
+[[permission]]
+identifier = "deny-connect-calls"
+description = "Denies the connect_calls command without any pre-configured scope."
+commands.deny = ["connect_calls"]

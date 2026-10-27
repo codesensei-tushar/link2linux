@@ -7,6 +7,7 @@ import {
   commands,
   events,
   type AppInfo,
+  type CallsStatus,
   type ClipboardStatus,
   type CommandError,
   type Device,
@@ -25,6 +26,17 @@ import { createPreviewApi } from "./preview-api";
 
 export type {
   AppInfo,
+  BluetoothChoice,
+  BluetoothPairing,
+  CallLink,
+  CallProblem,
+  CallStateView,
+  CallView,
+  CallsDesktop,
+  CallsStatus,
+  PairingCode,
+  PairingRequestState,
+  PhoneCalls,
   ClipboardActivity,
   ClipboardMode,
   ClipboardPhone,
@@ -138,6 +150,27 @@ export interface DesktopApi {
   ringPhone(deviceId: string): Promise<void>;
   /** Stops a phone ringing. */
   stopRinging(deviceId: string): Promise<void>;
+  /** The phones' calls and this computer's part in them. */
+  getCallsStatus(): Promise<CallsStatus>;
+  /** Subscribe before reading a snapshot, so nothing is missed in between. */
+  onCallsChanged(listener: (status: CallsStatus) => void): Promise<Unsubscribe>;
+  /** Opens Bluetooth pairing with a phone for 2 minutes and asks the phone to pair. */
+  startBluetoothPairing(deviceId: string): Promise<void>;
+  cancelBluetoothPairing(): Promise<void>;
+  /** Answers a pairing prompt: whether both devices show the same code. */
+  confirmBluetoothCode(promptId: number, matches: boolean): Promise<void>;
+  /** Picks the paired Bluetooth device at `address` as the phone's. */
+  chooseBluetoothDevice(deviceId: string, address: string): Promise<void>;
+  /** Connects the phone's hands-free link with this computer. */
+  connectCalls(deviceId: string): Promise<void>;
+  answerCall(deviceId: string, callId: string): Promise<void>;
+  declineCall(deviceId: string, callId: string): Promise<void>;
+  hangUpCall(deviceId: string, callId: string): Promise<void>;
+  /** Calls a number from the phone. */
+  dialNumber(deviceId: string, number: string): Promise<void>;
+  /** Sends touch tones in the phone's active call. */
+  sendCallTones(deviceId: string, tones: string): Promise<void>;
+  setCallMuted(deviceId: string, muted: boolean): Promise<void>;
 
   unpairDevice(deviceId: string): Promise<void>;
   getPairingState(): Promise<PairingState>;
@@ -248,6 +281,24 @@ export const tauriApi: DesktopApi = {
     }),
   ringPhone: (deviceId) => expectOk(commands.ringPhone(deviceId)),
   stopRinging: (deviceId) => expectOk(commands.stopRinging(deviceId)),
+  getCallsStatus: () => commands.getCallsStatus(),
+  onCallsChanged: (listener) =>
+    events.callsChanged.listen((event) => {
+      listener(event.payload);
+    }),
+  startBluetoothPairing: (deviceId) => expectOk(commands.startBluetoothPairing(deviceId)),
+  cancelBluetoothPairing: () => commands.cancelBluetoothPairing(),
+  confirmBluetoothCode: (promptId, matches) =>
+    expectOk(commands.confirmBluetoothCode(promptId, matches)),
+  chooseBluetoothDevice: (deviceId, address) =>
+    expectOk(commands.chooseBluetoothDevice(deviceId, address)),
+  connectCalls: (deviceId) => expectOk(commands.connectCalls(deviceId)),
+  answerCall: (deviceId, callId) => expectOk(commands.answerCall(deviceId, callId)),
+  declineCall: (deviceId, callId) => expectOk(commands.declineCall(deviceId, callId)),
+  hangUpCall: (deviceId, callId) => expectOk(commands.hangUpCall(deviceId, callId)),
+  dialNumber: (deviceId, number) => expectOk(commands.dialNumber(deviceId, number)),
+  sendCallTones: (deviceId, tones) => expectOk(commands.sendCallTones(deviceId, tones)),
+  setCallMuted: (deviceId, muted) => expectOk(commands.setCallMuted(deviceId, muted)),
   unpairDevice: (deviceId) => expectOk(commands.unpairDevice(deviceId)),
   getPairingState: () => commands.getPairingState(),
   startPairing: (method) => expectOk(commands.startPairing(method)),

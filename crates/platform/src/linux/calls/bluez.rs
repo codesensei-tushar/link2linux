@@ -1,0 +1,514 @@
+//! The desktop's Bluetooth through BlueZ on the system bus.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::{Mutex, OnceCell};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+use zbus::{Connection, Message, Proxy};
+
+use super::agent::{AGENT_PATH, Agent, AgentShared, CAPABILITY};
+use super::{
+    CALL_TIMEOUT, Interfaces, Objects, Signals, bounded, describe, error_name, take, unavailable,
+    wait_for_change,
+};
+use crate::{
+    Bluetooth, BluetoothAdapter, BluetoothAddress, BluetoothDevice, HANDS_FREE_GATEWAY_UUID,
+    PairingEvent, PlatformError,
+};
+
+pub(super) const BLUEZ: &str = "org.bluez";
+pub(super) const DEVICE: &str = "org.bluez.Device1";
+const ADAPTER: &str = "org.bluez.Adapter1";
+const AGENT_MANAGER: &str = "org.bluez.AgentManager1";
+const SERVICE: &str = "Bluetooth";
+/// Connecting a profile waits for the phone, which may be out of reach.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The major device class of phones, in bits 8 to 12 of `Class`.
+const MAJOR_CLASS_PHONE: u32 = 0x02;
+
+/// The adapter's state before pairing opened, put back when it closes.
+struct Opened {
+    adapter: OwnedObjectPath,
+    discoverable: bool,
+    discoverable_timeout: u32,
+    pairable: bool,
+}
+
+/// [`Bluetooth`] through BlueZ.
+///
+/// While pairing is open, the desktop's agent is BlueZ's default one, so
+/// it takes the requests of phones that pair with the desktop; the agent
+/// that was the default before (the desktop's own Bluetooth settings, for
+/// example) is the default again once pairing closes.
+pub struct BluezBluetooth {
+    /// The connection tests give; the system bus otherwise.
+    given: Option<Connection>,
+    connection: OnceCell<Connection>,
+    signals: Mutex<Option<Signals>>,
+    agent: Arc<AgentShared>,
+    opened: Mutex<Option<Opened>>,
+}
+
+impl std::fmt::Debug for BluezBluetooth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BluezBluetooth").finish_non_exhaustive()
+    }
+}
+
+impl Default for BluezBluetooth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BluezBluetooth {
+    /// BlueZ on the system bus, which is opened on first use.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with(None)
+    }
+
+    /// BlueZ on `connection`, for tests with a mock.
+    #[must_use]
+    pub fn with_connection(connection: Connection) -> Self {
+        Self::with(Some(connection))
+    }
+
+    fn with(given: Option<Connection>) -> Self {
+        Self {
+            given,
+            connection: OnceCell::new(),
+            signals: Mutex::new(None),
+            agent: Arc::new(AgentShared::new()),
+            opened: Mutex::new(None),
+        }
+    }
+
+    async fn connect(&self) -> Result<Connection, PlatformError> {
+        if let Some(connection) = &self.given {
+            return Ok(connection.clone());
+        }
+        self.connection
+            .get_or_try_init(|| async {
+                Connection::system()
+                    .await
+                    .map_err(|e| unavailable(SERVICE, format!("no system D-Bus: {e}")))
+            })
+            .await
+            .cloned()
+    }
+
+    async fn objects(&self, connection: &Connection) -> Result<Objects, PlatformError> {
+        let manager = Proxy::new(connection, BLUEZ, "/", "org.freedesktop.DBus.ObjectManager")
+            .await
+            .map_err(|e| unavailable(SERVICE, describe(&e)))?;
+        bounded(CALL_TIMEOUT, manager.call("GetManagedObjects", &()))
+            .await
+            .map_err(|e| unavailable(SERVICE, format!("BlueZ: {}", describe(&e))))
+    }
+
+    /// The adapter and its devices' objects.
+    async fn adapter_objects(
+        &self,
+        connection: &Connection,
+    ) -> Result<Option<(OwnedObjectPath, Interfaces, Objects)>, PlatformError> {
+        let mut objects = self.objects(connection).await?;
+        let mut adapters: Vec<OwnedObjectPath> = objects
+            .iter()
+            .filter(|(_, interfaces)| interfaces.contains_key(ADAPTER))
+            .map(|(path, _)| path.clone())
+            .collect();
+        adapters.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let Some(path) = adapters.into_iter().next() else {
+            return Ok(None);
+        };
+        let adapter = objects.remove(&path).unwrap_or_default();
+        Ok(Some((path, adapter, objects)))
+    }
+
+    async fn device_path(
+        &self,
+        connection: &Connection,
+        device: BluetoothAddress,
+    ) -> Result<OwnedObjectPath, PlatformError> {
+        let (adapter, _, objects) = self
+            .adapter_objects(connection)
+            .await?
+            .ok_or_else(|| unavailable(SERVICE, "no Bluetooth adapter"))?;
+        objects
+            .into_iter()
+            .find(|(_, interfaces)| {
+                interfaces.get(DEVICE).is_some_and(|properties| {
+                    belongs_to(properties, &adapter) && address(properties) == Some(device)
+                })
+            })
+            .map(|(path, _)| path)
+            .ok_or_else(|| unavailable(SERVICE, "the device is not known to the adapter"))
+    }
+
+    /// Restores what [`Bluetooth::open_pairing`] changed and drops the agent.
+    async fn undo(&self, connection: &Connection, opened: Opened) {
+        self.agent.close();
+        let adapter = &opened.adapter;
+        if !opened.discoverable {
+            set(connection, adapter.as_ref(), ADAPTER, "Discoverable", false).await;
+        }
+        set(
+            connection,
+            adapter.as_ref(),
+            ADAPTER,
+            "DiscoverableTimeout",
+            opened.discoverable_timeout,
+        )
+        .await;
+        if !opened.pairable {
+            set(connection, adapter.as_ref(), ADAPTER, "Pairable", false).await;
+        }
+        drop_agent(connection).await;
+    }
+}
+
+fn adapter_info(
+    properties: &mut std::collections::HashMap<String, OwnedValue>,
+) -> Option<BluetoothAdapter> {
+    let address = address(properties)?;
+    let alias: Option<String> = take(properties, "Alias");
+    let name = alias
+        .filter(|alias| !alias.is_empty())
+        .or_else(|| take(properties, "Name"))
+        .unwrap_or_default();
+    Some(BluetoothAdapter {
+        address,
+        name,
+        powered: take(properties, "Powered").unwrap_or(false),
+    })
+}
+
+fn address(properties: &std::collections::HashMap<String, OwnedValue>) -> Option<BluetoothAddress> {
+    let value = properties.get("Address")?;
+    String::try_from(value.clone()).ok()?.parse().ok()
+}
+
+fn belongs_to(
+    properties: &std::collections::HashMap<String, OwnedValue>,
+    adapter: &OwnedObjectPath,
+) -> bool {
+    properties
+        .get("Adapter")
+        .and_then(|value| OwnedObjectPath::try_from(value.clone()).ok())
+        .is_some_and(|path| &path == adapter)
+}
+
+fn device_info(
+    mut properties: std::collections::HashMap<String, OwnedValue>,
+) -> Option<BluetoothDevice> {
+    let address = address(&properties)?;
+    let alias: Option<String> = take(&mut properties, "Alias");
+    let name = alias
+        .filter(|alias| !alias.is_empty())
+        .or_else(|| take(&mut properties, "Name"))
+        .unwrap_or_default();
+    let class: Option<u32> = take(&mut properties, "Class");
+    let icon: Option<String> = take(&mut properties, "Icon");
+    let uuids: Vec<String> = take(&mut properties, "UUIDs").unwrap_or_default();
+    Some(BluetoothDevice {
+        address,
+        name,
+        paired: take(&mut properties, "Paired").unwrap_or(false),
+        trusted: take(&mut properties, "Trusted").unwrap_or(false),
+        connected: take(&mut properties, "Connected").unwrap_or(false),
+        phone: class.is_some_and(|class| (class >> 8) & 0x1f == MAJOR_CLASS_PHONE)
+            || icon.as_deref() == Some("phone"),
+        hands_free_gateway: uuids
+            .iter()
+            .any(|uuid| uuid.eq_ignore_ascii_case(HANDS_FREE_GATEWAY_UUID)),
+    })
+}
+
+/// Sets a property, logging a failure: used where nothing better can be
+/// done about one.
+async fn set<'a>(
+    connection: &Connection,
+    path: ObjectPath<'_>,
+    interface: &str,
+    name: &str,
+    value: impl Into<Value<'a>>,
+) {
+    if let Err(error) = try_set(connection, path, interface, name, value).await {
+        tracing::debug!(name, error = %describe(&error), "could not set an adapter property");
+    }
+}
+
+async fn try_set<'a>(
+    connection: &Connection,
+    path: ObjectPath<'_>,
+    interface: &str,
+    name: &str,
+    value: impl Into<Value<'a>>,
+) -> zbus::Result<()> {
+    let properties = Proxy::new(
+        connection,
+        BLUEZ,
+        path.to_owned(),
+        "org.freedesktop.DBus.Properties",
+    )
+    .await?;
+    let value = value.into();
+    bounded(
+        CALL_TIMEOUT,
+        properties.call::<_, _, ()>("Set", &(interface, name, &value)),
+    )
+    .await
+}
+
+async fn agent_manager(connection: &Connection) -> zbus::Result<Proxy<'static>> {
+    Proxy::new(connection, BLUEZ, "/org/bluez", AGENT_MANAGER).await
+}
+
+async fn drop_agent(connection: &Connection) {
+    let unregistered = async {
+        let manager = agent_manager(connection).await?;
+        let path = ObjectPath::try_from(AGENT_PATH)?;
+        bounded(
+            CALL_TIMEOUT,
+            manager.call::<_, _, ()>("UnregisterAgent", &(path,)),
+        )
+        .await
+    }
+    .await;
+    // BlueZ may have dropped it already, as when bluetoothd restarted.
+    if let Err(error) = unregistered {
+        tracing::debug!(error = %describe(&error), "unregistering the pairing agent failed");
+    }
+    let _ = connection
+        .object_server()
+        .remove::<Agent, _>(AGENT_PATH)
+        .await;
+}
+
+/// Whether a BlueZ signal may change what [`Bluetooth::adapter`] or
+/// [`Bluetooth::devices`] report.
+fn relevant(message: &Message) -> bool {
+    const KEYS: [&str; 12] = [
+        "Address",
+        "Alias",
+        "Name",
+        "Paired",
+        "Trusted",
+        "Connected",
+        "Class",
+        "Icon",
+        "UUIDs",
+        "Powered",
+        "Discoverable",
+        "Pairable",
+    ];
+    let header = message.header();
+    match header.member().map(|member| member.as_str()) {
+        Some("InterfacesAdded" | "InterfacesRemoved") => true,
+        Some("PropertiesChanged") => {
+            let Ok((interface, changed, _)) = message.body().deserialize::<(
+                String,
+                std::collections::HashMap<String, OwnedValue>,
+                Vec<String>,
+            )>() else {
+                return false;
+            };
+            (interface == DEVICE || interface == ADAPTER)
+                && changed.keys().any(|key| KEYS.contains(&key.as_str()))
+        }
+        _ => false,
+    }
+}
+
+impl Bluetooth for BluezBluetooth {
+    async fn adapter(&self) -> Result<Option<BluetoothAdapter>, PlatformError> {
+        let connection = self.connect().await?;
+        Ok(self
+            .adapter_objects(&connection)
+            .await?
+            .and_then(|(_, mut interfaces, _)| adapter_info(interfaces.get_mut(ADAPTER)?)))
+    }
+
+    async fn devices(&self) -> Result<Vec<BluetoothDevice>, PlatformError> {
+        let connection = self.connect().await?;
+        let Some((adapter, _, objects)) = self.adapter_objects(&connection).await? else {
+            return Ok(Vec::new());
+        };
+        let mut devices: Vec<BluetoothDevice> = objects
+            .into_values()
+            .filter_map(|mut interfaces| interfaces.remove(DEVICE))
+            .filter(|properties| belongs_to(properties, &adapter))
+            .filter_map(device_info)
+            .collect();
+        devices.sort_by_key(|device| device.address.0);
+        Ok(devices)
+    }
+
+    async fn changed(&self) -> Result<(), PlatformError> {
+        let connection = self.connect().await?;
+        wait_for_change(&self.signals, &connection, BLUEZ, SERVICE, relevant).await
+    }
+
+    async fn open_pairing(&self, window: Duration) -> Result<BluetoothAdapter, PlatformError> {
+        let connection = self.connect().await?;
+        let mut opened = self.opened.lock().await;
+        if let Some(earlier) = opened.take() {
+            self.undo(&connection, earlier).await;
+        }
+        let (path, mut interfaces, _) = self
+            .adapter_objects(&connection)
+            .await?
+            .ok_or_else(|| unavailable(SERVICE, "no Bluetooth adapter"))?;
+        let mut properties = interfaces.remove(ADAPTER).unwrap_or_default();
+        let discoverable = take(&mut properties, "Discoverable").unwrap_or(false);
+        let discoverable_timeout = take(&mut properties, "DiscoverableTimeout").unwrap_or(180);
+        let pairable = take(&mut properties, "Pairable").unwrap_or(false);
+        let info = adapter_info(&mut properties)
+            .ok_or_else(|| unavailable(SERVICE, "the adapter reports no address"))?;
+        if !info.powered {
+            return Err(unavailable(SERVICE, "Bluetooth is turned off"));
+        }
+
+        self.agent.open();
+        let served = connection
+            .object_server()
+            .at(
+                AGENT_PATH,
+                Agent {
+                    shared: self.agent.clone(),
+                },
+            )
+            .await
+            .map_err(|e| unavailable(SERVICE, describe(&e)))?;
+        if !served {
+            tracing::debug!("the pairing agent was still exported");
+        }
+        let earlier = Opened {
+            adapter: path.clone(),
+            discoverable,
+            discoverable_timeout,
+            pairable,
+        };
+        let seconds = u32::try_from(window.as_secs()).unwrap_or(u32::MAX).max(1);
+        let started = async {
+            let manager = agent_manager(&connection).await?;
+            let agent = ObjectPath::try_from(AGENT_PATH)?;
+            bounded(
+                CALL_TIMEOUT,
+                manager.call::<_, _, ()>("RegisterAgent", &(&agent, CAPABILITY)),
+            )
+            .await?;
+            bounded(
+                CALL_TIMEOUT,
+                manager.call::<_, _, ()>("RequestDefaultAgent", &(&agent,)),
+            )
+            .await?;
+            // BlueZ ends discoverability by itself when the time is up,
+            // even if this app is gone by then.
+            try_set(
+                &connection,
+                path.as_ref(),
+                ADAPTER,
+                "DiscoverableTimeout",
+                seconds,
+            )
+            .await?;
+            try_set(&connection, path.as_ref(), ADAPTER, "Pairable", true).await?;
+            try_set(&connection, path.as_ref(), ADAPTER, "Discoverable", true).await
+        }
+        .await;
+        if let Err(error) = started {
+            self.undo(&connection, earlier).await;
+            return Err(unavailable(
+                SERVICE,
+                format!("could not open pairing: {}", describe(&error)),
+            ));
+        }
+        tracing::info!(seconds, "Bluetooth pairing is open");
+        *opened = Some(earlier);
+        Ok(info)
+    }
+
+    async fn close_pairing(&self) -> Result<(), PlatformError> {
+        let Some(earlier) = self.opened.lock().await.take() else {
+            self.agent.close();
+            return Ok(());
+        };
+        let connection = self.connect().await?;
+        self.undo(&connection, earlier).await;
+        tracing::info!("Bluetooth pairing is closed");
+        Ok(())
+    }
+
+    async fn next_pairing_event(&self) -> PairingEvent {
+        self.agent.next_event().await
+    }
+
+    fn answer_pairing(&self, id: u64, accept: bool) {
+        self.agent.answer(id, accept);
+    }
+
+    async fn connect_hands_free(&self, device: BluetoothAddress) -> Result<(), PlatformError> {
+        let connection = self.connect().await?;
+        let path = self.device_path(&connection, device).await?;
+        try_set(&connection, path.as_ref(), DEVICE, "Trusted", true)
+            .await
+            .map_err(|e| {
+                unavailable(
+                    SERVICE,
+                    format!("could not trust the phone: {}", describe(&e)),
+                )
+            })?;
+        let proxy = Proxy::new(&connection, BLUEZ, path, DEVICE)
+            .await
+            .map_err(|e| unavailable(SERVICE, describe(&e)))?;
+        let connected = bounded(
+            CONNECT_TIMEOUT,
+            proxy.call::<_, _, ()>("ConnectProfile", &(HANDS_FREE_GATEWAY_UUID,)),
+        )
+        .await;
+        match connected {
+            Ok(()) => Ok(()),
+            Err(error)
+                if error_name(&error).as_deref() == Some("org.bluez.Error.AlreadyConnected") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(unavailable(
+                SERVICE,
+                format!("could not connect the phone's calls: {}", describe(&error)),
+            )),
+        }
+    }
+
+    async fn disconnect_hands_free(&self, device: BluetoothAddress) -> Result<(), PlatformError> {
+        let connection = self.connect().await?;
+        let path = self.device_path(&connection, device).await?;
+        let proxy = Proxy::new(&connection, BLUEZ, path, DEVICE)
+            .await
+            .map_err(|e| unavailable(SERVICE, describe(&e)))?;
+        let disconnected = bounded(
+            CALL_TIMEOUT,
+            proxy.call::<_, _, ()>("DisconnectProfile", &(HANDS_FREE_GATEWAY_UUID,)),
+        )
+        .await;
+        match disconnected {
+            Ok(()) => Ok(()),
+            Err(error) if error_name(&error).as_deref() == Some("org.bluez.Error.NotConnected") => {
+                Ok(())
+            }
+            Err(error) => Err(unavailable(
+                SERVICE,
+                format!(
+                    "could not disconnect the phone's calls: {}",
+                    describe(&error)
+                ),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

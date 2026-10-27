@@ -63,6 +63,9 @@ pub enum Command {
     FilesSwitch,
     /// The user asked something of the phone's status or ringing.
     Phone(PhoneCommand),
+    /// The desktop's calls changed: its availability, whether it shows the
+    /// phone's calls itself, or Bluetooth pairing with the phone.
+    CallsChanged,
     /// The user removed the pairing: tell the phone and leave.
     Unpair,
     /// The network changed or the user asked to reconnect: no session
@@ -272,6 +275,11 @@ async fn drive(
                     }
                 }
                 Some(Command::Phone(command)) => features.phone_command(Some(session), command).await,
+                Some(Command::CallsChanged) => {
+                    if let Err(error) = features.calls_changed(Some(session)).await {
+                        tracing::debug!(%error, "could not tell the phone about calls");
+                    }
+                }
                 Some(Command::Reconnect | Command::NetworkChanged) => {}
             },
             event = session.next_event() => match event {

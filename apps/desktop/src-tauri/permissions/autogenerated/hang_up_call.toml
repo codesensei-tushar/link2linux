@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hang-up-call"
+description = "Enables the hang_up_call command without any pre-configured scope."
+commands.allow = ["hang_up_call"]
+
+[[permission]]
+identifier = "deny-hang-up-call"
+description = "Denies the hang_up_call command without any pre-configured scope."
+commands.deny = ["hang_up_call"]

@@ -13,9 +13,11 @@ use std::time::Duration;
 
 use link2linux_platform::linux::ble::BluezPresence;
 use link2linux_platform::linux::{
-    DbusNotifications, LinuxClipboard, SecretServiceStore, SessionLock, XdgFileStore,
+    BluezBluetooth, DbusNotifications, LinuxClipboard, PipewireTelephony, SecretServiceStore,
+    SessionLock, XdgFileStore,
 };
 use link2linux_platform::{Clipboard, ClipboardAccess, PresenceAdvertiser};
+use link2linux_runtime::calls::CallStack;
 use link2linux_runtime::clipboard::ClipboardPort;
 
 use crate::clipboard::FallbackClipboard;
@@ -24,9 +26,9 @@ use link2linux_runtime::paths::{DataDir, desktop_name, runtime_images_dir};
 use link2linux_runtime::{Runtime, RuntimeConfig, RuntimeError, Shell};
 
 use super::{
-    Backend, BackendError, CachedImage, ClipboardStatus, Device, EventSink, FileTransfer,
-    MirroredNotification, PairingMethod, PairingState, PhoneStatus, PhoneTarget, RingStatus,
-    Settings,
+    Backend, BackendError, CachedImage, CallsStatus, ClipboardStatus, Device, EventSink,
+    FileTransfer, MirroredNotification, PairingMethod, PairingState, PhoneStatus, PhoneTarget,
+    RingStatus, Settings,
 };
 
 /// The app id, which also names this app's items in the keyring.
@@ -88,12 +90,17 @@ impl LiveBackend {
             presenter,
             clipboard: Some(clipboard(opening, window_clipboard)),
             files: Some(Arc::new(XdgFileStore::new())),
+            calls: Some(Arc::new(CallStack {
+                bluetooth: BluezBluetooth::new(),
+                telephony: PipewireTelephony::new(),
+            })),
             events,
         };
         let mut config = RuntimeConfig::new(data_dir.clone());
         config.clipboard = settings.clipboard();
         config.files = settings.share_files;
         config.show_phone_status = settings.show_phone_status;
+        config.calls = settings.use_for_calls;
         let handle = tauri::async_runtime::handle().inner().clone();
         let runtime = Arc::new(Runtime::start(handle, &config, shell)?);
         if runtime.needs_store_key() {
@@ -260,6 +267,54 @@ impl Backend for LiveBackend {
         self.runtime.notification_image(device_id, sha256)
     }
 
+    fn calls(&self) -> CallsStatus {
+        self.runtime.calls()
+    }
+
+    fn start_bluetooth_pairing(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.start_bluetooth_pairing(device_id)
+    }
+
+    fn cancel_bluetooth_pairing(&self) {
+        self.runtime.cancel_bluetooth_pairing();
+    }
+
+    fn confirm_bluetooth_code(&self, prompt: u32, matches: bool) -> Result<(), BackendError> {
+        self.runtime.confirm_bluetooth_code(prompt, matches)
+    }
+
+    fn choose_bluetooth_device(&self, device_id: &str, address: &str) -> Result<(), BackendError> {
+        self.runtime.choose_bluetooth_device(device_id, address)
+    }
+
+    fn connect_calls(&self, device_id: &str) -> Result<(), BackendError> {
+        self.runtime.connect_calls(device_id)
+    }
+
+    fn answer_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.runtime.answer_call(device_id, call_id)
+    }
+
+    fn decline_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.runtime.decline_call(device_id, call_id)
+    }
+
+    fn hang_up_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.runtime.hang_up_call(device_id, call_id)
+    }
+
+    fn dial(&self, device_id: &str, number: &str) -> Result<(), BackendError> {
+        self.runtime.dial(device_id, number)
+    }
+
+    fn send_tones(&self, device_id: &str, tones: &str) -> Result<(), BackendError> {
+        self.runtime.send_tones(device_id, tones)
+    }
+
+    fn set_call_muted(&self, device_id: &str, muted: bool) -> Result<(), BackendError> {
+        self.runtime.set_call_muted(device_id, muted)
+    }
+
     fn settings(&self) -> Settings {
         *self.settings.lock().expect("not poisoned")
     }
@@ -337,6 +392,9 @@ impl Backend for LiveBackend {
         if before.show_phone_status != settings.show_phone_status {
             self.runtime
                 .set_phone_status_shown(settings.show_phone_status);
+        }
+        if before.use_for_calls != settings.use_for_calls {
+            self.runtime.set_calls_enabled(settings.use_for_calls);
         }
         settings.save(&self.settings_path).map_err(|error| {
             tracing::warn!(%error, "could not save the settings");

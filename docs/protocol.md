@@ -1409,9 +1409,11 @@ The feature needs no permission. The phone keeps it on until the user turns
 it off, because it shares nothing by itself: the user still pairs over
 Bluetooth and confirms the pairing on both devices. The phone reports it
 `UNAVAILABLE` when it has no telephony or no Bluetooth, and `DISABLED`
-while its user has it turned off. The desktop reports it `UNAVAILABLE` when
-it has no Bluetooth adapter or its audio system offers no hands-free call
-control, and `DISABLED` while its user has turned off calls on the desktop.
+while its user has it turned off; Bluetooth that is merely switched off
+leaves it `READY`. The desktop reports it `UNAVAILABLE` when it has no
+Bluetooth adapter, its Bluetooth is switched off, or its audio system
+offers no hands-free call control, and `DISABLED` while its user has turned
+off calls on the desktop.
 
 ### Pairing over Bluetooth
 
@@ -1445,8 +1447,8 @@ control, and `DISABLED` while its user has turned off calls on the desktop.
 - While the hands-free link is up, the desktop shows incoming calls with
   the caller's number, and the caller's name when the phone sends one over
   Bluetooth. It offers answer, decline, hang up, a dial pad for numbers and
-  tones, and mute. Answering on the desktop brings the call's audio to the
-  desktop.
+  tones, and mute where its audio system can mute a call. Answering on the
+  desktop brings the call's audio to the desktop.
 - The phone's incoming-call notification still arrives through
   [Notifications](#notifications), with the caller's name and its answer
   and decline actions. A desktop that sees one call from both sides shows

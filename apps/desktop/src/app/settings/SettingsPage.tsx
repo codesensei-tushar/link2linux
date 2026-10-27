@@ -121,6 +121,17 @@ export function SettingsPage() {
             hint="The sidebar shows the connected phone's battery, signal and sound mode, as its own status bar does, and nothing about where it is. With this off, the phone stops sending them."
           />
         </Card>
+        <Card>
+          <h2 className="settings__group">Calls</h2>
+          <Toggle
+            label="Use this computer for calls"
+            checked={settings.useForCalls ?? true}
+            onChange={(checked) => {
+              update({ ...settings, useForCalls: checked });
+            }}
+            hint="Calls to phones paired over Bluetooth ring here, and you talk with this computer's microphone and speakers. Turned off, your phones keep their calls."
+          />
+        </Card>
       </>
     );
   } else if (loaded.status === "error") {

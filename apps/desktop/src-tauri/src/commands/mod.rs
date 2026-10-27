@@ -11,6 +11,7 @@
 //! `capabilities/default.json`.
 
 pub mod app;
+pub mod calls;
 pub mod clipboard;
 pub mod devices;
 pub mod files;
@@ -45,6 +46,9 @@ pub enum CommandErrorCode {
     FileUnreadable,
     TooManyFiles,
     FilesOff,
+    CallsUnavailable,
+    CallsNotConnected,
+    NotDialable,
 }
 
 impl From<BackendError> for CommandError {
@@ -59,6 +63,9 @@ impl From<BackendError> for CommandError {
             BackendError::FileUnreadable => CommandErrorCode::FileUnreadable,
             BackendError::TooManyFiles => CommandErrorCode::TooManyFiles,
             BackendError::FilesOff => CommandErrorCode::FilesOff,
+            BackendError::CallsUnavailable => CommandErrorCode::CallsUnavailable,
+            BackendError::CallsNotConnected => CommandErrorCode::CallsNotConnected,
+            BackendError::NotDialable => CommandErrorCode::NotDialable,
         };
         Self {
             code,

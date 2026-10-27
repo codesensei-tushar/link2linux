@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-bluetooth-pairing"
+description = "Enables the start_bluetooth_pairing command without any pre-configured scope."
+commands.allow = ["start_bluetooth_pairing"]
+
+[[permission]]
+identifier = "deny-start-bluetooth-pairing"
+description = "Denies the start_bluetooth_pairing command without any pre-configured scope."
+commands.deny = ["start_bluetooth_pairing"]

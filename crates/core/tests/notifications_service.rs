@@ -19,9 +19,9 @@ use link2linux_platform::{
     NotificationResponse, NotificationSink, PlatformError,
 };
 use link2linux_protocol::v1::{
-    Ack, ImageData, ImageFormat, ImageRef, NotificationAction, NotificationContent,
-    NotificationImportance, NotificationPosted, NotificationRemoved, NotificationSyncBatch,
-    PhoneNotification, SyncCursor,
+    Ack, ImageData, ImageFormat, ImageRef, NotificationAction, NotificationCategory,
+    NotificationContent, NotificationImportance, NotificationPosted, NotificationRemoved,
+    NotificationSyncBatch, PhoneNotification, SyncCursor,
 };
 use link2linux_protocol::{Envelope, Payload};
 use session_common::{
@@ -414,4 +414,45 @@ async fn live_events_before_the_sync_are_a_rule_break() {
         service.handle_event(&mut session, event).await,
         Err(ServiceError::Mirror(_))
     ));
+}
+
+#[tokio::test]
+async fn call_banners_stay_off_while_the_calls_feature_shows_the_calls() {
+    let mut s = synced_setup(vec![]).await;
+    let call = |revision| PhoneNotification {
+        category: NotificationCategory::Call.into(),
+        ..note("call", revision)
+    };
+    let mut seq = 4;
+    let mut post = async |s: &mut Setup, notification: PhoneNotification| {
+        s.phone
+            .send(&envelope(seq, posted(notification, true)))
+            .await
+            .unwrap();
+        seq += 1;
+        let event = next(&mut s.session).await;
+        s.service.handle_event(&mut s.session, event).await.unwrap();
+    };
+    post(&mut s, call(2)).await;
+    assert_eq!(s.desktop.lock().unwrap().shown.len(), 1);
+
+    // The calls feature takes over: the call's banner goes, and updates
+    // bring no new one, while other notifications still get theirs.
+    s.service.set_call_banners(false).await;
+    assert_eq!(s.desktop.lock().unwrap().closed, [NotificationId(1)]);
+    post(&mut s, call(3)).await;
+    post(&mut s, note("chat", 4)).await;
+    {
+        let desktop = s.desktop.lock().unwrap();
+        let summaries: Vec<&str> = desktop
+            .shown
+            .iter()
+            .map(|(n, _)| n.summary.as_str())
+            .collect();
+        assert_eq!(summaries, ["Chat · from call", "Chat · from chat"]);
+    }
+
+    s.service.set_call_banners(true).await;
+    post(&mut s, call(5)).await;
+    assert_eq!(s.desktop.lock().unwrap().shown.len(), 3);
 }

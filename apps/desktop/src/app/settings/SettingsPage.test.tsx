@@ -104,6 +104,21 @@ describe("SettingsPage", () => {
     );
   });
 
+  it("takes calls on this computer until the user turns them off", async () => {
+    const user = userEvent.setup();
+    const api = renderPage();
+
+    const calls = await screen.findByRole("switch", { name: "Use this computer for calls" });
+    expect(calls).toBeChecked();
+    expect(calls).toHaveAccessibleDescription(/your phones keep their calls/);
+
+    await user.click(calls);
+    expect(calls).not.toBeChecked();
+    expect(api.setSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ useForCalls: false }),
+    );
+  });
+
   it("says when a change could not be saved", async () => {
     const user = userEvent.setup();
     const api = createFakeApi();

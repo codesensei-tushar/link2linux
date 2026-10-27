@@ -5,8 +5,10 @@
 //! [`FakeBackend`] wraps it with a real clock and one thread that sleeps until
 //! the next deadline, so the UI sees the same events a real backend would
 //! send. Choose a [`Script`] with the `L2L_FAKE_SCRIPT` environment variable
-//! (`success`, `wrong-code`, `expired`, `not-found`, `declined`, `demo`).
+//! (`success`, `wrong-code`, `expired`, `not-found`, `declined`, `demo`,
+//! `incoming-call`).
 
+pub mod calls;
 pub mod files;
 pub mod machine;
 pub mod phone;
@@ -24,10 +26,11 @@ use link2linux_runtime::view::{
 };
 
 use super::{
-    Backend, BackendError, Device, EventSink, FileTransfer, PairingMethod, PairingState,
-    PhoneStatus, PhoneTarget, RingStatus,
+    Backend, BackendError, CallsStatus, Device, EventSink, FileTransfer, PairingMethod,
+    PairingState, PhoneStatus, PhoneTarget, RingStatus, Settings,
 };
 
+use calls::{Delays, FakeCalls};
 use files::FakeFiles;
 use phone::FakePhone;
 
@@ -119,9 +122,12 @@ impl Shared {
 pub struct FakeBackend {
     shared: Arc<Shared>,
     files: FakeFiles,
+    calls: FakeCalls,
     timer: Option<JoinHandle<()>>,
     clipboard: Mutex<FakeClipboard>,
     phone: FakePhone,
+    /// The settings, kept in memory only.
+    settings: Mutex<Settings>,
 }
 
 /// What the clipboard page shows of the scripted phones.
@@ -195,6 +201,7 @@ impl FakeBackend {
         let machine = Machine::new(script, desktop_name(), clock.now());
         let files = FakeFiles::new(script, sink.clone(), clock.now().unix_ms);
         let phone = FakePhone::new(sink.clone(), phone::RING_FOR);
+        let calls = FakeCalls::new(script, sink.clone(), desktop_name(), Delays::real());
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 machine,
@@ -214,9 +221,11 @@ impl FakeBackend {
         Self {
             shared,
             files,
+            calls,
             timer,
             clipboard: Mutex::default(),
             phone,
+            settings: Mutex::default(),
         }
     }
 
@@ -365,6 +374,70 @@ impl Backend for FakeBackend {
         index: usize,
     ) -> Result<(), BackendError> {
         self.files.received(device_id, transfer_id, index)
+    }
+
+    fn calls(&self) -> CallsStatus {
+        self.calls.status(&self.devices())
+    }
+
+    fn start_bluetooth_pairing(&self, device_id: &str) -> Result<(), BackendError> {
+        self.calls.status(&self.devices());
+        self.calls.start_pairing(device_id)
+    }
+
+    fn cancel_bluetooth_pairing(&self) {
+        self.calls.cancel_pairing();
+    }
+
+    fn confirm_bluetooth_code(&self, prompt: u32, matches: bool) -> Result<(), BackendError> {
+        self.calls.confirm_code(prompt, matches)
+    }
+
+    fn choose_bluetooth_device(&self, device_id: &str, address: &str) -> Result<(), BackendError> {
+        self.calls.choose_device(device_id, address)
+    }
+
+    fn connect_calls(&self, device_id: &str) -> Result<(), BackendError> {
+        self.calls.connect(device_id)
+    }
+
+    fn answer_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.calls.answer(device_id, call_id)
+    }
+
+    fn decline_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.calls.end(device_id, call_id)
+    }
+
+    fn hang_up_call(&self, device_id: &str, call_id: &str) -> Result<(), BackendError> {
+        self.calls.end(device_id, call_id)
+    }
+
+    fn dial(&self, device_id: &str, number: &str) -> Result<(), BackendError> {
+        self.calls.dial(device_id, number)
+    }
+
+    fn send_tones(&self, device_id: &str, tones: &str) -> Result<(), BackendError> {
+        self.calls.send_tones(device_id, tones)
+    }
+
+    fn set_call_muted(&self, device_id: &str, muted: bool) -> Result<(), BackendError> {
+        self.calls.set_muted(device_id, muted)
+    }
+
+    fn settings(&self) -> Settings {
+        *self.settings.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn set_settings(&self, settings: Settings) -> Result<(), BackendError> {
+        let before = std::mem::replace(
+            &mut *self.settings.lock().unwrap_or_else(|p| p.into_inner()),
+            settings,
+        );
+        if before.use_for_calls != settings.use_for_calls {
+            self.calls.set_enabled(settings.use_for_calls);
+        }
+        Ok(())
     }
 }
 

@@ -17,9 +17,10 @@ pub mod live;
 pub use link2linux_runtime::notify::CachedImage;
 pub use link2linux_runtime::settings::Settings;
 pub use link2linux_runtime::view::{
-    BackendError, ClipboardMode, ClipboardStatus, Device, DeviceStatus, DiscoveredPhone, EventSink,
-    FileTransfer, FileTransferEvent, MirroredNotification, NotificationEvent, PairingFailure,
-    PairingMethod, PairingState, PhoneStatus, PhoneTarget, QrImage, RingStatus, StartupError,
+    BackendError, CallsDesktop, CallsStatus, ClipboardMode, ClipboardStatus, Device, DeviceStatus,
+    DiscoveredPhone, EventSink, FileTransfer, FileTransferEvent, MirroredNotification,
+    NotificationEvent, PairingFailure, PairingMethod, PairingState, PhoneStatus, PhoneTarget,
+    QrImage, RingStatus, StartupError,
 };
 
 use std::path::PathBuf;
@@ -136,6 +137,61 @@ pub trait Backend: Send + Sync {
     /// Stops a phone ringing.
     fn stop_ringing(&self, _device_id: &str) -> Result<(), BackendError> {
         Err(BackendError::NotStarted)
+    }
+    /// The phones' calls, and this computer's part in them.
+    fn calls(&self) -> CallsStatus {
+        CallsStatus {
+            desktop: CallsDesktop::Unsupported,
+            enabled: false,
+            pairing: None,
+            phones: Vec::new(),
+        }
+    }
+    /// Opens Bluetooth pairing with a phone for 2 minutes.
+    fn start_bluetooth_pairing(&self, _device_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::CallsUnavailable)
+    }
+    /// Closes Bluetooth pairing.
+    fn cancel_bluetooth_pairing(&self) {}
+    /// Answers a pairing prompt: whether both devices show the same code.
+    fn confirm_bluetooth_code(&self, _prompt: u32, _matches: bool) -> Result<(), BackendError> {
+        Err(BackendError::WrongState)
+    }
+    /// Picks the paired Bluetooth device at `address` as a phone's.
+    fn choose_bluetooth_device(
+        &self,
+        _device_id: &str,
+        _address: &str,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Connects a phone's hands-free link with this computer.
+    fn connect_calls(&self, _device_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::CallsUnavailable)
+    }
+    /// Answers a ringing call.
+    fn answer_call(&self, _device_id: &str, _call_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Declines a ringing call.
+    fn decline_call(&self, _device_id: &str, _call_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Ends a call.
+    fn hang_up_call(&self, _device_id: &str, _call_id: &str) -> Result<(), BackendError> {
+        Err(BackendError::NotFound)
+    }
+    /// Calls `number` from a phone.
+    fn dial(&self, _device_id: &str, _number: &str) -> Result<(), BackendError> {
+        Err(BackendError::CallsUnavailable)
+    }
+    /// Sends touch tones in a phone's active call.
+    fn send_tones(&self, _device_id: &str, _tones: &str) -> Result<(), BackendError> {
+        Err(BackendError::CallsUnavailable)
+    }
+    /// Mutes or unmutes this computer's microphone in a phone's calls.
+    fn set_call_muted(&self, _device_id: &str, _muted: bool) -> Result<(), BackendError> {
+        Err(BackendError::CallsUnavailable)
     }
 
     /// The desktop app's settings.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-call-tones"
+description = "Enables the send_call_tones command without any pre-configured scope."
+commands.allow = ["send_call_tones"]
+
+[[permission]]
+identifier = "deny-send-call-tones"
+description = "Denies the send_call_tones command without any pre-configured scope."
+commands.deny = ["send_call_tones"]

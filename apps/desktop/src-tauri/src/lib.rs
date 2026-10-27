@@ -54,6 +54,18 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::phone::stop_ringing,
             commands::settings::get_settings,
             commands::settings::set_settings,
+            commands::calls::get_calls_status,
+            commands::calls::start_bluetooth_pairing,
+            commands::calls::cancel_bluetooth_pairing,
+            commands::calls::confirm_bluetooth_code,
+            commands::calls::choose_bluetooth_device,
+            commands::calls::connect_calls,
+            commands::calls::answer_call,
+            commands::calls::decline_call,
+            commands::calls::hang_up_call,
+            commands::calls::dial_number,
+            commands::calls::send_call_tones,
+            commands::calls::set_call_muted,
         ])
         .events(collect_events![
             events::PairingChanged,
@@ -63,6 +75,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             events::TransferChanged,
             events::PhoneStatusChanged,
             events::RingChanged,
+            events::CallsChanged,
             events::FileDrag,
             events::FilesDropped,
         ])
