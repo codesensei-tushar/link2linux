@@ -1418,8 +1418,11 @@ off calls on the desktop.
 ### Pairing over Bluetooth
 
 - The desktop looks for the phone among the Bluetooth devices it is paired
-  with. When more than one could be the phone, the user picks it once, and
-  the desktop keeps the choice for that phone.
+  with. It takes a device by itself only when its Bluetooth stack trusts
+  the device and the device is named like the phone. Otherwise the user
+  picks it once, even when only one device could be the phone, and the
+  desktop keeps the choice for that phone. Being paired proves nothing:
+  the kernel accepts some pairings without asking anyone.
 - When the phone is not among them, the user starts pairing on the
   desktop. The desktop accepts Bluetooth pairing for 2 minutes, makes its
   adapter discoverable for that time, and sends `BluetoothPairingRequest`
@@ -1929,7 +1932,9 @@ The rules that matter most for security, gathered in one place:
 11. Never use a received file name as a path, and never let a received
     file overwrite another file.
 12. Accept Bluetooth pairing only inside the window the user opened, and
-    only after the user confirmed the code on the desktop.
+    only after the user confirmed the code on the desktop. Never trust,
+    connect or keep a device that paired without that confirmation, and
+    remove one that paired during the window.
 
 ## Versioning
 
