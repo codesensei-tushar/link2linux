@@ -212,18 +212,6 @@ impl Calls {
         self.nudge.notify_one();
     }
 
-    /// Phone `device_id` is no longer paired.
-    pub(crate) fn forget(&self, device_id: &str) {
-        let choices = {
-            let mut center = lock(&self.center);
-            center.forget(device_id);
-            center.choices().clone()
-        };
-        lock(&self.told).remove(device_id);
-        self.save(&choices);
-        self.nudge.notify_one();
-    }
-
     fn save(&self, choices: &std::collections::BTreeMap<String, BluetoothAddress>) {
         if let Err(error) = choices::save(&self.choices_path, choices) {
             tracing::warn!(%error, "could not keep the phones' Bluetooth devices");
@@ -593,6 +581,54 @@ pub(crate) fn set_enabled(core: &Core, enabled: bool) {
         }
     }
     calls.nudge.notify_one();
+}
+
+/// Phone `device_id` is no longer paired: what the desktop kept for it
+/// goes, and pairing open for it closes.
+pub(crate) fn forget(core: &Core, device_id: &str) {
+    let calls = &core.calls;
+    let (choices, closed) = {
+        let mut center = lock(&calls.center);
+        let closed = take_window(&mut center, |window| window.device_id() == device_id);
+        center.forget(device_id);
+        (center.choices().clone(), closed)
+    };
+    if let Some(closed) = closed {
+        close_taken(core, closed);
+    }
+    lock(&calls.told).remove(device_id);
+    calls.save(&choices);
+    calls.nudge.notify_one();
+}
+
+/// A window taken from the center: the prompts that still waited, and
+/// its number.
+type TakenWindow = (Vec<u64>, u64);
+
+/// Takes the pairing window from `center` if one is open and `which`
+/// picks it.
+fn take_window(
+    center: &mut Center,
+    which: impl FnOnce(&PairingWindow) -> bool,
+) -> Option<TakenWindow> {
+    center
+        .window()
+        .is_some_and(which)
+        .then(|| (center.close_window(), center.windows_opened()))
+}
+
+/// Ends a window taken from the center without waiting: its prompts are
+/// refused now, and pairing closes at the adapter soon after, unless a
+/// newer window opens first.
+fn close_taken(core: &Core, (waiting, opened): TakenWindow) {
+    let Some(port) = core.calls.port.clone() else {
+        return;
+    };
+    refuse(&port, &waiting);
+    let calls = core.calls.clone();
+    core.handle.spawn(async move {
+        calls.close_adapter(&port, opened).await;
+    });
 }
 
 /// Opens Bluetooth pairing for phone `device_id` for
