@@ -125,8 +125,7 @@ jobs:
           # one would only show when someone starts the app. Running inside
           # the build needs a machine id, which the container lacks.
           [ -s /etc/machine-id ] || tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id
-          flatpak-builder --disable-rofiles-fuse --run build $m/dev.link2linux.desktop.yml \
-            ldd /app/bin/link2linux-desktop > libs.txt
+          flatpak build build ldd /app/bin/link2linux-desktop > libs.txt
           cat libs.txt
           ! grep 'not found' libs.txt ||
             { echo "::error::The runtime lacks libraries the app links"; exit 1; }
