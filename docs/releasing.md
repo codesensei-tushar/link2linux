@@ -103,8 +103,8 @@ install the `.deb` and the APK, and pair them.
    The workflow refuses a tag that doesn't match all three versions, or
    that has no `CHANGELOG.md` section.
 4. **Check the draft** under Releases once the workflow is green:
-   - all 13 files are there: four desktop formats for each of x86_64 and
-     ARM64, the APK, and `SHA256SUMS`;
+   - all 10 files are there: the four desktop formats for each of x86_64
+     and ARM64, the APK, and `SHA256SUMS`;
    - the notes read well;
    - the APK installs on a phone;
    - the `.deb` installs with `sudo apt install ./link2linux_amd64.deb`.
