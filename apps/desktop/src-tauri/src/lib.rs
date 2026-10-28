@@ -5,6 +5,7 @@
 //! belong in the workspace crates, not here.
 
 pub mod backend;
+pub mod cli;
 mod clipboard;
 mod commands;
 mod events;
@@ -16,6 +17,7 @@ use tauri::{DragDropEvent, Manager, WindowEvent};
 use tauri_specta::Event as _;
 
 use backend::Backend;
+use link2linux_platform::linux::single_instance::{self, FirstInstance, Instance};
 use tauri_specta::{Builder, collect_commands, collect_events};
 
 pub use link2linux_runtime::qr;
@@ -103,6 +105,18 @@ pub fn run() {
     if let Err(error) = link2linux_platform::linux::deny_memory_access() {
         tracing::warn!(%error, "could not protect the app's memory");
     }
+    // One app per session: starting it again shows the running app's window.
+    let first = match tauri::async_runtime::block_on(single_instance::claim()) {
+        Ok(Instance::First(first)) => Some(first),
+        Ok(Instance::AlreadyRunning) => {
+            tracing::info!("link2linux is already running");
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not tell whether link2linux is already running");
+            None
+        }
+    };
     let builder = specta_builder();
 
     tauri::Builder::default()
@@ -127,6 +141,9 @@ pub fn run() {
                 ))
             };
             app.manage(AppState::new(backend));
+            if let Some(first) = first {
+                serve_window(app.handle(), first);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -196,7 +213,19 @@ fn dropped_names(paths: &[std::path::PathBuf]) -> Vec<String> {
         .collect()
 }
 
-/// Brings the main window to the front, for a click on a pop-up.
+/// Shows the window when the app is started again, and keeps the app's
+/// name on the session bus until it exits.
+fn serve_window(app: &tauri::AppHandle, first: FirstInstance) {
+    let handle = app.clone();
+    let served = tauri::async_runtime::block_on(first.serve(move || show_window(&handle)));
+    if let Err(error) = served {
+        tracing::warn!(%error, "starting the app again will not show this window");
+    }
+    app.manage(first);
+}
+
+/// Brings the main window to the front, for a click on a pop-up or when
+/// the app is started again.
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
