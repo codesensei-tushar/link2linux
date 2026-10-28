@@ -21,7 +21,7 @@ No account. No cloud. Open source.
 
 ---
 
-> **Status:** link2linux is in active development. Version 0.4.0 is out as a
+> **Status:** link2linux is in active development. Version 0.4.1 is out as a
 > pre-release, with pairing, notifications, clipboard sharing, file
 > transfer, calls, phone status, ring-my-phone, photos, and screen mirroring
 > with control. Get it from the

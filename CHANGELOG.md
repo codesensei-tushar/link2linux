@@ -8,6 +8,16 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-28
+
+The phone sends what you copy to your computer when you open link2linux,
+and the phone app now looks like the desktop app.
+
+### Added
+
+- `link2linux-desktop --version` and `--help` work as in other programs,
+  and an option the app doesn't know is refused instead of ignored.
+
 ### Changed
 
 - The phone sends what you copied to your computer by itself when you open
@@ -17,6 +27,17 @@ from Unreleased to a version.
   computer still work at any time. Text an app marks as a password stays
   on the phone unless you send it yourself. Turn this off in the phone's
   clipboard settings.
+- The phone app has the desktop app's look: the same colors, light and
+  dark, the same font, and settings grouped in cards. Everything works as
+  before.
+- Settings sits at the bottom of the desktop app's sidebar, above the
+  connection card, apart from the features.
+
+### Fixed
+
+- Starting the desktop app while it already runs brings its window to the
+  front, instead of starting a second app that kept taking the phone's
+  connection from the first.
 
 ## [0.4.0] - 2026-10-27
 
@@ -285,7 +306,8 @@ appear on the desktop.
   link2linux window there.
 - There are no ARM64 builds and no Flatpak yet.
 
-[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/codesensei-tushar/link2linux/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/codesensei-tushar/link2linux/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/codesensei-tushar/link2linux/compare/v0.1.2...v0.2.0
