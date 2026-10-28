@@ -1,6 +1,7 @@
 package dev.link2linux.android.feature.clipboard
 
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
@@ -9,6 +10,7 @@ import android.widget.Toast
 import androidx.core.content.edit
 import dev.link2linux.android.core.clipboard.ClipText
 import dev.link2linux.android.core.clipboard.ClipboardEngine
+import dev.link2linux.android.core.clipboard.OpenShare
 import dev.link2linux.android.core.clipboard.ShareResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +20,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -25,7 +29,8 @@ import kotlinx.coroutines.withContext
  * The process-wide clipboard feature: the setting, the engine, and the glue
  * to the system clipboard. The session reaches the engine through [engine]
  * (see ClipboardSessionHooks). The ways to share call [share] or
- * [shareClipboard], and a toast tells the user how it went.
+ * [shareClipboard], and a toast tells the user how it went. The app's
+ * window calls [shareWhileFocused], which shares a new copy on its own.
  */
 class ClipboardRuntime private constructor(context: Context) {
     private val app = context.applicationContext
@@ -48,6 +53,16 @@ class ClipboardRuntime private constructor(context: Context) {
     /** Whether a share could reach a computer now: the feature is on, and a connected computer takes the clipboard. */
     val canSend: Flow<Boolean> = combine(enabled, engine.connected) { on, desktops -> on && desktops.any { it.isReady } }
 
+    private val _sendOnOpen = MutableStateFlow(prefs.getBoolean(SEND_ON_OPEN, true))
+
+    /** Opening the app shares what the user copied in the meantime. On until the user turns it off. */
+    val sendOnOpen: StateFlow<Boolean> = _sendOnOpen.asStateFlow()
+
+    // The time of the last copy handled, not its text, is what is stored.
+    private val openShare = OpenShare(engine, sendOnOpen, prefs.getLong(HANDLED_COPY, 0L)) { time ->
+        prefs.edit { putLong(HANDLED_COPY, time) }
+    }
+
     init {
         // The share sheet and selection entries follow the setting, one change after the other, so quick
         // toggles cannot leave them out of step; the first value also mends them after the app's data was cleared.
@@ -59,6 +74,11 @@ class ClipboardRuntime private constructor(context: Context) {
         _enabled.value = on
     }
 
+    fun setSendOnOpen(on: Boolean) {
+        prefs.edit { putBoolean(SEND_ON_OPEN, on) }
+        _sendOnOpen.value = on
+    }
+
     /** Shares text the user handed over, from the share sheet or a text selection. */
     fun share(text: String?) {
         scope.launch { show(engine.share(ClipText(text.orEmpty()))) }
@@ -66,6 +86,7 @@ class ClipboardRuntime private constructor(context: Context) {
 
     /** Shares what the clipboard holds. Read [clip] while the app has focus, which Android requires. */
     fun shareClipboard(clip: ClipData?) {
+        clip?.description?.let { openShare.handled(it.timestamp) }
         val content = clip.content()
         scope.launch {
             when (content) {
@@ -74,6 +95,28 @@ class ClipboardRuntime private constructor(context: Context) {
                 ClipContent.NotText -> show(Message(R.string.clipboard_result_text_only))
             }
         }
+    }
+
+    /**
+     * Shares a copy the user made in another app, on the phone's own (see
+     * [OpenShare]), while a window of the app has focus: at once, and again
+     * when a computer that takes the clipboard connects in the meantime.
+     * Call it on the main thread when the window gains focus, and cancel it
+     * when the window loses focus.
+     */
+    suspend fun shareWhileFocused(manager: ClipboardManager?) {
+        manager ?: return
+        canSend.distinctUntilChanged().filter { it }.collect { shareOnOpen(manager) }
+    }
+
+    /** Reads only the clip's description until it knows the clip is one to share. */
+    private fun shareOnOpen(manager: ClipboardManager) {
+        val description = manager.primaryClipDescription ?: return
+        // A computer's text carries the label AndroidClipboardWriter gives it.
+        val fromComputer = description.label?.toString() == app.getString(R.string.clipboard_clip_label)
+        if (!openShare.shouldRead(description.timestamp, description.isText(), description.isSensitive(), fromComputer)) return
+        val content = manager.primaryClip.content()
+        if (content is ClipContent.Text) scope.launch { show(engine.share(content.clip, automatic = true)) }
     }
 
     /**
@@ -109,6 +152,8 @@ class ClipboardRuntime private constructor(context: Context) {
     companion object {
         private const val TAG = "link2linux"
         private const val ENABLED = "enabled"
+        private const val SEND_ON_OPEN = "sendOnOpen"
+        private const val HANDLED_COPY = "handledCopyMillis"
 
         /** The exported alias of [ClipboardSendActivity] that other apps share text to; off in the manifest. */
         internal const val COPY_TO_COMPUTER = "dev.link2linux.android.feature.clipboard.CopyToComputer"

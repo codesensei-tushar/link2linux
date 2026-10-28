@@ -1,6 +1,7 @@
 package dev.link2linux.android.feature.clipboard
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.PersistableBundle
@@ -53,6 +54,16 @@ internal fun ClipData?.content(): ClipContent {
     return when {
         text == null -> if (item.uri != null || item.intent != null) ClipContent.NotText else ClipContent.Empty
         text.isEmpty() -> ClipContent.Empty
-        else -> ClipContent.Text(ClipText(text.toString(), sensitive = description.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true))
+        else -> ClipContent.Text(ClipText(text.toString(), sensitive = description.isSensitive()))
     }
 }
+
+/** The source app marked the clip as secret. */
+internal fun ClipDescription.isSensitive(): Boolean = extras?.getBoolean(EXTRA_IS_SENSITIVE) == true
+
+/**
+ * The clip holds text, as far as its description tells. A list of URIs is
+ * left out, since it points at files rather than holding text.
+ */
+internal fun ClipDescription.isText(): Boolean =
+    hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) || hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML)

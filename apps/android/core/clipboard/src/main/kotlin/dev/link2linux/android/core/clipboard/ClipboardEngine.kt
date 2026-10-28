@@ -29,7 +29,8 @@ import java.security.MessageDigest
  * `UNAVAILABLE` when the clipboard refuses it.
  *
  * Android lets an app read the clipboard only while it has focus, so the
- * phone shares only when the user asks, through [share]. A share goes to
+ * phone shares when the user asks, through [share], and on its own when
+ * the app gains focus (see [OpenShare]). A share goes to
  * every attached desktop whose `FeatureStatus` says `READY`. At most one
  * push per desktop waits for its answer: a newer share replaces one still
  * queued behind it, and only the newest is sent once the answer arrives,

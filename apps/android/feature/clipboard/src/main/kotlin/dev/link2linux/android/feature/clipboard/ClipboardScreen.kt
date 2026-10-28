@@ -47,13 +47,16 @@ fun ClipboardScreen(
     val context = LocalContext.current
     val runtime = remember { ClipboardRuntime.get(context) }
     val enabled by runtime.enabled.collectAsStateWithLifecycle()
+    val sendOnOpen by runtime.sendOnOpen.collectAsStateWithLifecycle()
     val desktops by runtime.engine.connected.collectAsStateWithLifecycle()
 
     ClipboardContent(
         enabled = enabled,
+        sendOnOpen = sendOnOpen,
         desktops = desktops,
         onBack = onBack,
         onEnabled = runtime::setEnabled,
+        onSendOnOpen = runtime::setSendOnOpen,
         onSend = { sendClipboard(context, runtime) },
         onAddTile = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             { requestTile(context) }
@@ -110,9 +113,11 @@ private fun requestTile(context: Context) {
 @Composable
 internal fun ClipboardContent(
     enabled: Boolean,
+    sendOnOpen: Boolean,
     desktops: List<ConnectedDesktop>,
     onBack: () -> Unit,
     onEnabled: (Boolean) -> Unit,
+    onSendOnOpen: (Boolean) -> Unit,
     onSend: () -> Unit,
     onAddTile: (() -> Unit)?,
     modifier: Modifier = Modifier,
@@ -129,6 +134,14 @@ internal fun ClipboardContent(
                         supportingContent = { Text(stringResource(R.string.clipboard_toggle_summary)) },
                         trailingContent = { Switch(checked = enabled, onCheckedChange = onEnabled) },
                     )
+                    if (enabled) {
+                        L2lDivider()
+                        L2lListItem(
+                            headlineContent = { Text(stringResource(R.string.clipboard_on_open_title)) },
+                            supportingContent = { Text(stringResource(R.string.clipboard_on_open_summary)) },
+                            trailingContent = { Switch(checked = sendOnOpen, onCheckedChange = onSendOnOpen) },
+                        )
+                    }
                 }
             }
             if (enabled) {

@@ -8,6 +8,16 @@ from Unreleased to a version.
 
 ## [Unreleased]
 
+### Changed
+
+- The phone sends what you copied to your computer by itself when you open
+  link2linux, so you no longer have to tap Send clipboard. Android lets an
+  app read the clipboard only while it is open, so this is as automatic as
+  the phone can be; Send clipboard, the quick settings tile and Copy to
+  computer still work at any time. Text an app marks as a password stays
+  on the phone unless you send it yourself. Turn this off in the phone's
+  clipboard settings.
+
 ## [0.4.0] - 2026-10-27
 
 Photos, screen mirroring with control, ARM64 builds and a Flatpak.
