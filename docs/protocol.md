@@ -1690,9 +1690,13 @@ sends `ClipboardPush` to each connected peer where the feature is active and
   a background app follow the clipboard. Where it does not, it shares the
   clipboard when its window gains focus and when the user asks it to.
 - Android 10 and later let an app read the clipboard only while it has
-  focus, so the phone shares only when the user asks: in the app, from a
-  quick settings tile, the share sheet, the text selection menu or the
-  app's notification.
+  focus, so the phone shares when the user opens the app and when the user
+  asks: in the app, from a quick settings tile, the share sheet, the text
+  selection menu or the app's notification. When the app gains focus, it
+  shares on its own a copy the user made in the meantime, unless the user
+  turned that off. It reads each copy for this at most once, telling
+  copies apart by the time the clipboard gives them, and it leaves out
+  copies marked `sensitive`.
 
 The sender keeps pushes few and in order:
 
@@ -1725,8 +1729,8 @@ The sender keeps pushes few and in order:
   the `x-kde-passwordManagerHint` type with the value `secret`; on Android
   13 and later, `ClipDescription.EXTRA_IS_SENSITIVE`. The desktop shares
   such text only when the user turned on "Share passwords", which is off by
-  default. The phone shares it when the user explicitly shares it, with
-  `sensitive` set.
+  default. The phone shares it only when the user explicitly shares it,
+  with `sensitive` set.
 
 ### Receiving
 
