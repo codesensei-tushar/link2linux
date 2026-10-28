@@ -11,6 +11,7 @@ pub mod notifications;
 pub mod process;
 pub mod secrets;
 pub mod session_lock;
+pub mod single_instance;
 
 pub use calls::{BluezBluetooth, PipewireTelephony};
 pub use clipboard::LinuxClipboard;
